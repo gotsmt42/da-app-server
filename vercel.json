@@ -8,8 +8,9 @@
     ],
     "routes": [
         {
+            "handle": "vercel",
             "src": "/(.*)",
-            "dest": "index.js"
+            "dest": "/index.js"
         }
     ]
 
