@@ -13,7 +13,7 @@ const calendarEventRouter = require("./routes/calendarEvent");
 const cors = require("cors");
 
 const app = express();
-const PORT = process.env.APP_PORT;
+const PORT = process.env.APP_PORT || 8080;
 
 const corsOptions = {
   origin: [
