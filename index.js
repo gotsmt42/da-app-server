@@ -17,7 +17,7 @@ const PORT = process.env.APP_PORT || 8080;
 
 const corsOptions = {
   origin: [
-    "https://da-app--office-da-app.netlify.app",
+    "https://da-app.vercel.app",
     "http://localhost:3000",
   ], // ระบุโดเมนที่ยอมรับ CORS requests จากนั้น
   credentials: true, // อนุญาตให้ส่ง cookies ระหว่างโดเมน
@@ -25,7 +25,7 @@ const corsOptions = {
 
 
 app.use(morgan("dev"))
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 
