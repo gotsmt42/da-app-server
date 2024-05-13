@@ -13,6 +13,7 @@ const upload = multer({ dest: "asset/uploads/images/" });
 
 const verifyToken = require("../middleware/auth");
 const checkFile = require("../middleware/checkFile");
+const TypeProduct = require("../models/TypeProduct");
 
 // Route to create a new product
 router.post(
@@ -25,7 +26,7 @@ router.post(
     try {
       const userId = req.userId;
 
-      const { name, price, description } = req.body;
+      const { name, price, description, type } = req.body;
 
       const imageUrl = req.imageUrl;
 
@@ -33,12 +34,12 @@ router.post(
         name,
         price,
         description,
+        type,
         imageUrl,
-
         userId,
       });
-
       const newProduct = await product.save({});
+
 
       res
         .status(201)
@@ -56,23 +57,25 @@ router.get("/", verifyToken, async (req, res) => {
   try {
     const userId = req.userId;
 
-    let userProducts
+    let userProducts;
 
     if (req.user.role === "admin") {
       userProducts = await Product.find({});
     } else {
-      userProducts = await Product.find({ userId: userId});
+      userProducts = await Product.find({ userId: userId });
     }
 
     // ดึง userId ทั้งหมดจาก userFiles
-    const userIds = userProducts.map(file => file.userId);
+    const userIds = userProducts.map((file) => file.userId);
 
     // ค้นหาข้อมูลผู้ใช้จาก model User โดยใช้ userIds
     const users = await User.find({ _id: { $in: userIds } });
 
     // แปลงค่า userId ใน userFiles เป็น role จากข้อมูลใน users
-    const updatedUserProducts = userProducts.map(product => {
-      const user = users.find(user => user._id.toString() === product.userId.toString());
+    const updatedUserProducts = userProducts.map((product) => {
+      const user = users.find(
+        (user) => user._id.toString() === product.userId.toString()
+      );
       if (user) {
         // คัดลอกค่าทั้งหมดของผู้ใช้ยกเว้น _id
         const { _id, ...userDataWithoutId } = user.toObject();
@@ -81,8 +84,6 @@ router.get("/", verifyToken, async (req, res) => {
         return file; // ถ้าไม่พบ user ให้ใช้ค่าเดิมของ file
       }
     });
-
-
 
     if (!userProducts) {
       return res.status(404).json({ message: "Products not found" });
@@ -116,7 +117,7 @@ router.put(
     const id = req.params.id;
 
     try {
-      const { name, price, description } = req.body;
+      const { name, price, description, type } = req.body;
 
       const imageUrl = req.imageUrl;
 
@@ -124,6 +125,7 @@ router.put(
         name,
         price,
         description,
+        type,
         imageUrl,
       };
 
@@ -165,7 +167,5 @@ router.delete("/:id", verifyToken, async (req, res) => {
     res.status(500).send(err.message);
   }
 });
-
-
 
 module.exports = router;

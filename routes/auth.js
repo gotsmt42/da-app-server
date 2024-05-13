@@ -45,6 +45,7 @@ router.get("/user", verifyToken, async (req, res) => {
         err: "Username หรือ Password ไม่ถูกต้องกรุณาลองใหม่อีกครั้ง",
       });
     }
+
     // console.log(user);
   } catch (err) {
     res.status(500).send(err.message);
