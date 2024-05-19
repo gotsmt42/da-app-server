@@ -160,7 +160,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       return res.status(404).json("Event not found");
     }
 
-    res.status(200).json(updatedEvent); // ส่งข้อมูลของเหตุการณ์ที่ถูกอัปเดตกลับไป
+    res.status(200).json({updatedEvent: updatedEvent}); // ส่งข้อมูลของเหตุการณ์ที่ถูกอัปเดตกลับไป
   } catch (err) {
     res.status(500).json(err.message);
   }
