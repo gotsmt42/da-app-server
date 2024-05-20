@@ -7,6 +7,7 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const authRouter = require("./routes/auth");
 const productRouter = require("./routes/product");
+const stockProductRouter = require("./routes/stockProduct");
 const typeProductRouter = require("./routes/typeProduct");
 const fileRouter = require("./routes/file");
 const calendarEventRouter = require("./routes/calendarEvent");
@@ -32,6 +33,7 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 app.use("/api/auth", authRouter);
 app.use("/api/product", productRouter);
+app.use("/api/product/stock", stockProductRouter);
 app.use("/api/typeproduct", typeProductRouter);
 app.use("/api/files", fileRouter);
 app.use("/api/events", calendarEventRouter);
