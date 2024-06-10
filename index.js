@@ -33,8 +33,8 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 app.use("/api/auth", authRouter);
 app.use("/api/product", productRouter);
-app.use("/api/product/stock", stockProductRouter);
-app.use("/api/typeproduct", typeProductRouter);
+app.use("/api/stockproduct", stockProductRouter);
+// app.use("/api/typeproduct", typeProductRouter);
 app.use("/api/files", fileRouter);
 app.use("/api/events", calendarEventRouter);
 

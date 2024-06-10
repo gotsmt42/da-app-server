@@ -13,7 +13,6 @@ const upload = multer({ dest: "asset/uploads/images/" });
 
 const verifyToken = require("../middleware/auth");
 const checkFile = require("../middleware/checkFile");
-const TypeProduct = require("../models/TypeProduct");
 
 // Route to create a new product
 router.post(
@@ -26,13 +25,12 @@ router.post(
     try {
       const userId = req.userId;
 
-      const { name, price, description, type } = req.body;
+      const { name, description, type } = req.body;
 
       const imageUrl = req.imageUrl;
 
       const product = new Product({
         name,
-        price,
         description,
         type,
         imageUrl,
@@ -117,13 +115,12 @@ router.put(
     const id = req.params.id;
 
     try {
-      const { name, price, description, type } = req.body;
+      const { name, description, type } = req.body;
 
       const imageUrl = req.imageUrl;
 
       const newProduct = {
         name,
-        price,
         description,
         type,
         imageUrl,

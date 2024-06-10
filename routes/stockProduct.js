@@ -4,100 +4,96 @@ const router = express.Router();
 const StockProduct = require("../models/StockProduct");
 const verifyToken = require("../middleware/auth");
 const User = require("../models/User");
+const Product = require("../models/Product");
 
 router.get("/", verifyToken, async (req, res) => {
-    try {
-      const userId = req.userId;
-  
-      let userProducts;
-  
-      if (req.user.role === "admin") {
-        userProducts = await StockProduct.find({});
-      } else {
-        userProducts = await StockProduct.find({ userId: userId });
-      }
-  
-      // ดึง userId ทั้งหมดจาก userFiles
-      const userIds = userProducts.map((stock) => stock.userId);
-  
-      // ค้นหาข้อมูลผู้ใช้จาก model User โดยใช้ userIds
-      const users = await User.find({ _id: { $in: userIds } });
-  
-      // แปลงค่า userId ใน userFiles เป็น role จากข้อมูลใน users
-      const updatedUserProducts = userProducts.map((product) => {
-        const user = users.find(
-          (user) => user._id.toString() === product.userId.toString()
-        );
-        if (user) {
-          // คัดลอกค่าทั้งหมดของผู้ใช้ยกเว้น _id
-          const { _id, ...userDataWithoutId } = user.toObject();
-          return { ...product._doc, user: userDataWithoutId }; // เพิ่ม property user ที่มีค่าข้อมูลผู้ใช้ยกเว้น _id
-        } else {
-          return product; // ถ้าไม่พบ user ให้ใช้ค่าเดิมของ file
-        }
-      });
-  
-      if (!userProducts) {
-        return res.status(404).json({ message: "Stock products not found" });
-      }
-  
-      res.json({ userStockProducts: updatedUserProducts });
-    } catch (err) {
-      console.error("Error fetching user stock products:", error);
-      res.status(500).send(err.message);
+  try {
+    const userId = req.userId;
+
+    let userStock;
+
+    if (req.user.role === "admin") {
+      userStock = await StockProduct.find({});
+    } else {
+      userStock = await StockProduct.find({ userId: userId });
     }
-  });
+
+    // ดึง userId ทั้งหมดจาก userStock
+    const userIds = userStock.map((product) => product.userId);
+
+    // ดึงข้อมูลผู้ใช้จาก model User โดยใช้ userIds
+    const users = await User.find({ _id: { $in: userIds } });
+
+    // แปลงข้อมูลผู้ใช้ให้อยู่ในรูปแบบของ Object โดยใช้ _id เป็น key
+    const usersMap = users.reduce((acc, user) => {
+      acc[user._id.toString()] = user.toObject();
+      return acc;
+    }, {});
+
+    // แปลงข้อมูล StockProduct ให้อยู่ในรูปแบบของ Object โดยใช้ _id เป็น key
+    const userStockMap = userStock.reduce((acc, product) => {
+      acc[product._id.toString()] = product.toObject();
+      return acc;
+    }, {});
+
+    // ดึงรายการ productId ทั้งหมดจาก userStock
+    const productIds = userStock.map((product) => product.productId);
+
+    // ดึงข้อมูล Product จากฐานข้อมูลโดยใช้ productId ที่ได้
+    const products = await Product.find({ _id: { $in: productIds } });
+
+    // แปลงข้อมูล Product ให้อยู่ในรูปแบบของ Object โดยใช้ _id เป็น key
+    const productsMap = products.reduce((acc, product) => {
+      acc[product._id.toString()] = product.toObject();
+      return acc;
+    }, {});
+
+    // อัพเดตข้อมูล StockProduct โดยเพิ่มข้อมูลผู้ใช้และ Product ในแต่ละรายการ
+    const updatedUserStock = Object.keys(userStockMap).map((productId) => {
+      const product = userStockMap[productId];
+      const user = usersMap[product.userId.toString()];
+      const productInfo = productsMap[product.productId.toString()];
+      if (user && productInfo) {
+        const { _id, ...userDataWithoutId } = user;
+        return { ...product, user: userDataWithoutId, productInfo: productInfo };
+      } else {
+        return product;
+      }
+    });
+
+    if (!userStock) {
+      return res.status(404).json({ message: "Stocks not found" });
+    }
+
+    res.json({ userStock: updatedUserStock });
+  } catch (err) {
+    console.error("Error fetching user products:", err);
+    res.status(500).send(err.message);
+  }
+});
+
 
 router.post("/", verifyToken, async (req, res) => {
   try {
     const userId = req.userId;
 
-    const { productId, price, quantity } = req.body;
-
+    const { productId, price, quantity, countingUnit } = req.body;
 
     const newStockProduct = new StockProduct({
       productId,
       price,
       quantity,
-      userId
+      countingUnit,
+      userId,
     });
-
-    console.log(newStockProduct);
 
     await newStockProduct.save();
 
     res.status(201).json({ message: "Stock added successfully" });
   } catch (err) {
+    console.error("Error adding stock:", err);
     res.status(500).send(err.message);
   }
 });
-
-router.put("/:id", verifyToken, async (req, res) => {
-  const id = req.params.id;
-
-  try {
-    const { price, quantity } = req.body;
-
-    await StockProduct.findByIdAndUpdate(id, { price, quantity });
-
-    res.status(200).send("Stock updated successfully");
-  } catch (err) {
-    res.status(500).send(err.message);
-  }
-});
-
-router.delete("/:id", verifyToken, async (req, res) => {
-  try {
-    const id = req.params.id;
-
-    await StockProduct.findByIdAndDelete(id);
-
-    res.status(200).send("Stock deleted successfully");
-  } catch (err) {
-    console.error("Error deleting stock:", err);
-    res.status(500).send(err.message);
-  }
-});
-
 
 module.exports = router;
