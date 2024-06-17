@@ -25,14 +25,18 @@ router.post(
     try {
       const userId = req.userId;
 
-      const { name, description, type } = req.body;
+      const { name, description, type, price, countingUnit } = req.body;
 
       const imageUrl = req.imageUrl;
 
+
+      
       const product = new Product({
         name,
         description,
         type,
+        price,
+        countingUnit,
         imageUrl,
         userId,
       });
@@ -115,7 +119,7 @@ router.put(
     const id = req.params.id;
 
     try {
-      const { name, description, type } = req.body;
+      const { name, description, type, price, countingUnit } = req.body;
 
       const imageUrl = req.imageUrl;
 

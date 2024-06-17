@@ -18,52 +18,46 @@ router.get("/", verifyToken, async (req, res) => {
       userStock = await StockProduct.find({ userId: userId });
     }
 
-    // ดึง userId ทั้งหมดจาก userStock
-    const userIds = userStock.map((product) => product.userId);
+    if (!userStock || userStock.length === 0) {
+      return res.status(404).json({ message: "Stocks not found" });
+    }
 
-    // ดึงข้อมูลผู้ใช้จาก model User โดยใช้ userIds
+    const userIds = userStock.map((product) => product.userId);
     const users = await User.find({ _id: { $in: userIds } });
 
-    // แปลงข้อมูลผู้ใช้ให้อยู่ในรูปแบบของ Object โดยใช้ _id เป็น key
     const usersMap = users.reduce((acc, user) => {
       acc[user._id.toString()] = user.toObject();
       return acc;
     }, {});
 
-    // แปลงข้อมูล StockProduct ให้อยู่ในรูปแบบของ Object โดยใช้ _id เป็น key
     const userStockMap = userStock.reduce((acc, product) => {
       acc[product._id.toString()] = product.toObject();
       return acc;
     }, {});
 
-    // ดึงรายการ productId ทั้งหมดจาก userStock
     const productIds = userStock.map((product) => product.productId);
-
-    // ดึงข้อมูล Product จากฐานข้อมูลโดยใช้ productId ที่ได้
     const products = await Product.find({ _id: { $in: productIds } });
 
-    // แปลงข้อมูล Product ให้อยู่ในรูปแบบของ Object โดยใช้ _id เป็น key
     const productsMap = products.reduce((acc, product) => {
       acc[product._id.toString()] = product.toObject();
       return acc;
     }, {});
 
-    // อัพเดตข้อมูล StockProduct โดยเพิ่มข้อมูลผู้ใช้และ Product ในแต่ละรายการ
     const updatedUserStock = Object.keys(userStockMap).map((productId) => {
       const product = userStockMap[productId];
       const user = usersMap[product.userId.toString()];
       const productInfo = productsMap[product.productId.toString()];
       if (user && productInfo) {
         const { _id, ...userDataWithoutId } = user;
-        return { ...product, user: userDataWithoutId, productInfo: productInfo };
+        return {
+          ...product,
+          user: userDataWithoutId,
+          productInfo: productInfo,
+        };
       } else {
         return product;
       }
     });
-
-    if (!userStock) {
-      return res.status(404).json({ message: "Stocks not found" });
-    }
 
     res.json({ userStock: updatedUserStock });
   } catch (err) {
@@ -72,26 +66,67 @@ router.get("/", verifyToken, async (req, res) => {
   }
 });
 
-
 router.post("/", verifyToken, async (req, res) => {
   try {
     const userId = req.userId;
-
     const { productId, price, quantity, countingUnit } = req.body;
 
-    const newStockProduct = new StockProduct({
-      productId,
-      price,
-      quantity,
-      countingUnit,
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    const existingStockProduct = await StockProduct.findOne({
       userId,
+      productId,
     });
 
-    await newStockProduct.save();
+    if (existingStockProduct) {
+      // If stock for this product and user exists, update quantity and price
+      existingStockProduct.quantity = quantity;
+      existingStockProduct.price = price;
+      existingStockProduct.countingUnit = countingUnit;
+      await existingStockProduct.save();
+      res.json({ message: "Stock updated successfully" });
+    } else {
+      // If stock doesn't exist, create a new one
+      const newStockProduct = new StockProduct({
+        productId,
+        price,
+        quantity,
+        countingUnit,
+        userId,
+      });
 
-    res.status(201).json({ message: "Stock added successfully" });
+      await newStockProduct.save();
+      res.status(201).json({ message: "Stock added successfully" });
+    }
   } catch (err) {
-    console.error("Error adding stock:", err);
+    console.error("Error adding/updating stock:", err);
+    res.status(500).send(err.message);
+  }
+});
+
+router.delete("/:id", verifyToken, async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    const productToDelete = await StockProduct.findById(id);
+
+    // Check if the authenticated user is the owner of the stock product or an admin
+    if (
+      productToDelete.userId.toString() !== req.userId.toString() &&
+      req.user.role !== "admin"
+    ) {
+      return res.status(403).send("Unauthorized to delete.");
+    }
+
+    // Delete stock product from database
+    await StockProduct.findByIdAndDelete(id);
+
+    res.status(200).send("Stock Product deleted successfully");
+  } catch (err) {
+    console.error("Error deleting Stock Product:", err);
     res.status(500).send(err.message);
   }
 });
