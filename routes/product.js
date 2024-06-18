@@ -29,8 +29,6 @@ router.post(
 
       const imageUrl = req.imageUrl;
 
-
-      
       const product = new Product({
         name,
         description,
@@ -41,7 +39,6 @@ router.post(
         userId,
       });
       const newProduct = await product.save({});
-
 
       res
         .status(201)
@@ -127,6 +124,8 @@ router.put(
         name,
         description,
         type,
+        price,
+        countingUnit,
         imageUrl,
       };
 

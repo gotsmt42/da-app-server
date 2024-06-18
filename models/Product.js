@@ -3,11 +3,10 @@ const mongoose = require("../db");
 const productSchema = new mongoose.Schema(
   {
     name: { type: String, default: "" },
-    description: { type: String, default: "" },
+    description: { type: String, default: ""},
     type: { type: String, default: "" },
     price: {
       type: mongoose.Types.Decimal128,
-      required: true,
     },
     countingUnit: {
       type: String,

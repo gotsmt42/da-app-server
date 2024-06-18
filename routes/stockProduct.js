@@ -19,7 +19,8 @@ router.get("/", verifyToken, async (req, res) => {
     }
 
     if (!userStock || userStock.length === 0) {
-      return res.status(404).json({ message: "Stocks not found" });
+       // ถ้าไม่มีข้อมูล stock หรือ userStock เป็น array ว่าง
+      return res.status(200).json({ userStock: [] }); // ส่ง response กลับไปว่าไม่มีข้อมูล
     }
 
     const userIds = userStock.map((product) => product.userId);
@@ -69,7 +70,7 @@ router.get("/", verifyToken, async (req, res) => {
 router.post("/", verifyToken, async (req, res) => {
   try {
     const userId = req.userId;
-    const { productId, price, quantity, countingUnit } = req.body;
+    const { productId, quantity } = req.body;
 
     const product = await Product.findById(productId);
     if (!product) {
@@ -84,17 +85,13 @@ router.post("/", verifyToken, async (req, res) => {
     if (existingStockProduct) {
       // If stock for this product and user exists, update quantity and price
       existingStockProduct.quantity = quantity;
-      existingStockProduct.price = price;
-      existingStockProduct.countingUnit = countingUnit;
       await existingStockProduct.save();
       res.json({ message: "Stock updated successfully" });
     } else {
       // If stock doesn't exist, create a new one
       const newStockProduct = new StockProduct({
         productId,
-        price,
         quantity,
-        countingUnit,
         userId,
       });
 
@@ -124,7 +121,11 @@ router.delete("/:id", verifyToken, async (req, res) => {
     // Delete stock product from database
     await StockProduct.findByIdAndDelete(id);
 
-    res.status(200).send("Stock Product deleted successfully");
+    // Fetch updated user stocks after deletion
+    const userId = req.userId;
+    const updatedStocks = await StockProduct.find({ userId });
+
+    res.status(200).json({ message: "Stock Product deleted successfully", userStock: updatedStocks });
   } catch (err) {
     console.error("Error deleting Stock Product:", err);
     res.status(500).send(err.message);
