@@ -11,6 +11,8 @@ const stockProductRouter = require("./routes/stockProduct");
 const fileRouter = require("./routes/file");
 const calendarEventRouter = require("./routes/calendarEvent");
 
+const checkInternetConnection = require('./middleware/checkInternetConnection')
+
 const cors = require("cors");
 
 const app = express();
@@ -39,6 +41,10 @@ app.use("/api/events", calendarEventRouter);
 // // Auto Route
 // readdirSync('./routes')
 //     .map(r => app.use("/api", require('./routes/' + r)))
+
+// ใช้ middleware ตรวจสอบการเชื่อมต่ออินเทอร์เน็ต
+app.use(checkInternetConnection);
+
 
 app.use(
   "/api/asset/uploads/images",
