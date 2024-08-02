@@ -72,27 +72,39 @@ router.post("/", verifyToken, async (req, res) => {
     const userId = req.userId;
     const { productId, quantity } = req.body;
 
+    // ค้นหาข้อมูลสินค้าโดยใช้ productId
     const product = await Product.findById(productId);
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const existingStockProduct = await StockProduct.findOne({
-      userId,
-      productId,
-    });
+    // ตรวจสอบว่าสินค้าคงคลังมีอยู่หรือไม่
+    const existingStockProduct = await StockProduct.findOne({ userId, productId });
 
     if (existingStockProduct) {
-      // If stock for this product and user exists, update quantity and price
+      // หากสินค้าคงคลังมีอยู่แล้ว ให้ทำการอัปเดตข้อมูล
       existingStockProduct.quantity = quantity;
+      existingStockProduct.name = product.name;
+      existingStockProduct.description = product.description;
+      existingStockProduct.type = product.type;
+      existingStockProduct.price = product.price;
+      existingStockProduct.countingUnit = product.countingUnit;
+      existingStockProduct.imageUrl = product.imageUrl;
+
       await existingStockProduct.save();
       res.json({ message: "Stock updated successfully" });
     } else {
-      // If stock doesn't exist, create a new one
+      // หากสินค้าคงคลังยังไม่มี ให้สร้างใหม่พร้อมข้อมูลจากสินค้า
       const newStockProduct = new StockProduct({
         productId,
         quantity,
         userId,
+        name: product.name,
+        description: product.description,
+        type: product.type,
+        price: product.price,
+        countingUnit: product.countingUnit,
+        imageUrl: product.imageUrl,
       });
 
       await newStockProduct.save();
@@ -103,7 +115,6 @@ router.post("/", verifyToken, async (req, res) => {
     res.status(500).send(err.message);
   }
 });
-
 router.delete("/:id", verifyToken, async (req, res) => {
   try {
     const id = req.params.id;
