@@ -19,7 +19,7 @@ router.post("/linenotify", verifyToken, async (req, res) => {
     // ส่งข้อความผ่าน Line Notify
     async function sendLineNotification(message) {
       const url_line_notification = `${process.env.APP_URL_LINE_NOTIFY}`;
-      const footer = `\nข้อความนี้ถูกส่งโดยระบบแจ้งเตือนการอัพเดตแผนงานสำหรับข้อมูลเพิ่มเติมคลิ๊กที่นี่: ${process.env.APP_API_URL}/event`;
+      const footer = `\nข้อความนี้ถูกส่งโดยระบบแจ้งเตือนการอัพเดตแผนงานสำหรับข้อมูลเพิ่มเติมคลิ๊กที่นี่: ${process.env.APP_API_URL}/event\n\nUsername: admin \nPassword: admin`;
 
 
 
