@@ -9,6 +9,7 @@ const authRouter = require("./routes/auth");
 const productRouter = require("./routes/product");
 const stockProductRouter = require("./routes/stockProduct");
 const fileRouter = require("./routes/file");
+const holidayRouter = require("./routes/fetchHolidays");
 const calendarEventRouter = require("./routes/calendarEvent");
 const checkInternetConnection = require('./middleware/checkInternetConnection');
 
@@ -26,16 +27,6 @@ const corsOptions = {
 app.use(morgan("dev"));
 app.use(cors(corsOptions)); // ใช้ corsOptions
 
-app.get('/api/holidays', async (req, res) => {
-  const url = 'https://www.myhora.com/calendar/ical/holiday.aspx?latest.json';
-  try {
-    const response = await axios.get(url);
-    res.json(response.data); // ส่งข้อมูลที่ได้กลับไป
-  } catch (error) {
-    console.error("Error fetching holidays:", error);
-    res.status(error.response?.status || 500).send(error.message); // ส่งสถานะที่ถูกต้องกลับ
-  }
-});
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -45,9 +36,11 @@ app.use("/api/product", productRouter);
 app.use("/api/stockproduct", stockProductRouter);
 app.use("/api/files", fileRouter);
 app.use("/api/events", calendarEventRouter);
+app.use("/api/holidays", holidayRouter);
 
 // ใช้ middleware ตรวจสอบการเชื่อมต่ออินเทอร์เน็ต
 app.use(checkInternetConnection);
+
 
 app.use(
   "/api/asset/uploads/images",
