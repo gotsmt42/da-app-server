@@ -11,6 +11,7 @@ const stockProductRouter = require("./routes/stockProduct");
 const fileRouter = require("./routes/file");
 const holidayRouter = require("./routes/fetchHolidays");
 const calendarEventRouter = require("./routes/calendarEvent");
+const eventReceiveRouter = require("./routes/eventReceive");
 const checkInternetConnection = require('./middleware/checkInternetConnection');
 
 const app = express();
@@ -36,6 +37,7 @@ app.use("/api/product", productRouter);
 app.use("/api/stockproduct", stockProductRouter);
 app.use("/api/files", fileRouter);
 app.use("/api/events", calendarEventRouter);
+app.use("/api/eventReceive", eventReceiveRouter);
 app.use("/api/holidays", holidayRouter);
 
 // ใช้ middleware ตรวจสอบการเชื่อมต่ออินเทอร์เน็ต

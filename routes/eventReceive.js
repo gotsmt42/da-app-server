@@ -1,47 +1,13 @@
 const express = require("express");
 const router = express.Router();
 
-const CalendarEvent = require("../models/Events");
+const EventReceive = require("../models/EventReceive");
 const User = require("../models/User");
 
 const axios = require("axios");
 
 const verifyToken = require("../middleware/auth");
 
-router.post("/linenotify", verifyToken, async (req, res) => {
-  try {
-    let { description } = req.body;
-
-    let message = "\n📢📢 มีการแจ้งเตือนอัพเดตตารางแผนงานใหม่ 😊\n";
-
-    await sendLineNotification(`\n${message}\nคำอธิบาย: ${description}\n`);
-
-    // ส่งข้อความผ่าน Line Notify
-    async function sendLineNotification(message) {
-      const url_line_notification = `${process.env.APP_URL_LINE_NOTIFY}`;
-      const footer = `\nข้อความนี้ถูกส่งโดยระบบแจ้งเตือนการอัพเดตแผนงานสำหรับข้อมูลเพิ่มเติมคลิ๊กที่นี่: ${process.env.APP_API_URL}/event\n\nUsername: admin \nPassword: admin`;
-
-
-
-      // เพิ่ม footer ในข้อความ
-      message += footer;
-
-      // ส่งข้อความผ่าน Line Notify
-      await axios.post(url_line_notification, null, {
-        params: {
-          message: message,
-        },
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Authorization: `Bearer ${process.env.APP_TOKEN_LINE_NOTIFY}`,
-        },
-      });
-    }
-  } catch (err) {
-    console.error("Error fetching user LineNotify:", error);
-    res.status(500).send(err.message);
-  }
-});
 
 router.post("/", verifyToken, async (req, res) => {
   try {
@@ -49,24 +15,13 @@ router.post("/", verifyToken, async (req, res) => {
 
     const {
       title,
-      date,
-      backgroundColor,
-      textColor,
-      fontSize,
       start,
       end,
-      allDay,
     } = req.body;
-    const event = new CalendarEvent({
+    const event = new EventReceive({
       title,
-      date,
-      backgroundColor,
-      textColor,
-      fontSize,
       start,
       end,
-      allDay,
-
       userId,
     });
     await event.save();
@@ -84,9 +39,9 @@ router.get("/", verifyToken, async (req, res) => {
     let userEvents;
 
     if (req.user.role === "admin") {
-      userEvents = await CalendarEvent.find({});
+      userEvents = await EventReceive.find({});
     } else {
-      userEvents = await CalendarEvent.find({ userId: userId });
+      userEvents = await EventReceive.find({ userId: userId });
     }
 
     // ดึง userId ทั้งหมดจาก userFiles
@@ -135,8 +90,8 @@ router.put("/:id", verifyToken, async (req, res) => {
       allDay,
     } = req.body;
 
-    console.log(id);
-    console.log(req.body);
+    // console.log(id);
+    // console.log(req.body);
 
     const newEvent = {
       title,
@@ -149,7 +104,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       allDay,
     };
 
-    const updatedEvent = await CalendarEvent.findOneAndUpdate(
+    const updatedEvent = await EventReceive.findOneAndUpdate(
       { _id: id },
       newEvent,
       {
@@ -170,16 +125,22 @@ router.put("/:id", verifyToken, async (req, res) => {
 router.delete("/:id", verifyToken, async (req, res) => {
   try {
     const id = req.params.id;
+    
+    console.log(`🗑 Attempting to delete event with ID: ${id}`); // เช็กว่า ID ถูกต้องไหม
 
-    console.log(id);
-    // Delete file from database
-    await CalendarEvent.findByIdAndDelete(id);
+    const deletedEvent = await EventReceive.findByIdAndDelete(id);
 
-    res.status(200).send("Event deleted successfully");
+    if (!deletedEvent) {
+      return res.status(404).json({ message: "❌ Event not found" });
+    }
+
+    console.log("✅ Event deleted successfully:", deletedEvent);
+    res.status(200).json({ message: "Event deleted successfully" });
   } catch (err) {
-    console.error("Error deleting Event:", err);
+    console.error("❌ Error deleting event:", err);
     res.status(500).send(err.message);
   }
 });
+
 
 module.exports = router;
