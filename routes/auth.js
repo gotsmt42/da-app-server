@@ -13,6 +13,42 @@ const upload = multer({ dest: "asset/uploads/images/" });
 
 const checkFile = require("../middleware/checkFile");
 
+router.post("/validate-password", verifyToken, async (req, res) => {
+  try {
+    const { password } = req.body;
+    const userId = req.userId;
+
+    // ตรวจสอบว่ามีการส่ง password มาหรือไม่
+    if (!password || password.trim() === "") {
+      return res.status(400).json({ valid: false, message: "กรุณากรอกรหัสผ่าน" });
+    }
+
+    // ดึงข้อมูลผู้ใช้จาก userId
+    const user = await User.findById(userId).select("+password").exec();
+
+    if (!user) {
+      return res.status(401).json({ valid: false, message: "ข้อมูลไม่ถูกต้อง" });
+    }
+
+    // เปรียบเทียบรหัสผ่าน
+    const isMatch = await bcrypt.compare(password.trim(), user.password);
+
+    if (!isMatch) {
+      return res.status(401).json({ valid: false, message: "ข้อมูลไม่ถูกต้อง" });
+    }
+
+    // หากรหัสผ่านถูกต้อง
+    res.json({ valid: true, message: "ยืนยันรหัสผ่านสำเร็จ" });
+
+  } catch (error) {
+    console.error("Error validating password:", error);
+    res.status(500).json({ valid: false, message: "เกิดข้อผิดพลาดในการตรวจสอบรหัสผ่าน" });
+  }
+});
+
+
+
+
 router.get("/alluser", verifyToken, async (req, res) => {
   try {
     const token = req.token;
@@ -31,12 +67,13 @@ router.get("/alluser", verifyToken, async (req, res) => {
     res.status(500).send(err.message);
   }
 });
+
 router.get("/user", verifyToken, async (req, res) => {
   try {
     const userId = req.userId;
     const token = req.token;
 
-    const user = await User.findOne({ _id: userId }).exec();
+    const user = await User .findOne({ _id: userId }).exec();
 
     if (user) {
       res.json({ user: user, token: token });
@@ -53,38 +90,61 @@ router.get("/user", verifyToken, async (req, res) => {
 });
 
 // Route สำหรับสมัครสมาชิก
+// Route สำหรับสมัครสมาชิก
+
+const bcrypt = require("bcryptjs");
+
 router.post("/signup", async (req, res) => {
   try {
     const { username, password, email, fname, lname, tel } = req.body;
-    const existingUser = await User.findOne({ username });
-    const existingEmail = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({err: "Username already exists"});
-    }
-    if (existingEmail) {
-      return res.status(400).json({err: "Email already exists"});
-    }
-    const user = new User({ username, password, email, fname, lname, tel });
+
+    console.log("🟢 รหัสผ่านที่ได้รับก่อนเข้ารหัส:", password);
+
+    const user = new User({
+      username,
+      password, // ✅ ส่งรหัสผ่านตรงๆ Mongoose จะเข้ารหัสให้
+      email,
+      fname,
+      lname,
+      tel,
+    });
+
     await user.save();
-    res.status(201).send("User created successfully");
+    
+    res.status(201).json({ message: "สมัครสมาชิกสำเร็จ!" });
   } catch (err) {
     console.log(err.message);
-    res.status(500).send(err.message);
+    res.status(500).json({ err: "เกิดข้อผิดพลาดในระบบ กรุณาลองใหม่อีกครั้ง" });
   }
 });
+
 
 // Route สำหรับล็อกอิน
 router.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
-    const user = await User.findOne({ username });
+
+    console.log("🟢 ค่าที่ได้รับจากผู้ใช้:", password);
+
+    const user = await User.findOne({
+      $or: [{ username }, { email: username }],
+    });
+
     if (!user) {
-      return res.status(401).json({ err: "Invalid username or password" });
+      return res.status(401).json({ err: "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง" });
     }
-    const isPasswordValid = await user.comparePassword(password);
+
+    console.log("🟢 รหัสผ่านที่เข้ารหัสในฐานข้อมูล:", user.password);
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+
+    console.log("🟢 password ที่ได้รับจากผู้ใช้:", password);
+    console.log("🟢 password ที่เข้ารหัสในฐานข้อมูล:", user.password);
+    console.log("🟢 bcrypt.compare() ผลลัพธ์:", isPasswordValid);
     if (!isPasswordValid) {
-      return res.status(401).send("Invalid username or password");
+      return res.status(401).json({ err: "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง" });
     }
+
     const payload = {
       userId: user._id,
       email: user.email,
@@ -94,20 +154,18 @@ router.post("/login", async (req, res) => {
       username: user.username,
       rank: user.rank,
       role: user.role,
-      // ตั้งเวลาหมดอายุของ Token เป็น 1 ชั่วโมง
-      //   exp: Math.floor(Date.now() / 1000) + 60 * 60, // Unix timestamp in seconds
     };
 
-    const token = jwt.sign(payload, process.env.APP_SECRET, {
-      expiresIn: "7 days",
-    });
-    res.status(200).json({ token, payload });
+    const token = jwt.sign(payload, process.env.APP_SECRET, { expiresIn: "7 days" });
 
-    // console.log(req.body);
+    res.status(200).json({ token, payload, message: "เข้าสู่ระบบสำเร็จ!" });
   } catch (err) {
-    res.status(500).send(err.message);
+    console.error("🔴 Error in login:", err);
+    res.status(500).json({ err: "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง" });
   }
 });
+
+
 
 // Update route
 router.put(
@@ -118,13 +176,14 @@ router.put(
   async (req, res) => {
     try {
       const userId = req.params.id;
-      const { fname, lname, tel } = req.body;
+      const { fname, lname, tel, role } = req.body;
       const imageUrl = req.imageUrl;
 
       const newUser = {
         fname,
         lname,
         tel,
+        role,
         imageUrl,
       };
 
@@ -144,6 +203,23 @@ router.put(
     }
   }
 );
+
+router.delete("/user/:id", verifyToken, async (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    const deletedUser = await User.findByIdAndDelete(userId);
+
+    if (!deletedUser) {
+      return res.status(404).json({ message: "ไม่พบผู้ใช้ที่ต้องการลบ" });
+    }
+
+    res.status(200).json({ message: "ลบผู้ใช้สำเร็จ" });
+  } catch (err) {
+    res.status(500).json({ message: "เกิดข้อผิดพลาดในการลบผู้ใช้" });
+  }
+});
+
 
 // ใช้ Middleware ใน Endpoint สำหรับ Logout
 router.get("/logout", (req, res) => {

@@ -79,23 +79,26 @@ router.post("/", verifyToken, async (req, res) => {
 
 router.get("/", verifyToken, async (req, res) => {
   try {
-    const userId = req.userId;
+    const userId = req.userId; // ดึง userId จาก Token
+    const userRole = req.user.role; // ดึง role ของ User
 
     let userEvents;
 
-    if (req.user.role === "admin") {
+    // ✅ เงื่อนไข: ถ้าเป็น admin ให้ดึง event ทั้งหมด
+    if (userRole === "admin") {
       userEvents = await CalendarEvent.find({});
     } else {
+      // ✅ ถ้าเป็น user ทั่วไป ให้ดึงเฉพาะ event ของตัวเอง
       userEvents = await CalendarEvent.find({ userId: userId });
     }
 
-    // ดึง userId ทั้งหมดจาก userFiles
+    // ดึง userId ทั้งหมดจาก userEvents
     const userIds = userEvents.map((event) => event.userId);
 
     // ค้นหาข้อมูลผู้ใช้จาก model User โดยใช้ userIds
     const users = await User.find({ _id: { $in: userIds } });
 
-    // แปลงค่า userId ใน userFiles เป็น role จากข้อมูลใน users
+    // แปลงค่า userId ใน userEvents เป็น role จากข้อมูลใน users
     const updatedUserEvents = userEvents.map((event) => {
       const user = users.find(
         (user) => user._id.toString() === event.userId.toString()
@@ -109,14 +112,15 @@ router.get("/", verifyToken, async (req, res) => {
       }
     });
 
-    if (!userEvents) {
-      return res.status(404).json({ message: "Event not found" });
+    // ถ้าไม่มีข้อมูล
+    if (!userEvents.length) {
+      return res.status(404).json({ message: "ไม่พบข้อมูลปฏิทิน" });
     }
 
     res.json({ userEvents: updatedUserEvents });
   } catch (err) {
-    console.error("Error fetching user products:", err); // ✅ แก้ไขตรงนี้
-    res.status(500).send(err.message);
+    console.error("❌ Error fetching calendar events:", err);
+    res.status(500).send("เกิดข้อผิดพลาดในการดึงข้อมูลปฏิทิน");
   }
 });
 

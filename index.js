@@ -15,7 +15,7 @@ const eventReceiveRouter = require("./routes/eventReceive");
 const checkInternetConnection = require('./middleware/checkInternetConnection');
 
 const app = express();
-const PORT = process.env.APP_PORT || 8080;
+const PORT = process.env.APP_PORT || 5000;
 
 const corsOptions = {
   origin: [
