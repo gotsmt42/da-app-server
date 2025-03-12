@@ -12,6 +12,9 @@ const eventSchema = new mongoose.Schema(
     start: { type: Date,  }, // เปลี่ยนเป็นรูปแบบ datetime
     end: { type: Date, },   // เปลี่ยนเป็นรูปแบบ datetime
     allDay: { type: Boolean, default: true },
+    status: { type: String, required: true, default: "กำลังรอยืนยัน" },
+    isAutoUpdated: { type: Boolean },
+
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
   },
   { timestamps: true }
