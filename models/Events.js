@@ -4,7 +4,11 @@ const moment = require("moment");
 
 const eventSchema = new mongoose.Schema(
   {
+    company: { type: String},
+    site: { type: String, required: true },
     title: { type: String, required: true },
+    system: { type: String},
+    time: { type: String },
     date: { type: Date, required: true },
     backgroundColor: { type: String, required: true },
     textColor: { type: String, required: true },

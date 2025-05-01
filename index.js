@@ -6,6 +6,7 @@ const axios = require("axios"); // นำเข้า axios
 const cors = require("cors");
 
 const authRouter = require("./routes/auth");
+const customerRouter = require("./routes/customer");
 const productRouter = require("./routes/product");
 const stockProductRouter = require("./routes/stockProduct");
 const fileRouter = require("./routes/file");
@@ -33,6 +34,7 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 
 app.use("/api/auth", authRouter);
+app.use("/api/customer", customerRouter);
 app.use("/api/product", productRouter);
 app.use("/api/stockproduct", stockProductRouter);
 app.use("/api/files", fileRouter);

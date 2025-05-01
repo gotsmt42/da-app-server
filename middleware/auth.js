@@ -17,6 +17,9 @@ module.exports = verifyToken = async (req, res, next) => {
         if (!user) {
             return res.status(404).send('User not found.');
         }
+
+        console.log(token);
+        
         
         req.userId = decoded.userId;
         req.user = user; // เพิ่มข้อมูลผู้ใช้ใน req object สำหรับการใช้งานใน middleware ต่อไป (ถ้าต้องการ)

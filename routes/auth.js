@@ -77,6 +77,7 @@ router.get("/user", verifyToken, async (req, res) => {
 
     if (user) {
       res.json({ user: user, token: token });
+
     } else {
       res.json({
         err: "Username หรือ Password ไม่ถูกต้องกรุณาลองใหม่อีกครั้ง",

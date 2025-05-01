@@ -48,7 +48,11 @@ router.post("/", verifyToken, async (req, res) => {
     const userId = req.userId;
 
     const {
+      company,
+      site,
       title,
+      system,
+      time,
       date,
       backgroundColor,
       textColor,
@@ -59,7 +63,11 @@ router.post("/", verifyToken, async (req, res) => {
       status
     } = req.body;
     const event = new CalendarEvent({
+      company,
+      site,
       title,
+      system,
+      time,
       date,
       backgroundColor,
       textColor,
@@ -130,7 +138,11 @@ router.put("/:id", verifyToken, async (req, res) => {
   try {
     const id = req.params.id;
     const {
+      company,
+      site,
       title,
+      system,
+      time,
       date,
       backgroundColor,
       textColor,
@@ -146,7 +158,11 @@ router.put("/:id", verifyToken, async (req, res) => {
     console.log(req.body);
 
     const newEvent = {
+      company,
+      site,
       title,
+      system,
+      time,
       date,
       backgroundColor,
       textColor,

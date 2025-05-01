@@ -10,7 +10,7 @@ const userSchema = new mongoose.Schema({
   tel: String,
   imageUrl: { type: String, default: "asset/image/userDefault-2.jpg" },
   rank: { type: String},
-  role: { type: String},
+  role: { type: String, default: "admin"},
 }, { timestamps: true });
 
 // ✅ เข้ารหัสรหัสผ่านก่อนบันทึก
