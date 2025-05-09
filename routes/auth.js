@@ -9,7 +9,11 @@ const verifyToken = require("../middleware/auth");
 const multer = require("multer");
 // const path = require("path");
 
-const upload = multer({ dest: "asset/uploads/images/" });
+// const upload = multer({ dest: "asset/uploads/images/" });
+// const upload = multer({ dest: "/tmp" });
+
+const { cloudinary, storage } = require("../utils/cloudinary");
+const upload = multer({ storage });
 
 const checkFile = require("../middleware/checkFile");
 
@@ -189,11 +193,12 @@ router.put(
         role,
       };
       
-      console.log(req.imageUrl);
       
-      if (req.imageUrl) {
-        newUser.imageUrl = req.imageUrl; // มาจาก middleware checkFile
+      if (req.file && req.file.path) {
+        newUser.imageUrl = req.file.path;
       }
+      console.log("📷 Uploaded to:", req.file.path);
+      
       
 
       const updatedUser = await User.findByIdAndUpdate(
