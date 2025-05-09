@@ -1,16 +1,11 @@
 module.exports = checkFile = async (req, res, next) => {
-  if (req.file !== undefined && req.file !== null) {
-    req.imageUrl = req.file.path;
-    req.fileUrl = req.file.path;
 
-    next();
-  } else {
-    // req.name = req.body.name;
-    // req.price = req.body.price;
-    // req.description = req.body.description;
-
-    // // req.formData = req.body
-
-    next();
+  if (req.file) {
+    const filePath = req.file.path.replace("asset/", "");
+    req.imageUrl = filePath;
+    req.fileUrl = filePath;
+    console.log("🟢 imageUrl set to:", filePath);
   }
+
+  next();
 };

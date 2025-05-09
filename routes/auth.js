@@ -97,7 +97,7 @@ const bcrypt = require("bcryptjs");
 
 router.post("/signup", async (req, res) => {
   try {
-    const { username, password, email, fname, lname, tel } = req.body;
+    const { username, password, email, fname, lname, tel, role, rank} = req.body;
 
     console.log("🟢 รหัสผ่านที่ได้รับก่อนเข้ารหัส:", password);
 
@@ -108,6 +108,8 @@ router.post("/signup", async (req, res) => {
       fname,
       lname,
       tel,
+      role,
+      rank,
     });
 
     await user.save();
@@ -178,15 +180,21 @@ router.put(
     try {
       const userId = req.params.id;
       const { fname, lname, tel, role } = req.body;
-      const imageUrl = req.imageUrl;
+      // const imageUrl = req.imageUrl;
 
       const newUser = {
         fname,
         lname,
         tel,
         role,
-        imageUrl,
       };
+      
+      console.log(req.imageUrl);
+      
+      if (req.imageUrl) {
+        newUser.imageUrl = req.imageUrl; // มาจาก middleware checkFile
+      }
+      
 
       const updatedUser = await User.findByIdAndUpdate(
         { _id: userId },

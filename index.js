@@ -45,6 +45,7 @@ app.use("/api/holidays", holidayRouter);
 // ใช้ middleware ตรวจสอบการเชื่อมต่ออินเทอร์เน็ต
 app.use(checkInternetConnection);
 
+app.use("/uploads", express.static("asset/uploads"));
 
 app.use(
   "/api/asset/uploads/images",
