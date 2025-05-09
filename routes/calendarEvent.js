@@ -94,12 +94,13 @@ router.get("/", verifyToken, async (req, res) => {
     let userEvents;
 
     // ✅ เงื่อนไข: ถ้าเป็น admin ให้ดึง event ทั้งหมด
-    if (userRole === "admin") {
-      userEvents = await CalendarEvent.find({});
-    } else {
-      // ✅ ถ้าเป็น user ทั่วไป ให้ดึงเฉพาะ event ของตัวเอง
-      userEvents = await CalendarEvent.find({ userId: userId });
-    }
+    // if (userRole === "admin") {
+    //   userEvents = await CalendarEvent.find({});
+    // } else {
+    //   // ✅ ถ้าเป็น user ทั่วไป ให้ดึงเฉพาะ event ของตัวเอง
+    //   userEvents = await CalendarEvent.find({ userId: userId });
+    // }
+    userEvents = await CalendarEvent.find({});
 
     // ดึง userId ทั้งหมดจาก userEvents
     const userIds = userEvents.map((event) => event.userId);
