@@ -80,19 +80,18 @@ router.post(
     try {
       const userId = req.userId;
 
-      const { cCompany, cSite, cName, cEmail, projName, contactP, address, tel } = req.body;
+      const { cCompany, cSite,  cEmail, cName, address, tel, tax } = req.body;
 
       const imageUrl = req.imageUrl;
 
       const customer = new Customer({
         cCompany,
         cSite,
-        cName,
         cEmail,
-        projName,
-        contactP,
+        cName,
         address,
         tel,
+        tax,
         imageUrl,
         userId,
       });
@@ -119,19 +118,19 @@ router.put(
     const id = req.params.id;
 
     try {
-      const { cCompany, cSite, cName, cEmail, projName, contactP, address, tel} = req.body;
+      const { cCompany, cSite, cEmail, cName,  address, tel, tax} = req.body;
 
       const imageUrl = req.imageUrl;
 
       const newCustomer = {
         cCompany,
         cSite,
-        cName,
         cEmail,
-        projName,
-        contactP,
+        cName,
+
         address,
         tel,
+        tax,
         imageUrl,
       };
 

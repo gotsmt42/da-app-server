@@ -5,13 +5,12 @@ const customerSchema = new mongoose.Schema(
   {
     cCompany: { type: String, required: true },
     cSite: { type: String, required: true },
-    cName: { type: String, required: true },
-    cEmail: { type: String, required: true },
-    projName: { type: String, required: true },
-    contactP: { type: String },
+    cEmail: { type: String},
+    cName: { type: String},
     address: { type: String },
     tel: String,
-    imageUrl: { type: String, default: "asset/image/userDefault-2.jpg" },
+    tax: String,
+    imageUrl: { type: String, default: "asset/image/userDefault-1.jpg" },
 
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // เพิ่มฟิลด์ userId และระบุ ref เป็น "User"
   },
