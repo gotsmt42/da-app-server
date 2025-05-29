@@ -9,6 +9,8 @@ const eventSchema = new mongoose.Schema(
     title: { type: String, required: true },
     system: { type: String},
     time: { type: String },
+    team: { type: String },
+    
     date: { type: Date, required: true },
     backgroundColor: { type: String, required: true },
     textColor: { type: String, required: true },
