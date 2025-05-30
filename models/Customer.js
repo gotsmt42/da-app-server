@@ -3,7 +3,7 @@ const bcrypt = require("bcryptjs");
 
 const customerSchema = new mongoose.Schema(
   {
-    cCompany: { type: String, required: true },
+    cCompany: { type: String },
     cSite: { type: String, required: true },
     cEmail: { type: String},
     cName: { type: String},
