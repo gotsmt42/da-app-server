@@ -61,7 +61,9 @@ router.post("/", verifyToken, async (req, res) => {
       start,
       end,
       allDay,
-      status
+      status,
+      status_two,
+      status_three
     } = req.body;
     const event = new CalendarEvent({
       company,
@@ -78,6 +80,8 @@ router.post("/", verifyToken, async (req, res) => {
       end,
       allDay,
       status,
+      status_two,
+      status_three,
       userId,
     });
     await event.save();
@@ -155,6 +159,8 @@ router.put("/:id", verifyToken, async (req, res) => {
       end,
       allDay,
       status,
+      status_two,
+      status_three,
       isAutoUpdated
     } = req.body;
 
@@ -176,6 +182,8 @@ router.put("/:id", verifyToken, async (req, res) => {
       end,
       allDay,
       status,
+      status_two,
+      status_three,
       isAutoUpdated
     };
 
