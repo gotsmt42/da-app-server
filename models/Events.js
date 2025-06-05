@@ -4,26 +4,27 @@ const moment = require("moment");
 
 const eventSchema = new mongoose.Schema(
   {
-    company: { type: String},
+    docNo: { type: String },
+    company: { type: String },
     site: { type: String, required: true },
     title: { type: String, required: true },
-    system: { type: String},
+    system: { type: String },
     time: { type: String },
     team: { type: String },
-    
+
     date: { type: Date, required: true },
     backgroundColor: { type: String, required: true },
     textColor: { type: String, required: true },
     fontSize: { type: Number, required: true },
-    start: { type: Date,  }, // เปลี่ยนเป็นรูปแบบ datetime
-    end: { type: Date, },   // เปลี่ยนเป็นรูปแบบ datetime
+    start: { type: Date }, // เปลี่ยนเป็นรูปแบบ datetime
+    end: { type: Date }, // เปลี่ยนเป็นรูปแบบ datetime
     allDay: { type: Boolean, default: true },
     status: { type: String, required: true, default: "กำลังรอยืนยัน" },
     status_two: { type: String },
     status_three: { type: String },
     isAutoUpdated: { type: Boolean },
 
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
   { timestamps: true }
 );

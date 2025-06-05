@@ -48,6 +48,7 @@ router.post("/", verifyToken, async (req, res) => {
     const userId = req.userId;
 
     const {
+      docNo,
       company,
       site,
       title,
@@ -66,6 +67,7 @@ router.post("/", verifyToken, async (req, res) => {
       status_three
     } = req.body;
     const event = new CalendarEvent({
+      docNo,
       company,
       site,
       title,
@@ -140,11 +142,33 @@ router.get("/", verifyToken, async (req, res) => {
   }
 });
 
+router.get("/:id", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const event = await CalendarEvent.findById(id);
+
+    if (!event) {
+      return res.status(404).json({ message: "ไม่พบแผนงานที่ต้องการ" });
+    }
+
+    // ดึงข้อมูล user ที่สร้างแผนงานนี้ (ถ้ามี)
+    const user = await User.findById(event.userId).select("-password"); // ตัด password ออก
+
+    res.status(200).json({ event: { ...event._doc, user } });
+  } catch (error) {
+    console.error("❌ Error fetching event by ID:", error);
+    res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลแผนงาน" });
+  }
+});
+
+
 
 router.put("/:id", verifyToken, async (req, res) => {
   try {
     const id = req.params.id;
     const {
+      docNo,
       company,
       site,
       title,
@@ -164,10 +188,10 @@ router.put("/:id", verifyToken, async (req, res) => {
       isAutoUpdated
     } = req.body;
 
-    console.log(id);
-    console.log(req.body);
+console.log("🚨 docNo:", docNo);
 
     const newEvent = {
+      docNo,
       company,
       site,
       title,
@@ -187,6 +211,8 @@ router.put("/:id", verifyToken, async (req, res) => {
       isAutoUpdated
     };
 
+        console.log("🧾 newEvent:", newEvent);
+
     const updatedEvent = await CalendarEvent.findOneAndUpdate(
       { _id: id },
       newEvent,
@@ -200,6 +226,8 @@ router.put("/:id", verifyToken, async (req, res) => {
     }
 
     res.status(200).json({updatedEvent: updatedEvent}); // ส่งข้อมูลของเหตุการณ์ที่ถูกอัปเดตกลับไป
+
+    
   } catch (err) {
     res.status(500).json(err.message);
   }
