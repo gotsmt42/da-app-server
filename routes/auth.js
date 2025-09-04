@@ -7,10 +7,6 @@ const User = require("../models/User");
 const verifyToken = require("../middleware/auth");
 
 const multer = require("multer");
-// const path = require("path");
-
-// const upload = multer({ dest: "asset/uploads/images/" });
-// const upload = multer({ dest: "/tmp" });
 
 const { cloudinary, storage } = require("../utils/cloudinary");
 const upload = multer({ storage });

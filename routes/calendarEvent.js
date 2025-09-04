@@ -21,8 +21,6 @@ router.post("/linenotify", verifyToken, async (req, res) => {
       const url_line_notification = `${process.env.APP_URL_LINE_NOTIFY}`;
       const footer = `\nข้อความนี้ถูกส่งโดยระบบแจ้งเตือนการอัพเดตแผนงานสำหรับข้อมูลเพิ่มเติมคลิ๊กที่นี่: ${process.env.APP_API_URL}/event\n\nUsername: admin \nPassword: admin`;
 
-
-
       // เพิ่ม footer ในข้อความ
       message += footer;
 
@@ -64,7 +62,7 @@ router.post("/", verifyToken, async (req, res) => {
       allDay,
       status,
       status_two,
-      status_three
+      status_three,
     } = req.body;
     const event = new CalendarEvent({
       docNo,
@@ -162,8 +160,6 @@ router.get("/:id", verifyToken, async (req, res) => {
   }
 });
 
-
-
 router.put("/:id", verifyToken, async (req, res) => {
   try {
     const id = req.params.id;
@@ -185,10 +181,10 @@ router.put("/:id", verifyToken, async (req, res) => {
       status,
       status_two,
       status_three,
-      isAutoUpdated
+      isAutoUpdated,
     } = req.body;
 
-console.log("🚨 docNo:", docNo);
+    console.log("🚨 docNo:", docNo);
 
     const newEvent = {
       docNo,
@@ -208,10 +204,10 @@ console.log("🚨 docNo:", docNo);
       status,
       status_two,
       status_three,
-      isAutoUpdated
+      isAutoUpdated,
     };
 
-        console.log("🧾 newEvent:", newEvent);
+    console.log("🧾 newEvent:", newEvent);
 
     const updatedEvent = await CalendarEvent.findOneAndUpdate(
       { _id: id },
@@ -225,9 +221,7 @@ console.log("🚨 docNo:", docNo);
       return res.status(404).json("Event not found");
     }
 
-    res.status(200).json({updatedEvent: updatedEvent}); // ส่งข้อมูลของเหตุการณ์ที่ถูกอัปเดตกลับไป
-
-    
+    res.status(200).json({ updatedEvent: updatedEvent }); // ส่งข้อมูลของเหตุการณ์ที่ถูกอัปเดตกลับไป
   } catch (err) {
     res.status(500).json(err.message);
   }
