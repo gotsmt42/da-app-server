@@ -4,42 +4,9 @@ const router = express.Router();
 const CalendarEvent = require("../models/Events");
 const User = require("../models/User");
 
-const axios = require("axios");
-
 const verifyToken = require("../middleware/auth");
 
-router.post("/linenotify", verifyToken, async (req, res) => {
-  try {
-    let { description } = req.body;
 
-    let message = "\n📢📢 มีการแจ้งเตือนอัพเดตตารางแผนงานใหม่ 😊\n";
-
-    await sendLineNotification(`\n${message}\nคำอธิบาย: ${description}\n`);
-
-    // ส่งข้อความผ่าน Line Notify
-    async function sendLineNotification(message) {
-      const url_line_notification = `${process.env.APP_URL_LINE_NOTIFY}`;
-      const footer = `\nข้อความนี้ถูกส่งโดยระบบแจ้งเตือนการอัพเดตแผนงานสำหรับข้อมูลเพิ่มเติมคลิ๊กที่นี่: ${process.env.APP_API_URL}/event\n\nUsername: admin \nPassword: admin`;
-
-      // เพิ่ม footer ในข้อความ
-      message += footer;
-
-      // ส่งข้อความผ่าน Line Notify
-      await axios.post(url_line_notification, null, {
-        params: {
-          message: message,
-        },
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Authorization: `Bearer ${process.env.APP_TOKEN_LINE_NOTIFY}`,
-        },
-      });
-    }
-  } catch (err) {
-    console.error("Error fetching user LineNotify:", error);
-    res.status(500).send(err.message);
-  }
-});
 
 router.post("/", verifyToken, async (req, res) => {
   try {
@@ -182,6 +149,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       status_two,
       status_three,
       isAutoUpdated,
+      description,
     } = req.body;
 
     console.log("🚨 docNo:", docNo);
@@ -205,6 +173,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       status_two,
       status_three,
       isAutoUpdated,
+      description
     };
 
     console.log("🧾 newEvent:", newEvent);

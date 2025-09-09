@@ -4,7 +4,6 @@ const multer = require("multer");
 const File = require("../models/File");
 const User = require("../models/User");
 const verifyToken = require("../middleware/auth");
-const bucket = require("../firebaseConfig");
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage }).array("files");
