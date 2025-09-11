@@ -154,6 +154,9 @@ router.put("/:id", verifyToken, async (req, res) => {
 
     console.log("🚨 docNo:", docNo);
 
+    console.log("📨 req.body.description:", req.body.description);
+
+
     const newEvent = {
       docNo,
       company,
