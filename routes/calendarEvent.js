@@ -149,6 +149,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       status_two,
       status_three,
       isAutoUpdated,
+      subject,
       description,
     } = req.body;
 
@@ -176,6 +177,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       status_two,
       status_three,
       isAutoUpdated,
+      subject,
       description
     };
 

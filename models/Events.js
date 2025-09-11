@@ -24,6 +24,7 @@ const eventSchema = new mongoose.Schema(
     status_three: { type: String },
     isAutoUpdated: { type: Boolean },
     
+    subject: { type: String },
     description: { type: String },
   
 
