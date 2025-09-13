@@ -6,8 +6,6 @@ const User = require("../models/User");
 
 const verifyToken = require("../middleware/auth");
 
-
-
 router.post("/", verifyToken, async (req, res) => {
   try {
     const userId = req.userId;
@@ -30,6 +28,9 @@ router.post("/", verifyToken, async (req, res) => {
       status,
       status_two,
       status_three,
+
+      startTime,
+      endTime,
     } = req.body;
     const event = new CalendarEvent({
       docNo,
@@ -49,6 +50,10 @@ router.post("/", verifyToken, async (req, res) => {
       status,
       status_two,
       status_three,
+
+      startTime,
+      endTime,
+
       userId,
     });
     await event.save();
@@ -131,7 +136,6 @@ router.put("/:id", verifyToken, async (req, res) => {
   try {
     const id = req.params.id;
     const {
-
       docNo,
       company,
       site,
@@ -152,15 +156,18 @@ router.put("/:id", verifyToken, async (req, res) => {
       isAutoUpdated,
       subject,
       description,
+
+      startTime,
+      endTime,
     } = req.body;
 
-    console.log("🚨 docNo:", docNo);
+    // console.log("🚨 docNo:", docNo);
 
-    console.log("📨 req.body.description:", req.body.description);
+    // console.log("📨 req.body.description:", req.body.description);
 
+    console.log("🧾 req.body:", req.body);
 
     const newEvent = {
-
       docNo,
       company,
       site,
@@ -180,7 +187,10 @@ router.put("/:id", verifyToken, async (req, res) => {
       status_three,
       isAutoUpdated,
       subject,
-      description
+      description,
+
+      startTime,
+      endTime,
     };
 
     console.log("🧾 newEvent:", newEvent);

@@ -16,7 +16,7 @@ const eventSchema = new mongoose.Schema(
     backgroundColor: { type: String, required: true },
     textColor: { type: String, required: true },
     fontSize: { type: Number, required: true },
-    start: { type: Date }, // เปลี่ยนเป็นรูปแบบ datetime
+    start: { type: Date },  // เปลี่ยนเป็นรูปแบบ datetime
     end: { type: Date }, // เปลี่ยนเป็นรูปแบบ datetime
     allDay: { type: Boolean, default: true },
     status: { type: String, required: true, default: "กำลังรอยืนยัน" },
@@ -26,6 +26,10 @@ const eventSchema = new mongoose.Schema(
     
     subject: { type: String },
     description: { type: String },
+
+    startTime: { type: String },
+    endTime: { type: String },
+
   
 
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
