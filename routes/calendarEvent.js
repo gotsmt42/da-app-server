@@ -8,55 +8,26 @@ const verifyToken = require("../middleware/auth");
 
 router.post("/", verifyToken, async (req, res) => {
   try {
-    const userId = req.userId;
 
-    const {
-      docNo,
-      company,
-      site,
-      title,
-      system,
-      time,
-      team,
-      date,
-      backgroundColor,
-      textColor,
-      fontSize,
-      start,
-      end,
-      allDay,
-      status,
-      status_two,
-      status_three,
+const allowedFields = [
+  "docNo", "company", "site", "title", "system", "time", "team", "date",
+  "backgroundColor", "textColor", "fontSize", "start", "end", "allDay",
+  "status", "status_two", "status_three", "isAutoUpdated", "subject",
+  "description", "startTime", "endTime"
+];
 
-      startTime,
-      endTime,
-    } = req.body;
-    const event = new CalendarEvent({
-      docNo,
-      company,
-      site,
-      title,
-      system,
-      time,
-      team,
-      date,
-      backgroundColor,
-      textColor,
-      fontSize,
-      start,
-      end,
-      allDay,
-      status,
-      status_two,
-      status_three,
+const eventData = {};
+allowedFields.forEach(field => {
+  if (req.body[field] !== undefined) {
+    eventData[field] = req.body[field];
+  }
+});
 
-      startTime,
-      endTime,
+eventData.userId = req.userId;
 
-      userId,
-    });
-    await event.save();
+const event = new CalendarEvent(eventData);
+await event.save();
+
     res.status(201).send(event);
   } catch (error) {
     console.error(error);
@@ -69,7 +40,7 @@ router.get("/", verifyToken, async (req, res) => {
     const userId = req.userId; // ดึง userId จาก Token
     const userRole = req.user.role; // ดึง role ของ User
 
-    let userEvents;
+    // let userEvents;
 
     // ✅ เงื่อนไข: ถ้าเป็น admin ให้ดึง event ทั้งหมด
     // if (userRole === "admin") {
@@ -78,26 +49,47 @@ router.get("/", verifyToken, async (req, res) => {
     //   // ✅ ถ้าเป็น user ทั่วไป ให้ดึงเฉพาะ event ของตัวเอง
     //   userEvents = await CalendarEvent.find({ userId: userId });
     // }
-    userEvents = await CalendarEvent.find({});
+    // userEvents = await CalendarEvent.find({});
 
-    // ดึง userId ทั้งหมดจาก userEvents
-    const userIds = userEvents.map((event) => event.userId);
+    // // ดึง userId ทั้งหมดจาก userEvents
+    // const userIds = userEvents.map((event) => event.userId);
 
-    // ค้นหาข้อมูลผู้ใช้จาก model User โดยใช้ userIds
-    const users = await User.find({ _id: { $in: userIds } });
+    // // ค้นหาข้อมูลผู้ใช้จาก model User โดยใช้ userIds
+    // const users = await User.find({ _id: { $in: userIds } });
 
-    // แปลงค่า userId ใน userEvents เป็น role จากข้อมูลใน users
+    // // แปลงค่า userId ใน userEvents เป็น role จากข้อมูลใน users
+    // const updatedUserEvents = userEvents.map((event) => {
+    //   const user = users.find(
+    //     (user) => user._id.toString() === event.userId.toString()
+    //   );
+    //   if (user) {
+    //     // คัดลอกค่าทั้งหมดของผู้ใช้ยกเว้น _id
+    //     const { _id, ...userDataWithoutId } = user.toObject();
+    //     return { ...event._doc, user: userDataWithoutId }; // เพิ่ม property user ที่มีค่าข้อมูลผู้ใช้ยกเว้น _id
+    //   } else {
+    //     return event; // ถ้าไม่พบ user ให้ใช้ค่าเดิมของ event
+    //   }
+    // });
+
+    const userEvents = await CalendarEvent.find({}).lean();
+
+    const userIds = userEvents.map((event) => event.userId.toString());
+    const uniqueUserIds = [...new Set(userIds)];
+
+    const users = await User.find({ _id: { $in: uniqueUserIds } }).lean();
+
+    const userMap = new Map();
+    users.forEach((user) => {
+      userMap.set(user._id.toString(), user);
+    });
+
     const updatedUserEvents = userEvents.map((event) => {
-      const user = users.find(
-        (user) => user._id.toString() === event.userId.toString()
-      );
+      const user = userMap.get(event.userId.toString());
       if (user) {
-        // คัดลอกค่าทั้งหมดของผู้ใช้ยกเว้น _id
-        const { _id, ...userDataWithoutId } = user.toObject();
-        return { ...event._doc, user: userDataWithoutId }; // เพิ่ม property user ที่มีค่าข้อมูลผู้ใช้ยกเว้น _id
-      } else {
-        return event; // ถ้าไม่พบ user ให้ใช้ค่าเดิมของ event
+        const { _id, password, ...userDataWithoutId } = user;
+        return { ...event, user: userDataWithoutId };
       }
+      return event;
     });
 
     // ถ้าไม่มีข้อมูล

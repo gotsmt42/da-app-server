@@ -159,7 +159,7 @@ router.post("/login", async (req, res) => {
       role: user.role,
     };
 
-    const token = jwt.sign(payload, process.env.APP_SECRET, { expiresIn: "7 days" });
+    const token = jwt.sign(payload, process.env.APP_SECRET, { expiresIn: "30d" });
 
     res.status(200).json({ token, payload, message: "เข้าสู่ระบบสำเร็จ!" });
   } catch (err) {
@@ -231,16 +231,24 @@ router.delete("/user/:id", verifyToken, async (req, res) => {
 });
 
 
-// ใช้ Middleware ใน Endpoint สำหรับ Logout
+
 router.get("/logout", (req, res) => {
-  // ทำการลบหรือเคลียร์ Token หลังจากตรวจสอบแล้วว่าถูกต้อง
-
-  localStorage.removeItem("token");
-
-  // โดยใน req.user จะมีข้อมูลของผู้ใช้จาก Token ที่ถูก verify แล้ว
-  // ดำเนินการตรวจสอบหรือยกเลิกการใช้งาน Token จากฝั่ง server-side ตามที่ต้องการ
-
-  // เมื่อทำการ logout หรือยกเลิกการใช้งาน Token เสร็จสิ้น
+  // ✅ ไม่ต้องลบ token ที่ฝั่ง server ถ้าใช้ JWT แบบ stateless
   res.status(200).json({ message: "Logged out successfully" });
 });
+
+
+
+// ใช้ Middleware ใน Endpoint สำหรับ Logout
+// router.get("/logout", (req, res) => {
+//   // ทำการลบหรือเคลียร์ Token หลังจากตรวจสอบแล้วว่าถูกต้อง
+
+//   localStorage.removeItem("token");
+
+//   // โดยใน req.user จะมีข้อมูลของผู้ใช้จาก Token ที่ถูก verify แล้ว
+//   // ดำเนินการตรวจสอบหรือยกเลิกการใช้งาน Token จากฝั่ง server-side ตามที่ต้องการ
+
+//   // เมื่อทำการ logout หรือยกเลิกการใช้งาน Token เสร็จสิ้น
+//   res.status(200).json({ message: "Logged out successfully" });
+// });
 module.exports = router;
