@@ -6,27 +6,104 @@ const User = require("../models/User");
 
 const verifyToken = require("../middleware/auth");
 
-router.post("/", verifyToken, async (req, res) => {
+const multer = require("multer");
+const cloudinary = require("../config/cloudinaryConfig");
+
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
+
+const streamifier = require("streamifier");
+
+router.put("/upload/:id", upload.single("file"), async (req, res) => {
   try {
+    const capitalize = (str = "") => str.charAt(0).toUpperCase() + str.slice(1);
 
-const allowedFields = [
-  "docNo", "company", "site", "title", "system", "time", "team", "date",
-  "backgroundColor", "textColor", "fontSize", "start", "end", "allDay",
-  "status", "status_two", "status_three", "isAutoUpdated", "subject",
-  "description", "startTime", "endTime"
-];
+    const file = req.file;
+    const eventId = req.params.id;
+    const type = req.body.type;
+    const fileType = file.mimetype; // เช่น "application/pdf", "image/jpeg"
 
-const eventData = {};
-allowedFields.forEach(field => {
-  if (req.body[field] !== undefined) {
-    eventData[field] = req.body[field];
+    // ✅ แก้ชื่อไฟล์เพี้ยนตรงนี้
+    const originalName = Buffer.from(file.originalname, "latin1").toString(
+      "utf8"
+    );
+
+  const uploadToCloudinary = () =>
+  new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        resource_type: "raw", // ✅ เปลี่ยนจาก "auto" เป็น "raw"
+        folder: `events/${eventId}`,
+      },
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      }
+    );
+    streamifier.createReadStream(file.buffer).pipe(stream);
+  });
+
+    const result = await uploadToCloudinary();
+
+    await CalendarEvent.findByIdAndUpdate(eventId, {
+      [`${type}FileName`]: originalName,
+      [`${type}FileUrl`]: result.secure_url,
+      [`${type}FileType`]: fileType, // ✅ เพิ่มตรงนี้
+      [`documentSent${capitalize(type)}`]: true, // ✅ sync สถานะใน DB
+      
+    });
+
+    res.status(200).json({
+      fileName: originalName,
+      fileUrl: result.secure_url,
+      fileType: fileType, // ✅ ส่งกลับไปด้วย
+    });
+  } catch (err) {
+    console.error("Upload error:", err);
+    res.status(500).send("Upload failed");
   }
 });
 
-eventData.userId = req.userId;
+router.post("/", verifyToken, async (req, res) => {
+  try {
+    const allowedFields = [
+      "docNo",
+      "company",
+      "site",
+      "title",
+      "system",
+      "time",
+      "team",
+      "date",
+      "backgroundColor",
+      "textColor",
+      "fontSize",
+      "start",
+      "end",
+      "allDay",
+      "status",
+      "status_two",
+      "status_three",
+      "isAutoUpdated",
+      "subject",
+      "description",
+      "startTime",
+      "endTime",
+      "documentSent",
+      "documentFile",
+    ];
 
-const event = new CalendarEvent(eventData);
-await event.save();
+    const eventData = {};
+    allowedFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        eventData[field] = req.body[field];
+      }
+    });
+
+    eventData.userId = req.userId;
+
+    const event = new CalendarEvent(eventData);
+    await event.save();
 
     res.status(201).send(event);
   } catch (error) {
@@ -148,16 +225,13 @@ router.put("/:id", verifyToken, async (req, res) => {
       isAutoUpdated,
       subject,
       description,
-
       startTime,
       endTime,
+      documentSentQuotation,
+      documentSentReport,
+      documentSent,
+      documentFile, // ✅ เพิ่มตรงนี้
     } = req.body;
-
-    // console.log("🚨 docNo:", docNo);
-
-    // console.log("📨 req.body.description:", req.body.description);
-
-    console.log("🧾 req.body:", req.body);
 
     const newEvent = {
       docNo,
@@ -180,9 +254,12 @@ router.put("/:id", verifyToken, async (req, res) => {
       isAutoUpdated,
       subject,
       description,
-
       startTime,
       endTime,
+      documentSentQuotation,
+      documentSentReport,
+      documentSent,
+      documentFile, // ✅ เพิ่มตรงนี้
     };
 
     console.log("🧾 newEvent:", newEvent);
