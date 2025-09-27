@@ -45,6 +45,12 @@ const eventSchema = new mongoose.Schema(
     reportFileType: { type: String },
 
 
+    statusFileName: { type: String },
+statusFileUrl: { type: String },
+statusFileType: { type: String },
+
+
+
     documentFile: { type: String }, // ✅ สำหรับชื่อไฟล์หลักฐาน
 
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
