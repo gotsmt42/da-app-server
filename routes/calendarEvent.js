@@ -21,19 +21,48 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
     const file = req.file;
     const eventId = req.params.id;
     const type = req.body.type;
-    const fileType = file.mimetype; // เช่น "application/pdf", "image/jpeg"
+    const fileType = file.mimetype;
 
-    // ✅ แก้ชื่อไฟล์เพี้ยนตรงนี้
+    // ✅ แปลงชื่อไฟล์ให้เป็น UTF-8 และ sanitize
     const originalName = Buffer.from(file.originalname, "latin1").toString(
       "utf8"
     );
+    const sanitizedName = originalName.replace(/[^\w\-\.]/g, "_"); // คงนามสกุลไว้
+    // ✅ ตรวจสอบประเภทไฟล์ที่รองรับ (สามารถปรับเพิ่มได้ตามต้องการ)
+    const allowedTypes = [
+      "application/pdf",
+      "image/jpeg",
+      "image/png",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "text/plain",
+      "application/zip",
+      "application/x-rar-compressed",
+    ];
 
-  const uploadToCloudinary = () =>
+    if (!allowedTypes.includes(fileType)) {
+      return res.status(400).json({ error: "Unsupported file type" });
+    }
+const isOfficeFile =
+  fileType === "application/msword" ||
+  fileType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+  fileType === "application/vnd.ms-excel" ||
+  fileType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+const isPdf = fileType === "application/pdf";
+
+const uploadToCloudinary = () =>
   new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
-        resource_type: "raw", // ✅ เปลี่ยนจาก "auto" เป็น "raw"
+        resource_type: "raw",
         folder: `events/${eventId}`,
+        public_id: isOfficeFile ? sanitizedName : undefined, // ✅ ใช้ชื่อไฟล์สำหรับ Office เท่านั้น
+        use_filename: true,
+        unique_filename: false, // ✅ PDF ไม่สุ่มชื่อ แต่ไม่ใช้ public_id
+        overwrite: true
       },
       (error, result) => {
         if (error) reject(error);
@@ -43,24 +72,49 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
     streamifier.createReadStream(file.buffer).pipe(stream);
   });
 
+
+
     const result = await uploadToCloudinary();
 
+    // ✅ อัปเดตข้อมูลใน MongoDB
     await CalendarEvent.findByIdAndUpdate(eventId, {
       [`${type}FileName`]: originalName,
       [`${type}FileUrl`]: result.secure_url,
-      [`${type}FileType`]: fileType, // ✅ เพิ่มตรงนี้
-      [`documentSent${capitalize(type)}`]: true, // ✅ sync สถานะใน DB
-      
+      [`${type}FileType`]: fileType,
+      [`documentSent${capitalize(type)}`]: true,
     });
 
     res.status(200).json({
       fileName: originalName,
       fileUrl: result.secure_url,
-      fileType: fileType, // ✅ ส่งกลับไปด้วย
+      fileType: fileType,
     });
   } catch (err) {
     console.error("Upload error:", err);
     res.status(500).send("Upload failed");
+  }
+});
+
+
+router.put("/delete-file/:id", async (req, res) => {
+  try {
+    const capitalize = (str = "") => str.charAt(0).toUpperCase() + str.slice(1);
+
+    const { id } = req.params;
+    const { type } = req.body;
+
+    const update = {
+      [`${type}FileName`]: null,
+      [`${type}FileUrl`]: null,
+      [`${type}FileType`]: null,
+      [`documentSent${capitalize(type)}`]: false,
+    };
+
+    await CalendarEvent.findByIdAndUpdate(id, update);
+    res.status(200).send("ไฟล์ถูกลบแล้ว");
+  } catch (err) {
+    console.error("ลบไฟล์ไม่สำเร็จ:", err);
+    res.status(500).send("เกิดข้อผิดพลาดในการลบไฟล์");
   }
 });
 
