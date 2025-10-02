@@ -37,19 +37,38 @@ const eventSchema = new mongoose.Schema(
     quotationFileUrl: { type: String },
     quotationFileType: { type: String },
 
-
-
-
     reportFileName: { type: String },
     reportFileUrl: { type: String },
     reportFileType: { type: String },
 
-
     statusFileName: { type: String },
-statusFileUrl: { type: String },
-statusFileType: { type: String },
+    statusFileUrl: { type: String },
+    statusFileType: { type: String },
 
+    trackStatus1: { type: Boolean, default: false },
+    trackStatus1FileName: String,
+    trackStatus1FileUrl: String,
+    trackStatus1FileType: String,
 
+    trackStatus2: { type: Boolean, default: false },
+    trackStatus2FileName: String,
+    trackStatus2FileUrl: String,
+    trackStatus2FileType: String,
+
+    trackStatus3: { type: Boolean, default: false },
+    trackStatus3FileName: String,
+    trackStatus3FileUrl: String,
+    trackStatus3FileType: String,
+
+    trackStatus4: { type: Boolean, default: false },
+    trackStatus4FileName: String,
+    trackStatus4FileUrl: String,
+    trackStatus4FileType: String,
+
+    trackStatusConfirm: { type: Boolean, default: false },
+    trackStatusConfirmFileName: String,
+    trackStatusConfirmFileUrl: String,
+    trackStatusConfirmFileType: String,
 
     documentFile: { type: String }, // ✅ สำหรับชื่อไฟล์หลักฐาน
 

@@ -45,44 +45,59 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
     if (!allowedTypes.includes(fileType)) {
       return res.status(400).json({ error: "Unsupported file type" });
     }
-const isOfficeFile =
-  fileType === "application/msword" ||
-  fileType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-  fileType === "application/vnd.ms-excel" ||
-  fileType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    const isOfficeFile =
+      fileType === "application/msword" ||
+      fileType ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      fileType === "application/vnd.ms-excel" ||
+      fileType ===
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
-const isPdf = fileType === "application/pdf";
+    const isPdf = fileType === "application/pdf";
 
-const uploadToCloudinary = () =>
-  new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        resource_type: "raw",
-        folder: `events/${eventId}`,
-        public_id: isOfficeFile ? sanitizedName : undefined, // ✅ ใช้ชื่อไฟล์สำหรับ Office เท่านั้น
-        use_filename: true,
-        unique_filename: false, // ✅ PDF ไม่สุ่มชื่อ แต่ไม่ใช้ public_id
-        overwrite: true
-      },
-      (error, result) => {
-        if (error) reject(error);
-        else resolve(result);
-      }
-    );
-    streamifier.createReadStream(file.buffer).pipe(stream);
-  });
-
-
+    const uploadToCloudinary = () =>
+      new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            resource_type: "raw",
+            folder: `events/${eventId}`,
+            public_id: isOfficeFile ? sanitizedName : undefined, // ✅ ใช้ชื่อไฟล์สำหรับ Office เท่านั้น
+            use_filename: true,
+            unique_filename: false, // ✅ PDF ไม่สุ่มชื่อ แต่ไม่ใช้ public_id
+            overwrite: true,
+          },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          }
+        );
+        streamifier.createReadStream(file.buffer).pipe(stream);
+      });
 
     const result = await uploadToCloudinary();
 
     // ✅ อัปเดตข้อมูลใน MongoDB
-    await CalendarEvent.findByIdAndUpdate(eventId, {
+    // await CalendarEvent.findByIdAndUpdate(eventId, {
+    //   [`${type}FileName`]: originalName,
+    //   [`${type}FileUrl`]: result.secure_url,
+    //   [`${type}FileType`]: fileType,
+    //   [`documentSent${capitalize(type)}`]: true,
+    // });
+
+    await CalendarEvent.updateOne(
+  { _id: eventId },
+  {
+    $set: {
       [`${type}FileName`]: originalName,
       [`${type}FileUrl`]: result.secure_url,
       [`${type}FileType`]: fileType,
       [`documentSent${capitalize(type)}`]: true,
-    });
+    },
+  }
+);
+
+
+
 
     res.status(200).json({
       fileName: originalName,
@@ -94,6 +109,7 @@ const uploadToCloudinary = () =>
     res.status(500).send("Upload failed");
   }
 });
+
 
 
 router.put("/delete-file/:id", async (req, res) => {
