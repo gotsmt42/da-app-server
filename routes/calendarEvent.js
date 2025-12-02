@@ -85,19 +85,16 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
     // });
 
     await CalendarEvent.updateOne(
-  { _id: eventId },
-  {
-    $set: {
-      [`${type}FileName`]: originalName,
-      [`${type}FileUrl`]: result.secure_url,
-      [`${type}FileType`]: fileType,
-      [`documentSent${capitalize(type)}`]: true,
-    },
-  }
-);
-
-
-
+      { _id: eventId },
+      {
+        $set: {
+          [`${type}FileName`]: originalName,
+          [`${type}FileUrl`]: result.secure_url,
+          [`${type}FileType`]: fileType,
+          [`documentSent${capitalize(type)}`]: true,
+        },
+      }
+    );
 
     res.status(200).json({
       fileName: originalName,
@@ -109,8 +106,6 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
     res.status(500).send("Upload failed");
   }
 });
-
-
 
 router.put("/delete-file/:id", async (req, res) => {
   try {
@@ -274,6 +269,19 @@ router.get("/:id", verifyToken, async (req, res) => {
 router.put("/:id", verifyToken, async (req, res) => {
   try {
     const id = req.params.id;
+    const userId = req.userId;
+
+        const existingEvent = await CalendarEvent.findById(id);
+    if (!existingEvent) {
+      return res.status(404).json({ message: "Event not found" });
+    }
+
+    // ✅ เงื่อนไข: admin แก้ไขได้ทุก event, user แก้ไขได้เฉพาะของตัวเอง
+    if (req.user.role !== "admin" && existingEvent.userId.toString() !== userId.toString()) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไข Event นี้" });
+    }
+
+    
     const {
       docNo,
       company,
@@ -330,17 +338,18 @@ router.put("/:id", verifyToken, async (req, res) => {
       documentSentReport,
       documentSent,
       documentFile, // ✅ เพิ่มตรงนี้
+
+      userId: existingEvent.userId, // ❌ ไม่เปลี่ยนเจ้าของเดิม
+      lastModifiedBy: req.userId    // ✅ บันทึกคนที่แก้ไขล่าสุด
     };
 
     console.log("🧾 newEvent:", newEvent);
+    const query =
+      req.user.role === "admin" ? { _id: id } : { _id: id, userId: req.userId };
 
-    const updatedEvent = await CalendarEvent.findOneAndUpdate(
-      { _id: id },
-      newEvent,
-      {
-        new: true, // เพิ่มพารามิเตอร์นี้เพื่อให้ MongoDB ส่งข้อมูลของเหตุการณ์ที่ถูกอัปเดตกลับมา
-      }
-    ).exec();
+    const updatedEvent = await CalendarEvent.findOneAndUpdate(query, newEvent, {
+      new: true,
+    }).exec();
 
     if (!updatedEvent) {
       return res.status(404).json("Event not found");
