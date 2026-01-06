@@ -72,6 +72,8 @@ const eventSchema = new mongoose.Schema(
 
     documentFile: { type: String }, // ✅ สำหรับชื่อไฟล์หลักฐาน
 
+    resPerson: { type: String }, // ✅ สำหรับชื่อไฟล์หลักฐาน
+
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     lastModifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },

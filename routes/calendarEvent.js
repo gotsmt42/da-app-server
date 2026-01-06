@@ -177,6 +177,50 @@ router.post("/", verifyToken, async (req, res) => {
   }
 });
 
+router.get("/event-op", verifyToken, async (req, res) => {
+  try {
+    const userId = req.userId; // ดึง userId จาก Token
+    const userRole = req.user.role; // ดึง role ของ User
+
+    let userEvents;
+
+    if (userRole === "admin") {
+      // admin เห็นทั้งหมด
+      userEvents = await CalendarEvent.find({});
+    } else {
+      // user เห็นเฉพาะของตัวเอง
+      userEvents = await CalendarEvent.find({ resPerson: userId });
+    }
+
+    // ดึง userId ทั้งหมดจาก userEvents
+    const userIds = userEvents.map((event) => event.userId);
+
+    const users = await User.find({ _id: { $in: userIds } });
+
+    const updatedUserEvents = userEvents.map((event) => {
+      const user = users.find(
+        (user) => user._id.toString() === event.userId.toString()
+      );
+      if (user) {
+        const { _id, ...userDataWithoutId } = user.toObject();
+        return { ...event._doc, user: userDataWithoutId };
+      } else {
+        return event;
+      }
+    });
+
+    if (!userEvents.length) {
+      return res.status(404).json({ message: "ไม่พบข้อมูลปฏิทิน" });
+    }
+
+    res.json({ userEvents: updatedUserEvents });
+  } catch (err) {
+    console.error("❌ Error fetching calendar events:", err);
+    res.status(500).send("เกิดข้อผิดพลาดในการดึงข้อมูลปฏิทิน");
+  }
+});
+
+
 router.get("/", verifyToken, async (req, res) => {
   try {
     const userId = req.userId; // ดึง userId จาก Token
@@ -271,17 +315,19 @@ router.put("/:id", verifyToken, async (req, res) => {
     const id = req.params.id;
     const userId = req.userId;
 
-        const existingEvent = await CalendarEvent.findById(id);
+    const existingEvent = await CalendarEvent.findById(id);
     if (!existingEvent) {
       return res.status(404).json({ message: "Event not found" });
     }
 
     // ✅ เงื่อนไข: admin แก้ไขได้ทุก event, user แก้ไขได้เฉพาะของตัวเอง
-    if (req.user.role !== "admin" && existingEvent.userId.toString() !== userId.toString()) {
+    if (
+      req.user.role !== "admin" &&
+      existingEvent.userId.toString() !== userId.toString()
+    ) {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไข Event นี้" });
     }
 
-    
     const {
       docNo,
       company,
@@ -309,6 +355,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       documentSentReport,
       documentSent,
       documentFile, // ✅ เพิ่มตรงนี้
+      resPerson, // ✅ เพิ่มตรงนี้
     } = req.body;
 
     const newEvent = {
@@ -338,9 +385,10 @@ router.put("/:id", verifyToken, async (req, res) => {
       documentSentReport,
       documentSent,
       documentFile, // ✅ เพิ่มตรงนี้
+      resPerson, // ✅ เพิ่มตรงนี้
 
       userId: existingEvent.userId, // ❌ ไม่เปลี่ยนเจ้าของเดิม
-      lastModifiedBy: req.userId    // ✅ บันทึกคนที่แก้ไขล่าสุด
+      lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด
     };
 
     console.log("🧾 newEvent:", newEvent);
