@@ -2,21 +2,29 @@ const express = require("express");
 const axios = require("axios");
 const router = express.Router();
 
+const API_URL = "https://api.iapp.co.th/v3/store/data/thai-holiday";
+const API_KEY = process.env.THAI_HOLIDAY_API_KEY;
 
-const API_URL = "https://apigw1.bot.or.th/bot/public/financial-institutions-holidays/";
-const API_KEY = "8e68e314-5a3a-45ec-a248-d243ec0bd097";
+router.get("/", async (req, res, next) => {
+  try {
+    const year = req.query.year || new Date().getFullYear();
 
-router.get("/", verifyToken, async (req, res, next) => {
-    try {
-    //   const year = req.query.year || "2024";
-      const response = await axios.get(API_URL, {
-        headers: { "X-IBM-Client-Id": API_KEY },
-        // params: { year },
-      });
-      res.json(response.data.result?.data || []);
-    } catch (error) {
-      next(error);  // ส่งต่อ error ไปยัง error handler
-    }
-  });
-  
+    const response = await axios.get(API_URL, {
+      headers: { apikey: API_KEY }, // ✅ ใช้ header แบบนี้ตามภาพ
+      params: { holiday_type: "public", year }, // ✅ holiday_type ต้องใส่
+    });
+
+
+    res.json(response.data.data || response.data || []);
+  } catch (error) {
+    console.error("❌ Error fetching Thai holidays:", error.response?.status, error.response?.data || error.message);
+
+    const fallbackHolidays = [
+      { date: `${new Date().getFullYear()}-01-01`, name: "วันปีใหม่" },
+      { date: `${new Date().getFullYear()}-04-13`, name: "วันสงกรานต์" },
+    ];
+    res.json(fallbackHolidays);
+  }
+});
+
 module.exports = router;
