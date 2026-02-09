@@ -4,18 +4,19 @@ const router = express.Router();
 
 const API_URL = "https://api.iapp.co.th/v3/store/data/thai-holiday";
 const API_KEY = process.env.THAI_HOLIDAY_API_KEY;
-
 router.get("/", async (req, res, next) => {
   try {
     const year = req.query.year || new Date().getFullYear();
 
     const response = await axios.get(API_URL, {
-      headers: { apikey: API_KEY }, // ✅ ใช้ header แบบนี้ตามภาพ
-      params: { holiday_type: "public", year }, // ✅ holiday_type ต้องใส่
+      headers: { apikey: API_KEY },
+      params: { holiday_type: "public", year },
     });
 
+    // ✅ ดึง holidays ออกมาให้ถูกต้อง
+    const holidays = response.data?.holidays || [];
 
-    res.json(response.data.data || response.data || []);
+    res.json(holidays);
   } catch (error) {
     console.error("❌ Error fetching Thai holidays:", error.response?.status, error.response?.data || error.message);
 
@@ -26,5 +27,6 @@ router.get("/", async (req, res, next) => {
     res.json(fallbackHolidays);
   }
 });
+
 
 module.exports = router;
