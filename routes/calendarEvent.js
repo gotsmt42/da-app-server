@@ -396,7 +396,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       req.user.role === "admin" ? { _id: id } : { _id: id, userId: req.userId };
 
     const updatedEvent = await CalendarEvent.findOneAndUpdate(query, newEvent, {
-      new: true,np
+      new: true,
     }).exec();
 
     if (!updatedEvent) {
