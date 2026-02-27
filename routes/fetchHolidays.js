@@ -1,32 +1,16 @@
 const express = require("express");
-const axios = require("axios");
 const router = express.Router();
+const holidaysData = require("../data/thai-holidays-2026-2028.json");
 
-const API_URL = "https://api.iapp.co.th/v3/store/data/thai-holiday";
-const API_KEY = process.env.THAI_HOLIDAY_API_KEY;
-router.get("/", async (req, res, next) => {
-  try {
-    const year = req.query.year || new Date().getFullYear();
+router.get("/", (req, res) => {
+  const year = req.query.year || new Date().getFullYear().toString();
 
-    const response = await axios.get(API_URL, {
-      headers: { apikey: API_KEY },
-      params: { holiday_type: "public", year },
-    });
+  const holidays = holidaysData[year] || [];
 
-    // ✅ ดึง holidays ออกมาให้ถูกต้อง
-    const holidays = response.data?.holidays || [];
+  console.log(`Holidays for ${year}:`, holidays);
 
-    res.json(holidays);
-  } catch (error) {
-    console.error("❌ Error fetching Thai holidays:", error.response?.status, error.response?.data || error.message);
-
-    const fallbackHolidays = [
-      { date: `${new Date().getFullYear()}-01-01`, name: "วันปีใหม่" },
-      { date: `${new Date().getFullYear()}-04-13`, name: "วันสงกรานต์" },
-    ];
-    res.json(fallbackHolidays);
-  }
+  res.json(holidays);
 });
 
-
 module.exports = router;
+
