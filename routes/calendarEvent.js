@@ -411,9 +411,24 @@ router.put("/:id", verifyToken, async (req, res) => {
 
 router.delete("/:id", verifyToken, async (req, res) => {
   try {
-    const id = req.params.id;
+  const id = req.params.id;
+    const userId = req.userId;
 
-    console.log(id);
+    const existingEvent = await CalendarEvent.findById(id);
+    if (!existingEvent) {
+      return res.status(404).json({ message: "Event not found" });
+    }
+
+    // ✅ เงื่อนไข: admin แก้ไขได้ทุก event, user แก้ไขได้เฉพาะของตัวเอง
+    if (
+      req.user.role !== "admin" &&
+      existingEvent.userId.toString() !== userId.toString()
+    ) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์ลบ Event นี้" });
+    }
+
+
+    
     // Delete file from database
     await CalendarEvent.findByIdAndDelete(id);
 

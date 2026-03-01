@@ -7,7 +7,7 @@ router.get("/", (req, res) => {
 
   const holidays = holidaysData[year] || [];
 
-  console.log(`Holidays for ${year}:`, holidays);
+  // console.log(`Holidays for ${year}:`, holidays);
 
   res.json(holidays);
 });
