@@ -51,6 +51,9 @@ router.post("/validate-password", verifyToken, async (req, res) => {
 
 router.get("/alluser", verifyToken, async (req, res) => {
   try {
+
+
+    
     const token = req.token;
 
     const allUser = await User.find({}).exec();

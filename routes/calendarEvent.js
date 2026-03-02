@@ -388,7 +388,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       resPerson, // ✅ เพิ่มตรงนี้
 
       userId: existingEvent.userId, // ❌ ไม่เปลี่ยนเจ้าของเดิม
-      lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด
+      // lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด
     };
 
     console.log("🧾 newEvent:", newEvent);
