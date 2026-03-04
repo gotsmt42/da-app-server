@@ -20,40 +20,41 @@ router.post("/validate-password", verifyToken, async (req, res) => {
 
     // ตรวจสอบว่ามีการส่ง password มาหรือไม่
     if (!password || password.trim() === "") {
-      return res.status(400).json({ valid: false, message: "กรุณากรอกรหัสผ่าน" });
+      return res
+        .status(400)
+        .json({ valid: false, message: "กรุณากรอกรหัสผ่าน" });
     }
 
     // ดึงข้อมูลผู้ใช้จาก userId
     const user = await User.findById(userId).select("+password").exec();
 
     if (!user) {
-      return res.status(401).json({ valid: false, message: "ข้อมูลไม่ถูกต้อง" });
+      return res
+        .status(401)
+        .json({ valid: false, message: "ข้อมูลไม่ถูกต้อง" });
     }
 
     // เปรียบเทียบรหัสผ่าน
     const isMatch = await bcrypt.compare(password.trim(), user.password);
 
     if (!isMatch) {
-      return res.status(401).json({ valid: false, message: "ข้อมูลไม่ถูกต้อง" });
+      return res
+        .status(401)
+        .json({ valid: false, message: "ข้อมูลไม่ถูกต้อง" });
     }
 
     // หากรหัสผ่านถูกต้อง
     res.json({ valid: true, message: "ยืนยันรหัสผ่านสำเร็จ" });
-
   } catch (error) {
     console.error("Error validating password:", error);
-    res.status(500).json({ valid: false, message: "เกิดข้อผิดพลาดในการตรวจสอบรหัสผ่าน" });
+    res
+      .status(500)
+      .json({ valid: false, message: "เกิดข้อผิดพลาดในการตรวจสอบรหัสผ่าน" });
   }
 });
 
-
-
-
 router.get("/alluser", verifyToken, async (req, res) => {
   try {
-
-
-    
     const token = req.token;
 
     const allUser = await User.find({}).exec();
@@ -76,11 +77,10 @@ router.get("/user", verifyToken, async (req, res) => {
     const userId = req.userId;
     const token = req.token;
 
-    const user = await User .findOne({ _id: userId }).exec();
+    const user = await User.findOne({ _id: userId }).exec();
 
     if (user) {
       res.json({ user: user, token: token });
-
     } else {
       res.json({
         err: "Username หรือ Password ไม่ถูกต้องกรุณาลองใหม่อีกครั้ง",
@@ -100,7 +100,8 @@ const bcrypt = require("bcryptjs");
 
 router.post("/signup", async (req, res) => {
   try {
-    const { username, password, email, fname, lname, tel, role, rank} = req.body;
+    const { username, password, email, fname, lname, tel, role, rank } =
+      req.body;
 
     console.log("🟢 รหัสผ่านที่ได้รับก่อนเข้ารหัส:", password);
 
@@ -116,14 +117,13 @@ router.post("/signup", async (req, res) => {
     });
 
     await user.save();
-    
+
     res.status(201).json({ message: "สมัครสมาชิกสำเร็จ!" });
   } catch (err) {
     console.log(err.message);
     res.status(500).json({ err: "เกิดข้อผิดพลาดในระบบ กรุณาลองใหม่อีกครั้ง" });
   }
 });
-
 
 // Route สำหรับล็อกอิน
 router.post("/login", async (req, res) => {
@@ -160,9 +160,12 @@ router.post("/login", async (req, res) => {
       username: user.username,
       rank: user.rank,
       role: user.role,
+      imageUrl: user.imageUrl, // ✅ เพิ่มตรงนี้
     };
 
-    const token = jwt.sign(payload, process.env.APP_SECRET, { expiresIn: "30d" });
+    const token = jwt.sign(payload, process.env.APP_SECRET, {
+      expiresIn: "30d",
+    });
 
     res.status(200).json({ token, payload, message: "เข้าสู่ระบบสำเร็จ!" });
   } catch (err) {
@@ -170,8 +173,6 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ err: "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง" });
   }
 });
-
-
 
 // Update route
 router.put(
@@ -183,6 +184,9 @@ router.put(
     try {
       const userId = req.params.id;
       const { fname, lname, tel, role } = req.body;
+
+      console.log(req.body);
+
       // const imageUrl = req.imageUrl;
 
       const newUser = {
@@ -191,19 +195,18 @@ router.put(
         tel,
         role,
       };
-      
-      
+
       if (req.file && req.file.path) {
         newUser.imageUrl = req.file.path;
+        console.log("📷 Uploaded to:", req.file.path);
+      } else {
+        console.log("⚠️ ไม่มีไฟล์ใหม่ถูกอัปโหลด");
       }
-      console.log("📷 Uploaded to:", req.file.path);
-      
-      
 
       const updatedUser = await User.findByIdAndUpdate(
         { _id: userId },
         newUser,
-        { new: true }
+        { new: true },
       ).exec();
 
       if (!updatedUser) {
@@ -214,7 +217,7 @@ router.put(
     } catch (err) {
       res.status(500).send(err.message);
     }
-  }
+  },
 );
 
 router.delete("/user/:id", verifyToken, async (req, res) => {
@@ -233,14 +236,10 @@ router.delete("/user/:id", verifyToken, async (req, res) => {
   }
 });
 
-
-
 router.get("/logout", (req, res) => {
   // ✅ ไม่ต้องลบ token ที่ฝั่ง server ถ้าใช้ JWT แบบ stateless
   res.status(200).json({ message: "Logged out successfully" });
 });
-
-
 
 // ใช้ Middleware ใน Endpoint สำหรับ Logout
 // router.get("/logout", (req, res) => {
