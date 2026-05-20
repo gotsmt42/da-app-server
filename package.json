@@ -12,6 +12,7 @@
   "license": "ISC",
   "dependencies": {
     "@vercel/speed-insights": "^1.0.10",
+    "archiver": "^8.0.0",
     "axios": "^1.6.8",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^3.0.2",
@@ -36,5 +37,6 @@
     "path": "^0.12.7",
     "streamifier": "^0.1.1",
     "uuid": "^9.0.1"
+    
   }
 }

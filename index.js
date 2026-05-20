@@ -6,6 +6,7 @@ const compression = require("compression");
 const helmet = require("helmet");
 const path = require("path");
 
+const workOrderRoutes = require("./routes/workOrderRoutes");
 const authRouter = require("./routes/auth");
 const customerRouter = require("./routes/customer");
 const productRouter = require("./routes/product");
@@ -14,6 +15,10 @@ const fileRouter = require("./routes/file");
 const holidayRouter = require("./routes/fetchHolidays");
 const calendarEventRouter = require("./routes/calendarEvent");
 const checkInternetConnection = require("./middleware/checkInternetConnection");
+
+
+
+
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -31,6 +36,23 @@ app.use(compression());
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+
+
+
+
+app.use("/api/workorder", workOrderRoutes);
+
+app.use(
+  "/api/workorder/images/before",
+  express.static(path.join(__dirname, "asset/uploads/workorders/before"))
+);
+
+app.use(
+  "/api/workorder/images/after",
+  express.static(path.join(__dirname, "asset/uploads/workorders/after"))
+);
+
 
 app.use("/api/auth", authRouter);
 app.use("/api/customer", customerRouter);

@@ -165,7 +165,7 @@ router.post("/", verifyToken, async (req, res) => {
       }
     });
 
-    eventData.userId = req.userId;
+eventData.userId = req.userId || req.body.userId;
 
     const event = new CalendarEvent(eventData);
     await event.save();
