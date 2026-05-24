@@ -7,6 +7,8 @@ const File = require("../models/File");
 const User = require("../models/User");
 const verifyToken = require("../middleware/auth");
 
+const Category = require("../models/Category");
+
 let archiver;
 (async () => {
   archiver = (await import("archiver")).default;
@@ -32,7 +34,6 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // Upload files
-// Upload files
 router.post("/", verifyToken, (req, res) => {
   upload(req, res, async (err) => {
     if (err) return res.status(500).send("Error uploading files.");
@@ -46,14 +47,31 @@ router.post("/", verifyToken, (req, res) => {
     const uploadedFiles = [];
 
     try {
-      for (const file of files) {
-        // ✅ บังคับ decode UTF-8 ตอนบันทึก
-        const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
+      const categories = req.body.categories; // ✅ multer จะ parse เป็น array
 
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const originalName = Buffer.from(file.originalname, "latin1").toString(
+          "utf8",
+        );
+
+        const categoryValue = Array.isArray(categories)
+          ? categories[i]
+          : categories;
+
+        let categoryDoc = null;
+        if (categoryValue) {
+          categoryDoc = await Category.findOneAndUpdate(
+            { name: categoryValue.trim() },
+            { name: categoryValue.trim() },
+            { upsert: true, new: true }, // ✅ ถ้าไม่มีให้สร้างใหม่
+          );
+        }
         const newFile = new File({
           filename: originalName,
           path: file.path,
           size: file.size,
+          category: categoryValue || "uncategorized", // ✅ ใช้ค่าที่ส่งมา
           userId,
         });
 
@@ -65,15 +83,28 @@ router.post("/", verifyToken, (req, res) => {
         message: "Files uploaded locally successfully",
         data: uploadedFiles.map((f) => ({
           ...f._doc,
-          filename: f.filename, // ✅ ส่งกลับตรง ๆ
+          filename: f.filename,
+          category: f.category, // ✅ ส่งหมวดหมู่กลับไปด้วย
           url: `/api/files/${f._id}/download`,
         })),
       });
     } catch (error) {
+      console.error("Upload failed:", error);
       res.status(500).json({ message: "Upload failed", error: error.message });
     }
   });
 });
+
+router.get("/categories", verifyToken, async (req, res) => {
+  try {
+    const categories = await Category.find({}).sort({ name: 1 });
+    res.json({ categories });
+  } catch (err) {
+    res.status(500).json({ message: "Error fetching categories" });
+  }
+});
+
+
 
 // Get files
 router.get("/", verifyToken, async (req, res) => {
@@ -108,10 +139,11 @@ router.get("/", verifyToken, async (req, res) => {
         (u) => u._id.toString() === file.userId.toString(),
       );
       // const decodedName = Buffer.from(file.filename, "latin1").toString("utf8");
-const decodedName = file.filename; // ✅ ส่งกลับตรง ๆ
+      const decodedName = file.filename; // ✅ ส่งกลับตรง ๆ
       return {
         ...file._doc,
         filename: decodedName,
+        category: file.category, // ✅ ส่งหมวดหมู่กลับไป
         user: user ? { ...user.toObject(), _id: undefined } : null,
         url: `/api/files/${file._id}/download`, // ✅ ใช้ API route
       };
@@ -157,7 +189,7 @@ router.get("/:id/download", verifyToken, async (req, res) => {
 // Update file (แก้ไขชื่อไฟล์)
 router.put("/:id", verifyToken, async (req, res) => {
   try {
-    const { filename } = req.body;
+    const { filename, category } = req.body;
     if (!filename || filename.trim() === "") {
       return res.status(400).json({ message: "Filename is required" });
     }
@@ -167,15 +199,15 @@ router.put("/:id", verifyToken, async (req, res) => {
 
     // ✅ เก็บ UTF-8 ตรง ๆ
     file.filename = filename;
+    if (category) file.category = category; // ✅ อัปเดตหมวดหมู่ด้วย
     await file.save();
 
-
-    
     res.json({
       message: "File updated successfully",
       data: {
         ...file._doc,
         filename: file.filename, // ✅ ส่งกลับตรง ๆ ไม่ต้อง Buffer
+        category: file.category, // ✅ ส่งหมวดหมู่กลับไป
         url: `/api/files/${file._id}/download`,
       },
     });
