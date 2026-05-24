@@ -71,7 +71,7 @@ router.post("/", verifyToken, (req, res) => {
           filename: originalName,
           path: file.path,
           size: file.size,
-          category: categoryValue || "uncategorized", // ✅ ใช้ค่าที่ส่งมา
+          category: categoryValue || "ไม่มีหมวดหมู่", // ✅ ใช้ค่าที่ส่งมา
           userId,
         });
 
