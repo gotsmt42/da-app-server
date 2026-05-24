@@ -7,12 +7,10 @@ const File = require("../models/File");
 const User = require("../models/User");
 const verifyToken = require("../middleware/auth");
 
-
 let archiver;
 (async () => {
   archiver = (await import("archiver")).default;
 })();
-
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -34,11 +32,10 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // Upload files
+// Upload files
 router.post("/", verifyToken, (req, res) => {
   upload(req, res, async (err) => {
     if (err) return res.status(500).send("Error uploading files.");
-
-    console.log("Uploaded files:", req.files); // ✅ ดูไฟล์ที่เข้ามา
 
     const files = req.files;
     if (!files || files.length === 0) {
@@ -50,8 +47,11 @@ router.post("/", verifyToken, (req, res) => {
 
     try {
       for (const file of files) {
+        // ✅ บังคับ decode UTF-8 ตอนบันทึก
+        const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
+
         const newFile = new File({
-          filename: file.originalname,
+          filename: originalName,
           path: file.path,
           size: file.size,
           userId,
@@ -60,16 +60,16 @@ router.post("/", verifyToken, (req, res) => {
         const savedFile = await newFile.save();
         uploadedFiles.push(savedFile);
       }
+
       res.status(201).json({
         message: "Files uploaded locally successfully",
         data: uploadedFiles.map((f) => ({
           ...f._doc,
-          filename: Buffer.from(f.filename, "latin1").toString("utf8"),
-          url: `/api/files/${f._id}/download`, // ✅ เพิ่ม URL สำหรับดาวน์โหลด
+          filename: f.filename, // ✅ ส่งกลับตรง ๆ
+          url: `/api/files/${f._id}/download`,
         })),
       });
     } catch (error) {
-      console.error("Upload error:", error);
       res.status(500).json({ message: "Upload failed", error: error.message });
     }
   });
@@ -102,18 +102,20 @@ router.get("/", verifyToken, async (req, res) => {
     //   }
     // });
 
-  // fileRouter.js
-const updatedUserFiles = userFiles.map((file) => {
-  const user = users.find((u) => u._id.toString() === file.userId.toString());
-  const decodedName = Buffer.from(file.filename, "latin1").toString("utf8");
-  return {
-    ...file._doc,
-    filename: decodedName,
-    user: user ? { ...user.toObject(), _id: undefined } : null,
-    url: `/api/files/${file._id}/download` // ✅ ใช้ API route
-  };
-});
-
+    // fileRouter.js
+    const updatedUserFiles = userFiles.map((file) => {
+      const user = users.find(
+        (u) => u._id.toString() === file.userId.toString(),
+      );
+      // const decodedName = Buffer.from(file.filename, "latin1").toString("utf8");
+const decodedName = file.filename; // ✅ ส่งกลับตรง ๆ
+      return {
+        ...file._doc,
+        filename: decodedName,
+        user: user ? { ...user.toObject(), _id: undefined } : null,
+        url: `/api/files/${file._id}/download`, // ✅ ใช้ API route
+      };
+    });
 
     res.json({ userFiles: updatedUserFiles });
   } catch (err) {
@@ -121,7 +123,6 @@ const updatedUserFiles = userFiles.map((file) => {
     res.status(500).send(err.message);
   }
 });
-
 
 router.post("/files/download-zip", async (req, res) => {
   const { fileIds } = req.body;
@@ -141,7 +142,6 @@ router.post("/files/download-zip", async (req, res) => {
   archive.finalize();
 });
 
-
 router.get("/:id/download", verifyToken, async (req, res) => {
   try {
     const file = await File.findById(req.params.id);
@@ -150,6 +150,38 @@ router.get("/:id/download", verifyToken, async (req, res) => {
     res.download(file.path, file.filename);
   } catch (err) {
     res.status(500).send(err.message);
+  }
+});
+
+// Update file (แก้ไขชื่อไฟล์)
+// Update file (แก้ไขชื่อไฟล์)
+router.put("/:id", verifyToken, async (req, res) => {
+  try {
+    const { filename } = req.body;
+    if (!filename || filename.trim() === "") {
+      return res.status(400).json({ message: "Filename is required" });
+    }
+
+    const file = await File.findById(req.params.id);
+    if (!file) return res.status(404).json({ message: "File not found" });
+
+    // ✅ เก็บ UTF-8 ตรง ๆ
+    file.filename = filename;
+    await file.save();
+
+
+    
+    res.json({
+      message: "File updated successfully",
+      data: {
+        ...file._doc,
+        filename: file.filename, // ✅ ส่งกลับตรง ๆ ไม่ต้อง Buffer
+        url: `/api/files/${file._id}/download`,
+      },
+    });
+  } catch (err) {
+    console.error("Error updating file:", err);
+    res.status(500).json({ message: "Update failed", error: err.message });
   }
 });
 
