@@ -41,6 +41,10 @@ const eventSchema = new mongoose.Schema(
     reportFileUrl: { type: String },
     reportFileType: { type: String },
 
+    completionFileName: { type: String },
+    completionFileUrl: { type: String },
+    completionFileType: { type: String },
+
     statusFileName: { type: String },
     statusFileUrl: { type: String },
     statusFileType: { type: String },
@@ -74,10 +78,23 @@ const eventSchema = new mongoose.Schema(
 
     resPerson: { type: String }, // ✅ สำหรับชื่อไฟล์หลักฐาน
 
+    checkInTime: Date,
+    checkOutTime: Date,
+    workNote: String,
+    activityLog: [
+      {
+        userId: String,
+        userName: String,
+        action: String, // "check_in" | "check_out" | "note_updated" | "file_uploaded"
+        timestamp: Date,
+        detail: String,
+      },
+    ],
+
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     lastModifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // ใช้ pre middleware ในการแปลง string เป็น datetime ก่อนเก็บลงฐานข้อมูล
