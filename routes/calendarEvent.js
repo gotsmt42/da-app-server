@@ -45,15 +45,6 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
     if (!allowedTypes.includes(fileType)) {
       return res.status(400).json({ error: "Unsupported file type" });
     }
-    const isOfficeFile =
-      fileType === "application/msword" ||
-      fileType ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-      fileType === "application/vnd.ms-excel" ||
-      fileType ===
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-
-    const isPdf = fileType === "application/pdf";
 
     const uploadToCloudinary = () =>
       new Promise((resolve, reject) => {
@@ -61,9 +52,11 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
           {
             resource_type: "raw",
             folder: `events/${eventId}`,
-            public_id: isOfficeFile ? sanitizedName : undefined, // ✅ ใช้ชื่อไฟล์สำหรับ Office เท่านั้น
-            use_filename: true,
-            unique_filename: false, // ✅ PDF ไม่สุ่มชื่อ แต่ไม่ใช้ public_id
+            // ✅ resource_type "raw" ไม่ต่อนามสกุลให้อัตโนมัติเหมือน image/video
+            // ต้องฝังนามสกุลไว้ใน public_id เองเสมอ ไม่งั้น secure_url จะไม่มีนามสกุล
+            public_id: sanitizedName,
+            use_filename: false,
+            unique_filename: false,
             overwrite: true,
           },
           (error, result) => {
@@ -84,17 +77,18 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
     //   [`documentSent${capitalize(type)}`]: true,
     // });
 
-    await CalendarEvent.updateOne(
-      { _id: eventId },
-      {
-        $set: {
-          [`${type}FileName`]: originalName,
-          [`${type}FileUrl`]: result.secure_url,
-          [`${type}FileType`]: fileType,
-          [`documentSent${capitalize(type)}`]: true,
-        },
-      }
-    );
+    const setFields = {
+      [`${type}FileName`]: originalName,
+      [`${type}FileUrl`]: result.secure_url,
+      [`${type}FileType`]: fileType,
+      [`documentSent${capitalize(type)}`]: true,
+    };
+    // ถ้ามีไฟล์แนบจริง แปลว่าเอกสารนี้ "มี" แน่นอน ไม่ว่าจะเคยติ๊ก "ไม่มี" ไว้ก่อนหรือไม่
+    if (["quotation", "invoice", "completion"].includes(type)) {
+      setFields[`${type}Applicable`] = true;
+    }
+
+    await CalendarEvent.updateOne({ _id: eventId }, { $set: setFields });
 
     res.status(200).json({
       fileName: originalName,
@@ -156,6 +150,7 @@ router.post("/", verifyToken, async (req, res) => {
       "endTime",
       "documentSent",
       "documentFile",
+      "resPerson",
     ];
 
     const eventData = {};
@@ -182,31 +177,33 @@ router.get("/event-op", verifyToken, async (req, res) => {
     const userId = req.userId; // ดึง userId จาก Token
     const userRole = req.user.role; // ดึง role ของ User
 
-    let userEvents;
+    // ✅ จับคู่ด้วย resPerson (ID จริง จาก event ที่สร้าง/แก้ไขใหม่)
+    // และ fallback ด้วยชื่อใน team (สำหรับ event เก่าที่มอบหมายไว้ก่อนหน้านี้ ยังไม่มี resPerson)
+    const query = userRole === "admin"
+      ? {}
+      : { $or: [{ resPerson: userId }, { team: req.user.fname }] };
 
-    if (userRole === "admin") {
-      // admin เห็นทั้งหมด
-      userEvents = await CalendarEvent.find({});
-    } else {
-      // user เห็นเฉพาะของตัวเอง
-      userEvents = await CalendarEvent.find({ resPerson: userId });
-    }
+    const userEvents = await CalendarEvent.find(query)
+      .sort({ start: -1 })
+      .lean();
 
-    // ดึง userId ทั้งหมดจาก userEvents
-    const userIds = userEvents.map((event) => event.userId);
+    const userIds = userEvents.map((event) => event.userId.toString());
+    const uniqueUserIds = [...new Set(userIds)];
 
-    const users = await User.find({ _id: { $in: userIds } });
+    const users = await User.find({ _id: { $in: uniqueUserIds } }).lean();
+
+    const userMap = new Map();
+    users.forEach((user) => {
+      userMap.set(user._id.toString(), user);
+    });
 
     const updatedUserEvents = userEvents.map((event) => {
-      const user = users.find(
-        (user) => user._id.toString() === event.userId.toString()
-      );
+      const user = userMap.get(event.userId.toString());
       if (user) {
-        const { _id, ...userDataWithoutId } = user.toObject();
-        return { ...event._doc, user: userDataWithoutId };
-      } else {
-        return event;
+        const { _id, password, ...userDataWithoutId } = user;
+        return { ...event, user: userDataWithoutId };
       }
+      return event;
     });
 
     if (!userEvents.length) {
@@ -320,11 +317,14 @@ router.put("/:id", verifyToken, async (req, res) => {
       return res.status(404).json({ message: "Event not found" });
     }
 
-    // ✅ เงื่อนไข: admin แก้ไขได้ทุก event, user แก้ไขได้เฉพาะของตัวเอง
-    if (
-      req.user.role !== "admin" &&
-      existingEvent.userId.toString() !== userId.toString()
-    ) {
+    // ✅ เงื่อนไข: admin แก้ไขได้ทุก event, ส่วนคนอื่นแก้ไขได้เฉพาะ event ที่ตัวเองเพิ่ม
+    // หรือ event ที่ได้รับมอบหมาย (resPerson ตรงกับ ID ตัวเอง หรือ team ตรงกับชื่อตัวเอง — เผื่อ event เก่า)
+    const isOwner = existingEvent.userId.toString() === userId.toString();
+    const isAssigned =
+      (existingEvent.resPerson && existingEvent.resPerson === userId) ||
+      (existingEvent.team && existingEvent.team === req.user.fname);
+
+    if (req.user.role !== "admin" && !isOwner && !isAssigned) {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไข Event นี้" });
     }
 
@@ -347,15 +347,33 @@ router.put("/:id", verifyToken, async (req, res) => {
       status_two,
       status_three,
       isAutoUpdated,
+      manualStatus,
       subject,
       description,
       startTime,
       endTime,
       documentSentQuotation,
       documentSentReport,
+      documentSentInvoice,
+      documentSentCompletion,
+      quotationApplicable,
+      invoiceApplicable,
+      completionApplicable,
       documentSent,
       documentFile, // ✅ เพิ่มตรงนี้
       resPerson, // ✅ เพิ่มตรงนี้
+
+      // ✅ ฟิลด์สำหรับ flow ของช่าง (เช็คอิน/เช็คเอาท์/สรุปงาน/ประวัติกิจกรรม)
+      // และ flow ขอปิดงาน → รออนุมัติจากแอดมิน (เดิมไม่ได้ whitelist ไว้ ทำให้ไม่เคยถูกบันทึกจริง)
+      checkedInAt,
+      checkedOutAt,
+      workNote,
+      activityLog,
+      closeRequested,
+      closeRequestedAt,
+      closeRequestedBy,
+      closeApprovedAt,
+      closeApprovedBy,
     } = req.body;
 
     const newEvent = {
@@ -377,25 +395,38 @@ router.put("/:id", verifyToken, async (req, res) => {
       status_two,
       status_three,
       isAutoUpdated,
+      manualStatus,
       subject,
       description,
       startTime,
       endTime,
       documentSentQuotation,
       documentSentReport,
+      documentSentInvoice,
+      documentSentCompletion,
+      quotationApplicable,
+      invoiceApplicable,
+      completionApplicable,
       documentSent,
       documentFile, // ✅ เพิ่มตรงนี้
       resPerson, // ✅ เพิ่มตรงนี้
+
+      checkedInAt,
+      checkedOutAt,
+      workNote,
+      activityLog,
+      closeRequested,
+      closeRequestedAt,
+      closeRequestedBy,
+      closeApprovedAt,
+      closeApprovedBy,
 
       userId: existingEvent.userId, // ❌ ไม่เปลี่ยนเจ้าของเดิม
       // lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด
     };
 
-    console.log("🧾 newEvent:", newEvent);
-    const query =
-      req.user.role === "admin" ? { _id: id } : { _id: id, userId: req.userId, team: req};
-
-    const updatedEvent = await CalendarEvent.findOneAndUpdate(query, newEvent, {
+    // ✅ สิทธิ์ตรวจสอบไปแล้วด้านบน (isOwner / isAssigned / admin) จึงใช้แค่ _id พอ
+    const updatedEvent = await CalendarEvent.findOneAndUpdate({ _id: id }, newEvent, {
       new: true,
     }).exec();
 

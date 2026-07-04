@@ -23,6 +23,9 @@ const eventSchema = new mongoose.Schema(
     status_two: { type: String },
     status_three: { type: String },
     isAutoUpdated: { type: Boolean },
+    // ผู้ใช้ตั้งสถานะเองผ่านหน้าแก้ไข event ไว้หรือไม่ — ใช้กันไม่ให้ auto-transition
+    // (ปรับสถานะเป็น "กำลังดำเนินการ" อัตโนมัติเมื่อถึงวันงาน) ไปทับค่าที่ตั้งเองไว้
+    manualStatus: { type: Boolean, default: false },
 
     subject: { type: String },
     description: { type: String },
@@ -32,6 +35,14 @@ const eventSchema = new mongoose.Schema(
 
     documentSentQuotation: { type: Boolean, default: false },
     documentSentReport: { type: Boolean, default: false },
+    documentSentInvoice: { type: Boolean, default: false },
+    documentSentCompletion: { type: Boolean, default: false },
+
+    // เอกสาร 3 ชนิดนี้ไม่ได้ต้องมีทุกงาน — ช่างต้องระบุก่อนว่า "มี" (ต้องแนบไฟล์)
+    // หรือ "ไม่มี" (ข้ามได้) — null = ยังไม่ได้ระบุ
+    quotationApplicable: { type: Boolean, default: null },
+    invoiceApplicable: { type: Boolean, default: null },
+    completionApplicable: { type: Boolean, default: null },
 
     quotationFileName: { type: String },
     quotationFileUrl: { type: String },
@@ -40,6 +51,10 @@ const eventSchema = new mongoose.Schema(
     reportFileName: { type: String },
     reportFileUrl: { type: String },
     reportFileType: { type: String },
+
+    invoiceFileName: { type: String },
+    invoiceFileUrl: { type: String },
+    invoiceFileType: { type: String },
 
     completionFileName: { type: String },
     completionFileUrl: { type: String },
@@ -80,7 +95,15 @@ const eventSchema = new mongoose.Schema(
 
     checkInTime: Date,
     checkOutTime: Date,
+    checkedInAt: Date,
+    checkedOutAt: Date,
     workNote: String,
+
+    closeRequested: { type: Boolean, default: false },
+    closeRequestedAt: Date,
+    closeRequestedBy: String,
+    closeApprovedAt: Date,
+    closeApprovedBy: String,
     activityLog: [
       {
         userId: String,
