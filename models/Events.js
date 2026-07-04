@@ -44,21 +44,40 @@ const eventSchema = new mongoose.Schema(
     invoiceApplicable: { type: Boolean, default: null },
     completionApplicable: { type: Boolean, default: null },
 
-    quotationFileName: { type: String },
-    quotationFileUrl: { type: String },
-    quotationFileType: { type: String },
-
-    reportFileName: { type: String },
-    reportFileUrl: { type: String },
-    reportFileType: { type: String },
-
-    invoiceFileName: { type: String },
-    invoiceFileUrl: { type: String },
-    invoiceFileType: { type: String },
-
-    completionFileName: { type: String },
-    completionFileUrl: { type: String },
-    completionFileType: { type: String },
+    // ✅ เอกสารแต่ละชนิดแนบได้หลายไฟล์ (array) — แต่ละไฟล์มี _id ของตัวเองในตัว
+    // ไว้ใช้อ้างอิงตอนลบไฟล์เดียวออกจากชุด โดยไม่กระทบไฟล์อื่นในชนิดเดียวกัน
+    quotationFiles: [
+      {
+        fileName: String,
+        fileUrl: String,
+        fileType: String,
+        uploadedAt: { type: Date, default: Date.now },
+      },
+    ],
+    reportFiles: [
+      {
+        fileName: String,
+        fileUrl: String,
+        fileType: String,
+        uploadedAt: { type: Date, default: Date.now },
+      },
+    ],
+    invoiceFiles: [
+      {
+        fileName: String,
+        fileUrl: String,
+        fileType: String,
+        uploadedAt: { type: Date, default: Date.now },
+      },
+    ],
+    completionFiles: [
+      {
+        fileName: String,
+        fileUrl: String,
+        fileType: String,
+        uploadedAt: { type: Date, default: Date.now },
+      },
+    ],
 
     statusFileName: { type: String },
     statusFileUrl: { type: String },

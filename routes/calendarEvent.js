@@ -14,7 +14,7 @@ const upload = multer({ storage });
 
 const streamifier = require("streamifier");
 
-router.put("/upload/:id", upload.single("file"), async (req, res) => {
+router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) => {
   try {
     const capitalize = (str = "") => str.charAt(0).toUpperCase() + str.slice(1);
 
@@ -22,6 +22,16 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
     const eventId = req.params.id;
     const type = req.body.type;
     const fileType = file.mimetype;
+
+    // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างแก้ไขไฟล์อีก มีแค่ admin/manager เท่านั้นที่ทำได้
+    const eventForLock = await CalendarEvent.findById(eventId);
+    if (!eventForLock) {
+      return res.status(404).send("ไม่พบแผนงาน");
+    }
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
+      return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถแก้ไขไฟล์ได้");
+    }
 
     // ✅ แปลงชื่อไฟล์ให้เป็น UTF-8 และ sanitize
     const originalName = Buffer.from(file.originalname, "latin1").toString(
@@ -69,18 +79,16 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
 
     const result = await uploadToCloudinary();
 
-    // ✅ อัปเดตข้อมูลใน MongoDB
-    // await CalendarEvent.findByIdAndUpdate(eventId, {
-    //   [`${type}FileName`]: originalName,
-    //   [`${type}FileUrl`]: result.secure_url,
-    //   [`${type}FileType`]: fileType,
-    //   [`documentSent${capitalize(type)}`]: true,
-    // });
+    // ✅ เอกสารแต่ละชนิดเก็บเป็น array แนบได้หลายไฟล์ — push ไฟล์ใหม่เข้าไปแทนการทับของเดิม
+    const arrField = `${type}Files`;
+    const newFileEntry = {
+      fileName: originalName,
+      fileUrl: result.secure_url,
+      fileType: fileType,
+      uploadedAt: new Date(),
+    };
 
     const setFields = {
-      [`${type}FileName`]: originalName,
-      [`${type}FileUrl`]: result.secure_url,
-      [`${type}FileType`]: fileType,
       [`documentSent${capitalize(type)}`]: true,
     };
     // ถ้ามีไฟล์แนบจริง แปลว่าเอกสารนี้ "มี" แน่นอน ไม่ว่าจะเคยติ๊ก "ไม่มี" ไว้ก่อนหรือไม่
@@ -88,12 +96,20 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
       setFields[`${type}Applicable`] = true;
     }
 
-    await CalendarEvent.updateOne({ _id: eventId }, { $set: setFields });
+    const updatedEvent = await CalendarEvent.findByIdAndUpdate(
+      eventId,
+      { $push: { [arrField]: newFileEntry }, $set: setFields },
+      { new: true }
+    );
+
+    const savedFiles = updatedEvent[arrField] || [];
+    const savedFile = savedFiles[savedFiles.length - 1];
 
     res.status(200).json({
-      fileName: originalName,
-      fileUrl: result.secure_url,
-      fileType: fileType,
+      fileId: savedFile._id,
+      fileName: savedFile.fileName,
+      fileUrl: savedFile.fileUrl,
+      fileType: savedFile.fileType,
     });
   } catch (err) {
     console.error("Upload error:", err);
@@ -101,21 +117,41 @@ router.put("/upload/:id", upload.single("file"), async (req, res) => {
   }
 });
 
-router.put("/delete-file/:id", async (req, res) => {
+router.put("/delete-file/:id", verifyToken, async (req, res) => {
   try {
     const capitalize = (str = "") => str.charAt(0).toUpperCase() + str.slice(1);
 
     const { id } = req.params;
-    const { type } = req.body;
+    const { type, fileId } = req.body;
+    const arrField = `${type}Files`;
 
-    const update = {
-      [`${type}FileName`]: null,
-      [`${type}FileUrl`]: null,
-      [`${type}FileType`]: null,
-      [`documentSent${capitalize(type)}`]: false,
-    };
+    // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างลบไฟล์อีก มีแค่ admin/manager เท่านั้นที่ทำได้
+    const eventForLock = await CalendarEvent.findById(id);
+    if (!eventForLock) {
+      return res.status(404).send("ไม่พบแผนงาน");
+    }
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
+      return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถลบไฟล์ได้");
+    }
 
-    await CalendarEvent.findByIdAndUpdate(id, update);
+    // ✅ ลบไฟล์เดียวออกจาก array ตาม _id ของไฟล์นั้น ไม่กระทบไฟล์อื่นในชนิดเดียวกัน
+    const updatedEvent = await CalendarEvent.findByIdAndUpdate(
+      id,
+      { $pull: { [arrField]: { _id: fileId } } },
+      { new: true }
+    );
+
+    if (!updatedEvent) {
+      return res.status(404).send("ไม่พบแผนงาน");
+    }
+
+    const remaining = updatedEvent[arrField]?.length || 0;
+    await CalendarEvent.updateOne(
+      { _id: id },
+      { $set: { [`documentSent${capitalize(type)}`]: remaining > 0 } }
+    );
+
     res.status(200).send("ไฟล์ถูกลบแล้ว");
   } catch (err) {
     console.error("ลบไฟล์ไม่สำเร็จ:", err);
@@ -177,11 +213,12 @@ router.get("/event-op", verifyToken, async (req, res) => {
     const userId = req.userId; // ดึง userId จาก Token
     const userRole = req.user.role; // ดึง role ของ User
 
-    // ✅ จับคู่ด้วย resPerson (ID จริง จาก event ที่สร้าง/แก้ไขใหม่)
-    // และ fallback ด้วยชื่อใน team (สำหรับ event เก่าที่มอบหมายไว้ก่อนหน้านี้ ยังไม่มี resPerson)
+    // ✅ จับคู่ด้วย resPerson (ID จริง จาก event ที่สร้าง/แก้ไขใหม่),
+    // team (fallback ด้วยชื่อ สำหรับ event เก่าที่มอบหมายไว้ก่อนหน้านี้ ยังไม่มี resPerson),
+    // หรือ userId (คนที่เพิ่ม event นี้เอง แม้จะไม่ได้ตั้ง resPerson/team ไว้เลยก็ตาม)
     const query = userRole === "admin"
       ? {}
-      : { $or: [{ resPerson: userId }, { team: req.user.fname }] };
+      : { $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
 
     const userEvents = await CalendarEvent.find(query)
       .sort({ start: -1 })
@@ -328,6 +365,12 @@ router.put("/:id", verifyToken, async (req, res) => {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไข Event นี้" });
     }
 
+    // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างแก้ไขอีก มีแค่ admin/manager เท่านั้นที่ทำได้
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
+      return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถแก้ไขได้" });
+    }
+
     const {
       docNo,
       company,
@@ -458,8 +501,12 @@ router.delete("/:id", verifyToken, async (req, res) => {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์ลบ Event นี้" });
     }
 
+    // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างลบอีก มีแค่ admin/manager เท่านั้นที่ทำได้
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
+      return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถลบได้" });
+    }
 
-    
     // Delete file from database
     await CalendarEvent.findByIdAndDelete(id);
 
