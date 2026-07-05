@@ -17,15 +17,10 @@ const checkFile = require("../middleware/checkFile");
 // Route to get all products
 router.get("/", verifyToken, async (req, res) => {
   try {
-    const userId = req.userId;
-
-    let userCustomers;
-
-    if (req.user.role === "admin") {
-      userCustomers = await Customer.find({});
-    } else {
-      userCustomers = await Customer.find({ userId: userId });
-    }
+    // ✅ ทุก role เห็นรายชื่อลูกค้า/โครงการทั้งหมดเหมือนกัน (ใช้เป็น master list ตอนเลือกชื่อโครงการ
+    // ตอนเพิ่ม/แก้ไขแผนงาน) ไม่ใช่ข้อมูลส่วนตัวของใครคนใดคนหนึ่ง เดิมกรองเฉพาะของตัวเองสำหรับ non-admin
+    // ทำให้ช่างเห็นโครงการที่คนอื่นเพิ่มไว้ไม่ครบ เวลาเพิ่มงานใหม่
+    const userCustomers = await Customer.find({});
 
     // ดึง userId ทั้งหมดจาก userFiles
     const userIds = userCustomers.map((customer) => customer.userId);
@@ -118,6 +113,17 @@ router.put(
     const id = req.params.id;
 
     try {
+      const existingCustomer = await Customer.findById(id);
+      if (!existingCustomer) {
+        return res.status(404).send("Product not found.");
+      }
+
+      // ✅ ตอนนี้ทุก role เห็นลูกค้า/โครงการของทุกคนแล้ว (จาก GET /) จึงต้องเช็คสิทธิ์แก้ไขตรงนี้เพิ่ม
+      // ไม่งั้นใครก็แก้ไขข้อมูลของคนอื่นได้หมดแค่รู้ id (เดิมไม่มีการเช็คเลย)
+      if (existingCustomer.userId !== req.userId && req.user.role !== "admin") {
+        return res.status(403).send("Unauthorized to edit this customer.");
+      }
+
       const { cCompany, cSite, cEmail, cName,  address, tel, tax} = req.body;
 
       const imageUrl = req.imageUrl;

@@ -121,8 +121,14 @@ const eventSchema = new mongoose.Schema(
     closeRequested: { type: Boolean, default: false },
     closeRequestedAt: Date,
     closeRequestedBy: String,
+    // ✅ userId ของช่างที่กดขอปิดงานจริงๆ (closeRequestedBy เป็นแค่ชื่อ ใช้แจ้งเตือน push แบบเจาะจงตัวคนไม่ได้
+    // เพราะ resPerson/userId ของ event อาจไม่ตรงกับคนที่กดขอปิดงานจริง เช่น มอบหมายผ่านชื่อทีมแบบเก่า)
+    closeRequestedByUserId: String,
     closeApprovedAt: Date,
     closeApprovedBy: String,
+    closeRejectedAt: Date,
+    closeRejectedBy: String,
+    closeRejectReason: String,
     activityLog: [
       {
         userId: String,

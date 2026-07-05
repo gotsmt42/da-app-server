@@ -13,6 +13,7 @@ const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
 const streamifier = require("streamifier");
+const { sendPushToUsers, sendPushToRoles, sendPushToAllUsers } = require("../services/PushNotify");
 
 router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) => {
   try {
@@ -201,6 +202,32 @@ eventData.userId = req.userId || req.body.userId;
     const event = new CalendarEvent(eventData);
     await event.save();
 
+    // ✅ แจ้งเตือนตอนเพิ่มงานใหม่ (ไม่ await เพื่อไม่ให้ response ช้าลง)
+    // - ถ้ามอบหมายไว้ (resPerson) ส่งข้อความเจาะจงถึงคนนั้นโดยตรง
+    // - คนอื่นๆ ในระบบ (ยกเว้นคนสร้างเองและคนที่ได้รับมอบหมายซึ่งได้ข้อความเจาะจงไปแล้ว) ได้รับแจ้งว่ามีงานใหม่เข้าระบบ
+    const jobLabelNew = `${event.title || "งาน"} · ${event.company || "-"}${event.site ? " - " + event.site : ""}`;
+
+    if (event.resPerson && event.resPerson !== req.userId) {
+      sendPushToUsers(event.resPerson, {
+        title: "📋 คุณได้รับมอบหมายงานใหม่",
+        body: jobLabelNew,
+        url: `/operation/${event._id}`,
+        tag: `event-${event._id}`,
+        renotify: true,
+      }).catch((err) => console.error("❌ Push notify error (assign):", err));
+    }
+
+    sendPushToAllUsers(
+      {
+        title: "🆕 มีงานใหม่ถูกเพิ่มเข้าระบบ",
+        body: jobLabelNew,
+        url: `/operation/${event._id}`,
+        tag: `event-${event._id}`,
+        renotify: true,
+      },
+      [req.userId, event.resPerson]
+    ).catch((err) => console.error("❌ Push notify error (new-event-broadcast):", err));
+
     res.status(201).send(event);
   } catch (error) {
     console.error(error);
@@ -254,6 +281,65 @@ router.get("/event-op", verifyToken, async (req, res) => {
   }
 });
 
+// ✅ รวมไฟล์เอกสารประจำงาน (Service Report/ใบเสนอราคา/ใบวางบิล/ใบส่งมอบงาน) จากทุก event
+// ให้แบนราบเป็นรายการเดียว สำหรับหน้า Files แสดงเป็นตาราง แยกจากไฟล์ทั่วไป (model File เดิม)
+// ต้องอยู่ก่อน "/:id" ไม่งั้น Express จะจับ "documents" เป็นค่า :id แทน
+router.get("/documents", verifyToken, async (req, res) => {
+  try {
+    const userId = req.userId;
+    const userRole = req.user.role;
+
+    const isAdminOrManager = ["admin", "manager"].includes(userRole);
+    const query = isAdminOrManager
+      ? {}
+      : { $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
+
+    const events = await CalendarEvent.find(query)
+      .select("docNo company site title system team status reportFiles quotationFiles invoiceFiles completionFiles")
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    const DOC_TYPE_LABELS = {
+      report: "Service Report",
+      quotation: "ใบเสนอราคา",
+      invoice: "ใบวางบิล",
+      completion: "ใบส่งมอบงาน",
+    };
+
+    const files = [];
+    for (const ev of events) {
+      for (const type of ["report", "quotation", "invoice", "completion"]) {
+        const arr = ev[`${type}Files`] || [];
+        for (const f of arr) {
+          files.push({
+            fileId: f._id,
+            fileName: f.fileName,
+            fileUrl: f.fileUrl,
+            fileType: f.fileType,
+            uploadedAt: f.uploadedAt,
+            docType: type,
+            docTypeLabel: DOC_TYPE_LABELS[type],
+            eventId: ev._id,
+            docNo: ev.docNo || "",
+            company: ev.company || "",
+            site: ev.site || "",
+            title: ev.title || "",
+            system: ev.system || "",
+            team: ev.team || "",
+            status: ev.status || "",
+          });
+        }
+      }
+    }
+
+    files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+
+    res.json({ files });
+  } catch (err) {
+    console.error("❌ Error fetching event documents:", err);
+    res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลเอกสารประจำงาน" });
+  }
+});
 
 router.get("/", verifyToken, async (req, res) => {
   try {
@@ -415,8 +501,12 @@ router.put("/:id", verifyToken, async (req, res) => {
       closeRequested,
       closeRequestedAt,
       closeRequestedBy,
+      closeRequestedByUserId,
       closeApprovedAt,
       closeApprovedBy,
+      closeRejectedAt,
+      closeRejectedBy,
+      closeRejectReason,
     } = req.body;
 
     const newEvent = {
@@ -461,8 +551,12 @@ router.put("/:id", verifyToken, async (req, res) => {
       closeRequested,
       closeRequestedAt,
       closeRequestedBy,
+      closeRequestedByUserId,
       closeApprovedAt,
       closeApprovedBy,
+      closeRejectedAt,
+      closeRejectedBy,
+      closeRejectReason,
 
       userId: existingEvent.userId, // ❌ ไม่เปลี่ยนเจ้าของเดิม
       // lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด
@@ -475,6 +569,64 @@ router.put("/:id", verifyToken, async (req, res) => {
 
     if (!updatedEvent) {
       return res.status(404).json("Event not found");
+    }
+
+    // ✅ แจ้งเตือนตามการเปลี่ยนแปลงสำคัญ (ไม่ await เพื่อไม่ให้ response ช้าลง)
+    // เทียบค่าก่อน (existingEvent) กับค่าที่ส่งมาใหม่ เพื่อดูว่า "เพิ่งเกิดการเปลี่ยนแปลง" จริงๆ ไม่ใช่แค่ค่าเดิม
+    const jobLabel = `${updatedEvent.company || "-"}${updatedEvent.site ? " - " + updatedEvent.site : ""}`;
+
+    const notifyTag = `event-${updatedEvent._id}`;
+
+    if (resPerson && resPerson !== existingEvent.resPerson && resPerson !== userId) {
+      sendPushToUsers(resPerson, {
+        title: "📋 คุณได้รับมอบหมายงาน",
+        body: `${updatedEvent.title || "งาน"} · ${jobLabel}`,
+        url: `/operation/${updatedEvent._id}`,
+        tag: notifyTag,
+        renotify: true,
+      }).catch((err) => console.error("❌ Push notify error (reassign):", err));
+    }
+
+    if (closeRequested === true && !existingEvent.closeRequested) {
+      sendPushToRoles(["admin", "manager"], {
+        title: "⏳ มีคำขอปิดงานใหม่",
+        body: `${closeRequestedBy || "ช่าง"} ขอปิดงาน: ${jobLabel}`,
+        url: `/operation/${updatedEvent._id}`,
+        tag: notifyTag,
+        renotify: true,
+      }).catch((err) => console.error("❌ Push notify error (close-requested):", err));
+    }
+
+    // ✅ ใช้ closeRequestedByUserId (userId จริงของคนกดขอปิดงาน) เป็นหลัก เพราะ resPerson/userId
+    // ของ event อาจไม่ตรงกับคนที่กดขอปิดงานจริง (เช่น มอบหมายผ่านชื่อทีมแบบเก่า ไม่มี resPerson)
+    // ถ้าไม่มี (event เก่าก่อนมีฟิลด์นี้) ค่อย fallback ไปที่ resPerson/userId ของ event ตามเดิม
+    const closeRequesterId = updatedEvent.closeRequestedByUserId || updatedEvent.resPerson || updatedEvent.userId;
+
+    // ⚠️ เดิมเช็คแค่ "!existingEvent.closeApprovedAt / closeRejectedAt" ซึ่งตรวจจับได้แค่ครั้งแรกที่ set
+    // เท่านั้น ถ้างานเดิมเคยถูกอนุมัติ/ไม่อนุมัติมาก่อนแล้ว (เช่น ขอปิดงานใหม่แล้วโดนปฏิเสธซ้ำ)
+    // ค่าเก่าที่ไม่ใช่ null จะทำให้เงื่อนไขเป็นเท็จเสมอ แจ้งเตือนซ้ำจึงไม่ถูกส่งอีกเลย
+    // แก้เป็นเทียบเวลาว่า "เพิ่งเปลี่ยนเป็นค่าใหม่จริงๆ" แทน
+    const isNewTimestamp = (incoming, previous) =>
+      incoming && new Date(incoming).getTime() !== new Date(previous || 0).getTime();
+
+    if (isNewTimestamp(closeApprovedAt, existingEvent.closeApprovedAt)) {
+      sendPushToUsers([closeRequesterId, updatedEvent.resPerson, updatedEvent.userId], {
+        title: "✅ แอดมินอนุมัติปิดงานแล้ว",
+        body: jobLabel,
+        url: `/operation/${updatedEvent._id}`,
+        tag: notifyTag,
+        renotify: true,
+      }).catch((err) => console.error("❌ Push notify error (approved):", err));
+    }
+
+    if (isNewTimestamp(closeRejectedAt, existingEvent.closeRejectedAt)) {
+      sendPushToUsers([closeRequesterId, updatedEvent.resPerson, updatedEvent.userId], {
+        title: "❌ แอดมินไม่อนุมัติปิดงาน",
+        body: closeRejectReason ? `${jobLabel}: ${closeRejectReason}` : jobLabel,
+        tag: notifyTag,
+        renotify: true,
+        url: `/operation/${updatedEvent._id}`,
+      }).catch((err) => console.error("❌ Push notify error (rejected):", err));
     }
 
     res.status(200).json({ updatedEvent: updatedEvent }); // ส่งข้อมูลของเหตุการณ์ที่ถูกอัปเดตกลับไป
