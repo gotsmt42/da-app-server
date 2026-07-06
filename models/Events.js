@@ -112,6 +112,10 @@ const eventSchema = new mongoose.Schema(
 
     resPerson: { type: String }, // ✅ สำหรับชื่อไฟล์หลักฐาน
 
+    // ✅ ผูกงานที่เข้าหลายวันแบบไม่ติดกัน (เช่น PM ครั้งที่ 1 ต้องแบ่งเข้า 3 วัน) ให้รู้ว่า
+    // เป็น "งานเดียวกัน" — สร้างตอน POST /events ครั้งแรก ทุก record ในชุดเดียวกันจะได้ค่านี้ตรงกัน
+    jobGroupId: { type: String, index: true },
+
     checkInTime: Date,
     checkOutTime: Date,
     checkedInAt: Date,

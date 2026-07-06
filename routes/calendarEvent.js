@@ -13,6 +13,7 @@ const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
 const streamifier = require("streamifier");
+const crypto = require("crypto");
 const { sendPushToUsers, sendPushToRoles, sendPushToAllUsers } = require("../services/PushNotify");
 
 router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) => {
@@ -190,29 +191,61 @@ router.post("/", verifyToken, async (req, res) => {
       "resPerson",
     ];
 
-    const eventData = {};
-    allowedFields.forEach((field) => {
-      if (req.body[field] !== undefined) {
-        eventData[field] = req.body[field];
+    // ✅ รองรับสร้างงานที่ต้องเข้าหลายวันแบบไม่ติดกันในครั้งเดียว: ส่ง dates เป็น array ของ
+    // { start, end, date } มาแทน start/end/date เดี่ยว — ทุก record ที่สร้างจะผูกกันด้วย
+    // jobGroupId เดียวกัน เพื่อให้หน้า Operation รู้ว่าเป็น "งานเดียวกัน" ไม่ใช่งานแยกกันคนละชิ้น
+    //
+    // ⚠️ ต้องผูก jobGroupId เฉพาะตอนสร้างมากกว่า 1 ช่วงจริงๆ หรือมี jobGroupId ส่งมาจาก client
+    // อยู่แล้ว (เช่น เพิ่มวันที่เข้าไปในงานที่เป็นกลุ่มอยู่ก่อนแล้ว) — เดิมสุ่ม jobGroupId ให้
+    // "ทุก" งานที่สร้างใหม่แม้จะเป็นงานเดี่ยวธรรมดา ทำให้หน้า Operation เข้าใจผิดว่างานเดี่ยว
+    // เป็นส่วนหนึ่งของงานหลายวัน (ขึ้นสัญลักษณ์ 🔗 ทั้งที่จริงมีวันเดียว)
+    const { dates } = req.body;
+    const isMultiDate = Array.isArray(dates) && dates.length > 1;
+    const jobGroupId = isMultiDate ? (req.body.jobGroupId || crypto.randomUUID()) : req.body.jobGroupId;
+
+    const buildEventData = (dateOverride) => {
+      const eventData = {};
+      allowedFields.forEach((field) => {
+        if (req.body[field] !== undefined) {
+          eventData[field] = req.body[field];
+        }
+      });
+      if (dateOverride) {
+        eventData.start = dateOverride.start;
+        eventData.end = dateOverride.end;
+        eventData.date = dateOverride.date;
       }
-    });
+      if (jobGroupId) eventData.jobGroupId = jobGroupId;
+      eventData.userId = req.userId || req.body.userId;
+      return eventData;
+    };
 
-eventData.userId = req.userId || req.body.userId;
+    let events;
+    if (Array.isArray(dates) && dates.length > 0) {
+      events = await Promise.all(
+        dates.map((d) => new CalendarEvent(buildEventData(d)).save())
+      );
+    } else {
+      events = [await new CalendarEvent(buildEventData()).save()];
+    }
 
-    const event = new CalendarEvent(eventData);
-    await event.save();
-
-    // ✅ แจ้งเตือนตอนเพิ่มงานใหม่ (ไม่ await เพื่อไม่ให้ response ช้าลง)
+    // ✅ แจ้งเตือนตอนเพิ่มงานใหม่ (ไม่ await เพื่อไม่ให้ response ช้าลง) — อ้างอิงจาก record แรก
+    // เป็นตัวแทนของทั้งชุด (ข้อมูลบริษัท/ไซต์/ผู้รับผิดชอบเหมือนกันทุก record อยู่แล้ว)
     // - ถ้ามอบหมายไว้ (resPerson) ส่งข้อความเจาะจงถึงคนนั้นโดยตรง
     // - คนอื่นๆ ในระบบ (ยกเว้นคนสร้างเองและคนที่ได้รับมอบหมายซึ่งได้ข้อความเจาะจงไปแล้ว) ได้รับแจ้งว่ามีงานใหม่เข้าระบบ
-    const jobLabelNew = `${event.title || "งาน"} · ${event.company || "-"}${event.site ? " - " + event.site : ""}`;
+    const primary = events[0];
+    const daysSuffix = events.length > 1 ? ` (${events.length} วัน)` : "";
+    const jobLabelNew = `${primary.title || "งาน"} · ${primary.company || "-"}${primary.site ? " - " + primary.site : ""}${daysSuffix}`;
+    // ✅ งานเดี่ยวไม่มี jobGroupId แล้ว (ดูคอมเมนต์ด้านบน) ใช้ _id ของตัวเองแทนกัน tag ชนกัน
+    // ระหว่างงานเดี่ยวหลายๆ งาน (ซึ่งจะทำให้ browser แจ้งเตือนทับ/แทนที่กันเองผิดๆ)
+    const notifyTag = `event-${jobGroupId || primary._id}`;
 
-    if (event.resPerson && event.resPerson !== req.userId) {
-      sendPushToUsers(event.resPerson, {
+    if (primary.resPerson && primary.resPerson !== req.userId) {
+      sendPushToUsers(primary.resPerson, {
         title: "📋 คุณได้รับมอบหมายงานใหม่",
         body: jobLabelNew,
-        url: `/operation/${event._id}`,
-        tag: `event-${event._id}`,
+        url: `/operation/${primary._id}`,
+        tag: notifyTag,
         renotify: true,
       }).catch((err) => console.error("❌ Push notify error (assign):", err));
     }
@@ -221,14 +254,14 @@ eventData.userId = req.userId || req.body.userId;
       {
         title: "🆕 มีงานใหม่ถูกเพิ่มเข้าระบบ",
         body: jobLabelNew,
-        url: `/operation/${event._id}`,
-        tag: `event-${event._id}`,
+        url: `/operation/${primary._id}`,
+        tag: notifyTag,
         renotify: true,
       },
-      [req.userId, event.resPerson]
+      [req.userId, primary.resPerson]
     ).catch((err) => console.error("❌ Push notify error (new-event-broadcast):", err));
 
-    res.status(201).send(event);
+    res.status(201).json({ events });
   } catch (error) {
     console.error(error);
     res.status(500).send("Internal Server Error");
@@ -511,6 +544,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       closeRejectedBy,
       closeRejectReason,
       comments,
+      jobGroupId, // ✅ ใช้ตอนแก้ไข event เดี่ยวแล้วเพิ่มวันที่อื่นให้กลายเป็นงานเดียวกันภายหลัง
     } = req.body;
 
     const newEvent = {
@@ -562,6 +596,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       closeRejectedBy,
       closeRejectReason,
       comments,
+      jobGroupId,
 
       userId: existingEvent.userId, // ❌ ไม่เปลี่ยนเจ้าของเดิม
       // lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด
