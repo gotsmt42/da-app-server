@@ -139,6 +139,18 @@ const eventSchema = new mongoose.Schema(
       },
     ],
 
+    // ✅ ช่องทางคุยโต้ตอบกันระหว่างช่างกับแอดมิน/manager แยกจาก activityLog
+    // (activityLog เป็น log อัตโนมัติของระบบ ส่วนนี้คือข้อความที่คนพิมพ์เอง เช่น "ขอใบเสนอราคางานนี้")
+    comments: [
+      {
+        userId: String,
+        userName: String,
+        role: String,
+        message: String,
+        timestamp: { type: Date, default: Date.now },
+      },
+    ],
+
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     lastModifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },

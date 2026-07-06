@@ -452,8 +452,11 @@ router.put("/:id", verifyToken, async (req, res) => {
     }
 
     // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างแก้ไขอีก มีแค่ admin/manager เท่านั้นที่ทำได้
+    // ยกเว้น: ถ้าเป็นการส่ง comment อย่างเดียว (คุยโต้ตอบกัน) ให้ทำได้แม้งานจะปิดไปแล้ว
+    // เพราะไม่ได้กระทบข้อมูลงานจริง แค่เพิ่มข้อความคุยกัน
     const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
-    if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
+    const isCommentOnlyUpdate = Object.keys(req.body).every((k) => k === "comments");
+    if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && !isCommentOnlyUpdate) {
       return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถแก้ไขได้" });
     }
 
@@ -507,6 +510,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       closeRejectedAt,
       closeRejectedBy,
       closeRejectReason,
+      comments,
     } = req.body;
 
     const newEvent = {
@@ -557,6 +561,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       closeRejectedAt,
       closeRejectedBy,
       closeRejectReason,
+      comments,
 
       userId: existingEvent.userId, // ❌ ไม่เปลี่ยนเจ้าของเดิม
       // lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด
@@ -627,6 +632,31 @@ router.put("/:id", verifyToken, async (req, res) => {
         renotify: true,
         url: `/operation/${updatedEvent._id}`,
       }).catch((err) => console.error("❌ Push notify error (rejected):", err));
+    }
+
+    // ✅ แจ้งเตือนเมื่อมีข้อความคอมเมนต์ใหม่ — comments ถูกส่งมาทั้งชุดเสมอ (เหมือน activityLog)
+    // จึงเทียบจำนวนข้อความเดิม/ใหม่แทนการเช็ค timestamp เดี่ยวๆ
+    if (Array.isArray(comments) && comments.length > (existingEvent.comments || []).length) {
+      const lastComment = comments[comments.length - 1];
+      if (lastComment) {
+        const isFromAdmin = ["admin", "manager"].includes(lastComment.role);
+        const notifyPromise = isFromAdmin
+          ? sendPushToUsers([closeRequesterId, updatedEvent.resPerson, updatedEvent.userId], {
+              title: `💬 ${lastComment.userName || "แอดมิน"} ตอบกลับ`,
+              body: `${jobLabel}: ${lastComment.message}`,
+              url: `/operation/${updatedEvent._id}`,
+              tag: notifyTag,
+              renotify: true,
+            })
+          : sendPushToRoles(["admin", "manager"], {
+              title: `💬 ${lastComment.userName || "ช่าง"} คอมเมนต์ใหม่`,
+              body: `${jobLabel}: ${lastComment.message}`,
+              url: `/operation/${updatedEvent._id}`,
+              tag: notifyTag,
+              renotify: true,
+            });
+        notifyPromise.catch((err) => console.error("❌ Push notify error (comment):", err));
+      }
     }
 
     res.status(200).json({ updatedEvent: updatedEvent }); // ส่งข้อมูลของเหตุการณ์ที่ถูกอัปเดตกลับไป
