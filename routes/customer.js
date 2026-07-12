@@ -98,6 +98,10 @@ router.post(
 
       // console.log(product);
     } catch (err) {
+      // ✅ ชนกับ unique index (cCompany+cSite) — โครงการนี้มีอยู่แล้วจริงๆ ไม่ใช่ error ร้ายแรง
+      if (err.code === 11000) {
+        return res.status(409).send("มีโครงการนี้อยู่แล้ว");
+      }
       res.status(500).send(err.message);
     }
   }
@@ -146,6 +150,9 @@ router.put(
 
       res.status(200).send("Product updated successfully");
     } catch (err) {
+      if (err.code === 11000) {
+        return res.status(409).send("มีโครงการนี้อยู่แล้ว");
+      }
       res.status(500).send(err.message);
     }
   }

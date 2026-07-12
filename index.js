@@ -15,6 +15,8 @@ const fileRouter = require("./routes/file");
 const holidayRouter = require("./routes/fetchHolidays");
 const calendarEventRouter = require("./routes/calendarEvent");
 const pushRouter = require("./routes/push");
+const jobTypeRouter = require("./routes/jobType");
+const systemTypeRouter = require("./routes/systemType");
 const checkInternetConnection = require("./middleware/checkInternetConnection");
 
 
@@ -62,6 +64,8 @@ app.use("/api/stockproduct", stockProductRouter);
 app.use("/api/files", fileRouter);
 app.use("/api/events", calendarEventRouter);
 app.use("/api/push", pushRouter);
+app.use("/api/jobtype", jobTypeRouter);
+app.use("/api/systemtype", systemTypeRouter);
 app.use("/api/holidays", checkInternetConnection, holidayRouter); // ✅ ใช้เฉพาะจุด
 
 app.use("/uploads", express.static(path.join(__dirname, "asset/uploads")));
