@@ -109,13 +109,8 @@ router.get("/categories", verifyToken, async (req, res) => {
 // Get files
 router.get("/", verifyToken, async (req, res) => {
   try {
-    let userFiles;
-
-    if (req.user.role === "admin") {
-      userFiles = await File.find({});
-    } else {
-      userFiles = await File.find({ userId: req.userId });
-    }
+    // ✅ ไฟล์ทั่วไปให้ทุกคนเห็นได้หมด ไม่แยกตาม user
+    const userFiles = await File.find({});
 
     const userIds = userFiles.map((file) => file.userId);
     const users = await User.find({ _id: { $in: userIds } });

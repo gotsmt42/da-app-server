@@ -18,6 +18,7 @@ const pushRouter = require("./routes/push");
 const jobTypeRouter = require("./routes/jobType");
 const systemTypeRouter = require("./routes/systemType");
 const checkInternetConnection = require("./middleware/checkInternetConnection");
+const { checkAndNotifyOverdueJobs } = require("./services/OverdueReminder");
 
 
 
@@ -75,6 +76,11 @@ app.use("/api/asset/image", express.static(path.join(__dirname, "asset/image")))
 app.listen(PORT, () => {
   console.log(`🚀 Server is running on port ${PORT}`);
 });
+
+// ✅ เช็คงานค้างเกิน 1 สัปดาห์ แล้วส่ง push แจ้งเตือนช่างที่รับผิดชอบผ่านหน้าจอจริง (ไม่ใช่แค่ badge
+// ในแอป) เป็นระยะๆ — รันครั้งแรกหลังเซิร์ฟเวอร์พร้อม 2 นาที (รอ DB connect) แล้วเช็คซ้ำทุก 24 ชม.
+setTimeout(checkAndNotifyOverdueJobs, 2 * 60 * 1000);
+setInterval(checkAndNotifyOverdueJobs, 24 * 60 * 60 * 1000);
 
 
 
