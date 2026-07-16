@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require("../models/User");
+const BOOT_TIME = require("../config/bootTime");
 
 module.exports = verifyToken = async (req, res, next) => {
    try {
@@ -12,6 +13,12 @@ module.exports = verifyToken = async (req, res, next) => {
     const token = authHeader.replace("Bearer ", "").trim();
 
     const decoded = jwt.verify(token, process.env.APP_SECRET);
+
+    // ✅ Production เท่านั้น: ทุกครั้งที่ deploy (process restart) ให้ token ที่ออกก่อนหน้านี้ทั้งหมดหมดอายุทันที
+    // (เว้น dev/local ไว้ เพราะ nodemon restart บ่อยระหว่างพัฒนา จะรบกวนการทดสอบถ้าบังคับด้วย)
+    if (process.env.NODE_ENV === "production" && decoded.iat * 1000 < BOOT_TIME) {
+      return res.status(401).json({ message: "Token expired" });
+    }
 
     const user = await User.findById(decoded.userId);
 
