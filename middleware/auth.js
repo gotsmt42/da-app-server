@@ -19,6 +19,14 @@ module.exports = verifyToken = async (req, res, next) => {
       return res.status(404).json({ message: "User not found." });
     }
 
+    // ✅ ถ้า sessionVersion ใน token ไม่ตรงกับใน DB (เช่น ถูกเปลี่ยน role หรือถูกบังคับให้ออกจากระบบ)
+    // ให้ถือว่า token หมดอายุ — ฝั่ง frontend มี interceptor ดักข้อความนี้อยู่แล้วเพื่อเตะออกอัตโนมัติ
+    const tokenSessionVersion = decoded.sessionVersion || 0;
+    const currentSessionVersion = user.sessionVersion || 0;
+    if (tokenSessionVersion !== currentSessionVersion) {
+      return res.status(401).json({ message: "Token expired" });
+    }
+
     req.userId = decoded.userId;
     req.user = user;
     req.token = token;

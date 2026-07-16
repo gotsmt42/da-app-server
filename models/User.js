@@ -11,6 +11,7 @@ const userSchema = new mongoose.Schema({
   imageUrl: { type: String, default: "asset/image/userDefault-2.jpg" },
   rank: { type: String},
   role: { type: String},
+  sessionVersion: { type: Number, default: 0 },
 }, { timestamps: true });
 
 // ✅ เข้ารหัสรหัสผ่านก่อนบันทึก

@@ -161,6 +161,7 @@ router.post("/login", async (req, res) => {
       rank: user.rank,
       role: user.role,
       imageUrl: user.imageUrl, // ✅ เพิ่มตรงนี้
+      sessionVersion: user.sessionVersion || 0,
     };
 
     const token = jwt.sign(payload, process.env.APP_SECRET, {
@@ -203,9 +204,21 @@ router.put(
         console.log("⚠️ ไม่มีไฟล์ใหม่ถูกอัปโหลด");
       }
 
+      const existingUser = await User.findById(userId);
+      if (!existingUser) {
+        return res.status(404).send("User not found");
+      }
+
+      // ✅ เปลี่ยน role เมื่อไหร่ ให้เพิ่ม sessionVersion เพื่อบังคับ token เก่าให้หมดอายุทันที
+      // (ผู้ใช้จะถูกเตะออกจากระบบในการเรียก API ครั้งถัดไป และต้อง login ใหม่เพื่อรับสิทธิ์ล่าสุด)
+      const update = { $set: newUser };
+      if (role !== undefined && role !== existingUser.role) {
+        update.$inc = { sessionVersion: 1 };
+      }
+
       const updatedUser = await User.findByIdAndUpdate(
-        { _id: userId },
-        newUser,
+        userId,
+        update,
         { new: true },
       ).exec();
 
