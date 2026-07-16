@@ -1,6 +1,9 @@
 const express = require("express");
 const router = express.Router();
 
+const moment = require("moment");
+require("moment/locale/th");
+
 const CalendarEvent = require("../models/Events");
 const User = require("../models/User");
 
@@ -235,7 +238,13 @@ router.post("/", verifyToken, async (req, res) => {
     // - คนอื่นๆ ในระบบ (ยกเว้นคนสร้างเองและคนที่ได้รับมอบหมายซึ่งได้ข้อความเจาะจงไปแล้ว) ได้รับแจ้งว่ามีงานใหม่เข้าระบบ
     const primary = events[0];
     const daysSuffix = events.length > 1 ? ` (${events.length} วัน)` : "";
-    const jobLabelNew = `${primary.title || "งาน"} · ${primary.company || "-"}${primary.site ? " - " + primary.site : ""}${daysSuffix}`;
+    // ✅ เดิมแจ้งแค่ชื่องาน/บริษัท/ไซต์ ไม่มีวันเวลาเลย ต้องเปิดแอพเข้าไปดูเองถึงจะรู้ว่างานนัดไว้เมื่อไหร่
+    // — ใส่วันที่ + ช่วงเวลาไว้ในเนื้อหาแจ้งเตือนเลย ให้เห็นครบตั้งแต่หน้าจอแจ้งเตือนจริง
+    const dateLabel = moment(primary.start || primary.date).locale("th").format("D MMM YYYY");
+    const timeLabel = (primary.startTime || primary.endTime)
+      ? `${primary.startTime || "-"}-${primary.endTime || "-"}`
+      : "ทั้งวัน";
+    const jobLabelNew = `📅 ${dateLabel} 🕐 ${timeLabel} · ${primary.title || "งาน"} · ${primary.company || "-"}${primary.site ? " - " + primary.site : ""}${daysSuffix}`;
     // ✅ งานเดี่ยวไม่มี jobGroupId แล้ว (ดูคอมเมนต์ด้านบน) ใช้ _id ของตัวเองแทนกัน tag ชนกัน
     // ระหว่างงานเดี่ยวหลายๆ งาน (ซึ่งจะทำให้ browser แจ้งเตือนทับ/แทนที่กันเองผิดๆ)
     const notifyTag = `event-${jobGroupId || primary._id}`;
@@ -618,9 +627,15 @@ router.put("/:id", verifyToken, async (req, res) => {
     const notifyTag = `event-${updatedEvent._id}`;
 
     if (resPerson && resPerson !== existingEvent.resPerson && resPerson !== userId) {
+      // ✅ ใส่วันที่/เวลาให้เหมือนแจ้งเตือน "งานใหม่" ตอนเพิ่ม event — คนที่เพิ่งถูกมอบหมายงานควรรู้
+      // ตั้งแต่แจ้งเตือนแรกเลยว่างานนัดไว้เมื่อไหร่ ไม่ต้องเปิดแอพเข้าไปดูเอง
+      const reassignDateLabel = moment(updatedEvent.start || updatedEvent.date).locale("th").format("D MMM YYYY");
+      const reassignTimeLabel = (updatedEvent.startTime || updatedEvent.endTime)
+        ? `${updatedEvent.startTime || "-"}-${updatedEvent.endTime || "-"}`
+        : "ทั้งวัน";
       sendPushToUsers(resPerson, {
         title: "📋 คุณได้รับมอบหมายงาน",
-        body: `${updatedEvent.title || "งาน"} · ${jobLabel}`,
+        body: `📅 ${reassignDateLabel} 🕐 ${reassignTimeLabel} · ${updatedEvent.title || "งาน"} · ${jobLabel}`,
         url: `/operation/${updatedEvent._id}`,
         tag: notifyTag,
         renotify: true,
