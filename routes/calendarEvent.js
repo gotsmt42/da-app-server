@@ -248,10 +248,13 @@ router.post("/", verifyToken, async (req, res) => {
     // ✅ งานเดี่ยวไม่มี jobGroupId แล้ว (ดูคอมเมนต์ด้านบน) ใช้ _id ของตัวเองแทนกัน tag ชนกัน
     // ระหว่างงานเดี่ยวหลายๆ งาน (ซึ่งจะทำให้ browser แจ้งเตือนทับ/แทนที่กันเองผิดๆ)
     const notifyTag = `event-${jobGroupId || primary._id}`;
+    // ✅ เดิมแจ้งแค่ "มีงานใหม่เข้าระบบ" เฉยๆ ไม่รู้ว่าใครเป็นคนเพิ่ม ต้องเปิดแอพเข้าไปดูเอง
+    // — verifyToken แนบ req.user (fname/lname) มาให้อยู่แล้ว ใส่ชื่อคนเพิ่มไว้ในหัวข้อแจ้งเตือนเลย
+    const creatorName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
 
     if (primary.resPerson && primary.resPerson !== req.userId) {
       sendPushToUsers(primary.resPerson, {
-        title: "📋 คุณได้รับมอบหมายงานใหม่",
+        title: `📋 ${creatorName} มอบหมายงานใหม่ให้คุณ`,
         body: jobLabelNew,
         url: `/operation/${primary._id}`,
         tag: notifyTag,
@@ -261,7 +264,7 @@ router.post("/", verifyToken, async (req, res) => {
 
     sendPushToAllUsers(
       {
-        title: "🆕 มีงานใหม่ถูกเพิ่มเข้าระบบ",
+        title: `🆕 ${creatorName} เพิ่มงานใหม่เข้าระบบ`,
         body: jobLabelNew,
         url: `/operation/${primary._id}`,
         tag: notifyTag,
@@ -633,8 +636,10 @@ router.put("/:id", verifyToken, async (req, res) => {
       const reassignTimeLabel = (updatedEvent.startTime || updatedEvent.endTime)
         ? `${updatedEvent.startTime || "-"}-${updatedEvent.endTime || "-"}`
         : "ทั้งวัน";
+      // ✅ ใส่ชื่อคนมอบหมายไว้ในหัวข้อ เหมือนแจ้งเตือน "งานใหม่" ตอนสร้าง event
+      const reassignerName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
       sendPushToUsers(resPerson, {
-        title: "📋 คุณได้รับมอบหมายงาน",
+        title: `📋 ${reassignerName} มอบหมายงานให้คุณ`,
         body: `📅 ${reassignDateLabel} 🕐 ${reassignTimeLabel} · ${updatedEvent.title || "งาน"} · ${jobLabel}`,
         url: `/operation/${updatedEvent._id}`,
         tag: notifyTag,
