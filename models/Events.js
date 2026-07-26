@@ -12,7 +12,9 @@ const eventSchema = new mongoose.Schema(
     time: { type: String },
     team: { type: String },
 
-    date: { type: Date, required: true },
+    // ✅ วันที่บังคับกรอกเฉพาะงานที่ลงตารางแล้วเท่านั้น — งาน "วางแผนล่วงหน้า" (unscheduled)
+    // ยังไม่รู้วันที่แน่นอน จึงต้องปล่อยว่างได้จนกว่าจะถูกลาก/กดลงตารางจริง
+    date: { type: Date, required: function () { return !this.unscheduled; } },
     backgroundColor: { type: String, required: true },
     textColor: { type: String, required: true },
     fontSize: { type: Number, required: true },
@@ -112,9 +114,24 @@ const eventSchema = new mongoose.Schema(
 
     resPerson: { type: String }, // ✅ สำหรับชื่อไฟล์หลักฐาน
 
+    // ✅ ลูกทีมเพิ่มเติม (คนที่ 2, 3, ...) — แสดงผลอย่างเดียวว่าใครช่วยทำงานนี้บ้าง ไม่มีผลต่อ
+    // สิทธิ์แก้ไข/การแจ้งเตือน/การนับงานค้าง ฯลฯ ซึ่งยังผูกกับ team/resPerson (ช่างหลัก) เหมือนเดิม
+    teamMembers: [
+      {
+        userId: String,
+        name: String,
+      },
+    ],
+
     // ✅ ผูกงานที่เข้าหลายวันแบบไม่ติดกัน (เช่น PM ครั้งที่ 1 ต้องแบ่งเข้า 3 วัน) ให้รู้ว่า
     // เป็น "งานเดียวกัน" — สร้างตอน POST /events ครั้งแรก ทุก record ในชุดเดียวกันจะได้ค่านี้ตรงกัน
     jobGroupId: { type: String, index: true },
+
+    // ✅ งาน "วางแผนล่วงหน้า" — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ แต่ยังไม่ได้กำหนดวันที่ลงตาราง
+    // จัดกลุ่มแสดงผลตามเดือนที่ตั้งใจ (plannedMonth) แล้วค่อยลาก/กดลงตารางจริงทีหลัง
+    // (ดู POST /events/draft, GET /events/drafts, PUT /events/:id/schedule)
+    unscheduled: { type: Boolean, default: false, index: true },
+    plannedMonth: { type: String }, // รูปแบบ "YYYY-MM"
 
     checkInTime: Date,
     checkOutTime: Date,

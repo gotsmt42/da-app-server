@@ -192,6 +192,7 @@ router.post("/", verifyToken, async (req, res) => {
       "documentSent",
       "documentFile",
       "resPerson",
+      "teamMembers",
     ];
 
     // ✅ รองรับสร้างงานที่ต้องเข้าหลายวันแบบไม่ติดกันในครั้งเดียว: ส่ง dates เป็น array ของ
@@ -288,9 +289,10 @@ router.get("/event-op", verifyToken, async (req, res) => {
     // ✅ จับคู่ด้วย resPerson (ID จริง จาก event ที่สร้าง/แก้ไขใหม่),
     // team (fallback ด้วยชื่อ สำหรับ event เก่าที่มอบหมายไว้ก่อนหน้านี้ ยังไม่มี resPerson),
     // หรือ userId (คนที่เพิ่ม event นี้เอง แม้จะไม่ได้ตั้ง resPerson/team ไว้เลยก็ตาม)
+    // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรปนกับงานที่ลงตารางแล้ว
     const query = userRole === "admin"
-      ? {}
-      : { $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
+      ? { unscheduled: { $ne: true } }
+      : { unscheduled: { $ne: true }, $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
 
     const userEvents = await CalendarEvent.find(query)
       .sort({ start: -1 })
@@ -326,6 +328,232 @@ router.get("/event-op", verifyToken, async (req, res) => {
   }
 });
 
+// ✅ งาน "วางแผนล่วงหน้า" (unscheduled) — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ ในเดือนไหน แต่ยังไม่รู้วันที่
+// เจาะจง จัดกลุ่มแสดงตาม plannedMonth แล้วค่อยลาก/กดลงตารางจริงทีหลัง (ดู PUT /:id/schedule)
+// ต้องอยู่ก่อน "/:id" ไม่งั้น Express จะจับ "draft"/"drafts" เป็นค่า :id แทน
+router.post("/draft", verifyToken, async (req, res) => {
+  try {
+    const {
+      company, site, title, system, time, team, resPerson, plannedMonth,
+      backgroundColor, textColor, fontSize, description,
+    } = req.body;
+
+    if (!site || !title || !system) {
+      return res.status(400).json({ message: "กรุณาระบุชื่อโครงการ/ประเภทงาน/ระบบงาน" });
+    }
+    if (!plannedMonth) {
+      return res.status(400).json({ message: "กรุณาระบุเดือนที่ตั้งใจจะทำงานนี้" });
+    }
+
+    const draft = await new CalendarEvent({
+      company,
+      site,
+      title,
+      system,
+      time,
+      team,
+      description,
+      resPerson: resPerson || undefined,
+      unscheduled: true,
+      plannedMonth,
+      // ✅ ให้ค่าเริ่มต้นเสมอ (schema บังคับ required) แทนสีที่ผู้ใช้เลือกจริงตอนลงตาราง
+      // ใช้สีแดงธีมของแอป (เดิมเทา #9CA3AF ไม่ตรงกับธีม)
+      backgroundColor: backgroundColor || "#dc2626",
+      textColor: textColor || "#ffffff",
+      fontSize: fontSize || 8,
+      userId: req.userId,
+    }).save();
+
+    res.status(201).json({ event: draft });
+  } catch (error) {
+    console.error("❌ Error creating draft event:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
+router.get("/drafts", verifyToken, async (req, res) => {
+  try {
+    const userId = req.userId;
+    const userRole = req.user.role;
+    const isAdminOrManager = ["admin", "manager"].includes(userRole);
+
+    const query = isAdminOrManager
+      ? { unscheduled: true }
+      : { unscheduled: true, $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
+
+    const drafts = await CalendarEvent.find(query).sort({ createdAt: -1 }).lean();
+    res.json({ drafts });
+  } catch (error) {
+    console.error("❌ Error fetching draft events:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
+// ✅ แปลง draft ให้เป็นงานที่ลงตารางจริง (กำหนดวันที่ + ปลด unscheduled ออก) — ใช้ทั้งตอนลาก
+// การ์ดวางลงปฏิทิน (eventReceive), ตอนกดปุ่ม "ลงตาราง" เลือกวันที่เอง, และตอนแก้ไขงานล่วงหน้า
+// แล้วเลือกใส่วันที่ start/end เอง (เหมือนฟอร์มเพิ่มงานปกติ)
+// ✅ รองรับ dates[] (งานเข้าหลายวันไม่ติดกัน) แบบเดียวกับ POST / — ช่วงแรกอัปเดตลงตัว draft เดิม
+// ช่วงที่เหลือ clone เป็น record ใหม่ผูกด้วย jobGroupId เดียวกัน
+router.put("/:id/schedule", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { start, end, date, startTime, endTime, dates, team, resPerson, teamMembers } = req.body;
+
+    const existingEvent = await CalendarEvent.findById(id);
+    if (!existingEvent) return res.status(404).json({ message: "ไม่พบงานนี้" });
+    if (!existingEvent.unscheduled) {
+      return res.status(400).json({ message: "งานนี้ถูกลงตารางไปแล้ว" });
+    }
+
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    const isOwner = existingEvent.userId.toString() === req.userId.toString();
+    if (!isAdminOrManager && !isOwner) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });
+    }
+
+    const isMultiDate = Array.isArray(dates) && dates.length > 0;
+    if (!isMultiDate && !date) {
+      return res.status(400).json({ message: "กรุณาระบุวันที่" });
+    }
+
+    if (isMultiDate) {
+      const [first, ...rest] = dates;
+      const jobGroupId = dates.length > 1 ? (existingEvent.jobGroupId || crypto.randomUUID()) : existingEvent.jobGroupId;
+
+      existingEvent.unscheduled = false;
+      existingEvent.plannedMonth = undefined;
+      if (jobGroupId) existingEvent.jobGroupId = jobGroupId;
+      existingEvent.date = first.date || first.start;
+      existingEvent.start = first.start;
+      existingEvent.end = first.end;
+      if (startTime !== undefined) existingEvent.startTime = startTime;
+      if (endTime !== undefined) existingEvent.endTime = endTime;
+      // ✅ เดิมฟอร์ม "ลงตาราง" ไม่มีช่องทีมเลย — งานที่ยังไม่เคยมอบหมายทีมตอนสร้าง draft
+      // จะไม่มีทางกำหนดได้จนกว่าจะไปแก้ไขแยกอีกที ตอนนี้เลือก/แก้ทีมได้พร้อมกันตอนลงตารางเลย
+      if (team !== undefined) existingEvent.team = team;
+      if (resPerson !== undefined) existingEvent.resPerson = resPerson;
+      if (teamMembers !== undefined) existingEvent.teamMembers = teamMembers;
+      await existingEvent.save();
+
+      if (rest.length > 0) {
+        const base = existingEvent.toObject();
+        delete base._id;
+        delete base.createdAt;
+        delete base.updatedAt;
+        delete base.__v;
+        await Promise.all(
+          rest.map((d) =>
+            new CalendarEvent({
+              ...base,
+              date: d.date || d.start,
+              start: d.start,
+              end: d.end,
+            }).save()
+          )
+        );
+      }
+
+      return res.json({ event: existingEvent });
+    }
+
+    existingEvent.unscheduled = false;
+    existingEvent.plannedMonth = undefined;
+    existingEvent.date = date;
+    existingEvent.start = start || date;
+    existingEvent.end = end || date;
+    if (startTime !== undefined) existingEvent.startTime = startTime;
+    if (endTime !== undefined) existingEvent.endTime = endTime;
+    if (team !== undefined) existingEvent.team = team;
+    if (resPerson !== undefined) existingEvent.resPerson = resPerson;
+    if (teamMembers !== undefined) existingEvent.teamMembers = teamMembers;
+
+    await existingEvent.save();
+    res.json({ event: existingEvent });
+  } catch (error) {
+    console.error("❌ Error scheduling draft event:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
+// ✅ แก้ไขข้อมูลงานวางแผนล่วงหน้า (ยังไม่ลงตาราง) — ทำเฉพาะฟิลด์ของ draft เท่านั้น (ไม่มีวันที่)
+// แยกจาก PUT /:id (แก้ไขงานที่ลงตารางแล้ว) ที่มี logic แจ้งเตือน/เงื่อนไขซับซ้อนกว่ามาก
+router.put("/:id/draft", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existingEvent = await CalendarEvent.findById(id);
+    if (!existingEvent) return res.status(404).json({ message: "ไม่พบงานนี้" });
+    if (!existingEvent.unscheduled) {
+      return res.status(400).json({ message: "งานนี้ถูกลงตารางไปแล้ว ให้แก้ไขผ่านหน้าปฏิทินปกติ" });
+    }
+
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    const isOwner = existingEvent.userId.toString() === req.userId.toString();
+    if (!isAdminOrManager && !isOwner) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });
+    }
+
+    const { company, site, title, system, time, team, resPerson, plannedMonth, description } = req.body;
+    if (!site || !title || !system) {
+      return res.status(400).json({ message: "กรุณาระบุชื่อโครงการ/ประเภทงาน/ระบบงาน" });
+    }
+    if (!plannedMonth) {
+      return res.status(400).json({ message: "กรุณาระบุเดือนที่ตั้งใจจะทำงานนี้" });
+    }
+
+    existingEvent.company = company;
+    existingEvent.site = site;
+    existingEvent.title = title;
+    existingEvent.system = system;
+    existingEvent.time = time;
+    existingEvent.team = team;
+    existingEvent.resPerson = resPerson || undefined;
+    existingEvent.plannedMonth = plannedMonth;
+    existingEvent.description = description;
+
+    await existingEvent.save();
+    res.json({ event: existingEvent });
+  } catch (error) {
+    console.error("❌ Error updating draft event:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
+// ✅ ย้ายงานที่ลงตารางไปแล้วกลับไปเป็น "วางแผนล่วงหน้า" (unscheduled) — ใช้ตอนอยากเอาวันที่ออก
+// กลับไปอยู่ในแผงงานล่วงหน้าเหมือนเดิม โดยไม่ต้องลบทิ้งทั้งงาน (ปุ่ม "ย้ายไปแผนล่วงหน้า" ใน
+// EditEvent.js และตอนลากงานจากปฏิทินไปวางบนแผงงานล่วงหน้า)
+router.put("/:id/unschedule", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existingEvent = await CalendarEvent.findById(id);
+    if (!existingEvent) return res.status(404).json({ message: "ไม่พบงานนี้" });
+    if (existingEvent.unscheduled) {
+      return res.status(400).json({ message: "งานนี้เป็นงานวางแผนล่วงหน้าอยู่แล้ว" });
+    }
+
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    const isOwner = existingEvent.userId.toString() === req.userId.toString();
+    if (!isAdminOrManager && !isOwner) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });
+    }
+    // ❌ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามย้ายกลับไปแผนล่วงหน้า มีแค่ admin/manager เท่านั้นที่ทำได้
+    if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
+      return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถย้ายกลับไปแผนล่วงหน้าได้" });
+    }
+
+    existingEvent.unscheduled = true;
+    existingEvent.plannedMonth = req.body.plannedMonth || moment(existingEvent.start || existingEvent.date).format("YYYY-MM");
+    existingEvent.date = undefined;
+    existingEvent.start = undefined;
+    existingEvent.end = undefined;
+
+    await existingEvent.save();
+    res.json({ event: existingEvent });
+  } catch (error) {
+    console.error("❌ Error unscheduling event:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
 // ✅ รวมไฟล์เอกสารประจำงาน (Service Report/ใบเสนอราคา/ใบวางบิล/ใบส่งมอบงาน) จากทุก event
 // ให้แบนราบเป็นรายการเดียว สำหรับหน้า Files แสดงเป็นตาราง แยกจากไฟล์ทั่วไป (model File เดิม)
 // ต้องอยู่ก่อน "/:id" ไม่งั้น Express จะจับ "documents" เป็นค่า :id แทน
@@ -336,8 +564,8 @@ router.get("/documents", verifyToken, async (req, res) => {
 
     const isAdminOrManager = ["admin", "manager"].includes(userRole);
     const query = isAdminOrManager
-      ? {}
-      : { $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
+      ? { unscheduled: { $ne: true } }
+      : { unscheduled: { $ne: true }, $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
 
     const events = await CalendarEvent.find(query)
       .select("docNo company site title system team status reportFiles quotationFiles invoiceFiles completionFiles")
@@ -422,7 +650,8 @@ router.get("/", verifyToken, async (req, res) => {
     //   }
     // });
 
-    const userEvents = await CalendarEvent.find({}).lean();
+    // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรโผล่ในปฏิทิน
+    const userEvents = await CalendarEvent.find({ unscheduled: { $ne: true } }).lean();
 
     const userIds = userEvents.map((event) => event.userId.toString());
     const uniqueUserIds = [...new Set(userIds)];
@@ -539,6 +768,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       documentSent,
       documentFile, // ✅ เพิ่มตรงนี้
       resPerson, // ✅ เพิ่มตรงนี้
+      teamMembers, // ✅ ลูกทีมเพิ่มเติม (แสดงผลอย่างเดียว ไม่กระทบสิทธิ์/แจ้งเตือน)
 
       // ✅ ฟิลด์สำหรับ flow ของช่าง (เช็คอิน/เช็คเอาท์/สรุปงาน/ประวัติกิจกรรม)
       // และ flow ขอปิดงาน → รออนุมัติจากแอดมิน (เดิมไม่ได้ whitelist ไว้ ทำให้ไม่เคยถูกบันทึกจริง)
@@ -593,6 +823,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       documentSent,
       documentFile, // ✅ เพิ่มตรงนี้
       resPerson, // ✅ เพิ่มตรงนี้
+      teamMembers,
 
       checkedInAt,
       checkedOutAt,
