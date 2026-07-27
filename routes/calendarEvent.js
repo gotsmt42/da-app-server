@@ -858,7 +858,11 @@ router.put("/:id", verifyToken, async (req, res) => {
     // เทียบค่าก่อน (existingEvent) กับค่าที่ส่งมาใหม่ เพื่อดูว่า "เพิ่งเกิดการเปลี่ยนแปลง" จริงๆ ไม่ใช่แค่ค่าเดิม
     const jobLabel = `${updatedEvent.company || "-"}${updatedEvent.site ? " - " + updatedEvent.site : ""}`;
 
-    const notifyTag = `event-${updatedEvent._id}`;
+    // ✅ งานที่เข้าหลายวันไม่ติดกัน (ผูกด้วย jobGroupId เดียวกัน) ตอนนี้ action อย่าง "ขอปิดงาน"/
+    // "อนุมัติ"/"ไม่อนุมัติ" ฝั่ง frontend อัปเดตทุกวันในกลุ่มพร้อมกันด้วย Promise.all ยิง PUT
+    // มาทีละวัน — ถ้า tag อิงแค่ _id ของแต่ละวัน (ไม่ซ้ำกัน) จะได้ push แจ้งเตือนซ้อนกันหลายอันสำหรับ
+    // งานเดียวกัน ใช้ jobGroupId เป็น tag แทนเมื่อมี ให้เบราว์เซอร์ยุบเหลือแจ้งเตือนเดียวต่องาน
+    const notifyTag = `event-${updatedEvent.jobGroupId || updatedEvent._id}`;
 
     if (resPerson && resPerson !== existingEvent.resPerson && resPerson !== userId) {
       // ✅ ใส่วันที่/เวลาให้เหมือนแจ้งเตือน "งานใหม่" ตอนเพิ่ม event — คนที่เพิ่งถูกมอบหมายงานควรรู้

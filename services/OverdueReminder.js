@@ -50,7 +50,9 @@ async function checkAndNotifyOverdueJobs() {
         if (!lastPlanEnd || end.isAfter(lastPlanEnd)) lastPlanEnd = end;
       });
       const daysPastDue = moment().startOf("day").diff(lastPlanEnd.startOf("day"), "days");
-      if (daysPastDue >= WARNING_DAYS_AFTER_END) overdueJobs.push({ sessions, daysPastDue });
+      // ✅ ใช้ > แทน >= — วันที่ครบพอดี 7 วันยังไม่ถือว่า "เกิน" 1 สัปดาห์ (เทียบเกณฑ์เดียวกับ
+      // isFlaggedDays ใน utils/overdueJobs.js ฝั่ง frontend)
+      if (daysPastDue > WARNING_DAYS_AFTER_END) overdueJobs.push({ sessions, daysPastDue });
     });
 
     if (overdueJobs.length === 0) return;
@@ -88,7 +90,7 @@ async function checkAndNotifyOverdueJobs() {
     });
 
     for (const [techId, daysList] of overdueByTech.entries()) {
-      const severeCount = daysList.filter((d) => d >= SEVERE_DAYS_AFTER_END).length;
+      const severeCount = daysList.filter((d) => d > SEVERE_DAYS_AFTER_END).length;
       const body = severeCount > 0
         ? `มี ${daysList.length} งานเลยกำหนดส่งมอบ (${severeCount} งานเกิน 2 สัปดาห์) กรุณาตรวจสอบและปิดงาน`
         : `มี ${daysList.length} งานเลยกำหนดส่งมอบแล้ว กรุณาตรวจสอบและปิดงาน`;
