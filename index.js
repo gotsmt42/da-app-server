@@ -18,7 +18,7 @@ const pushRouter = require("./routes/push");
 const jobTypeRouter = require("./routes/jobType");
 const systemTypeRouter = require("./routes/systemType");
 const checkInternetConnection = require("./middleware/checkInternetConnection");
-const { checkAndNotifyOverdueJobs } = require("./services/OverdueReminder");
+const { checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations } = require("./services/OverdueReminder");
 
 
 
@@ -81,6 +81,11 @@ app.listen(PORT, () => {
 // ในแอป) เป็นระยะๆ — รันครั้งแรกหลังเซิร์ฟเวอร์พร้อม 2 นาที (รอ DB connect) แล้วเช็คซ้ำทุก 24 ชม.
 setTimeout(checkAndNotifyOverdueJobs, 2 * 60 * 1000);
 setInterval(checkAndNotifyOverdueJobs, 24 * 60 * 60 * 1000);
+
+// ✅ เช็คใบเสนอราคาที่ส่งลูกค้าไปแล้วเกิน 3 วันยังไม่ได้บันทึกผล แจ้งเตือนแอดมิน/manager เป็นระยะๆ
+// (ระบบติดตามใบเสนอราคา หน้า /quotations) — เทียบ pattern เดียวกับตัวเช็คงานค้างด้านบน
+setTimeout(checkAndNotifyStaleQuotations, 2 * 60 * 1000);
+setInterval(checkAndNotifyStaleQuotations, 24 * 60 * 60 * 1000);
 
 
 

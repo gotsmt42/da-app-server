@@ -61,19 +61,38 @@ router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) =
       return res.status(400).json({ error: "Unsupported file type" });
     }
 
+    // ✅ perf: รูปภาพ (jpg/png) อัพโหลดด้วย resource_type "image" แทน "raw" — "raw" เป็น blob ดิบๆ
+    // ไม่รองรับ Cloudinary URL transformation (resize/compress) เลย ทำให้ตอนเปิดดูรูปพรีวิวต้องโหลด
+    // ไฟล์เต็มความละเอียดต้นฉบับเสมอ (รูปจากมือถือหลาย MB) รู้สึกหน่วง/ค้าง — "image" เปิดให้แปะ query
+    // param (f_auto,q_auto,w_...) ตอนแสดงผลได้ ย่อ/บีบอัดแบบ on-the-fly โดยไม่กระทบไฟล์ต้นฉบับที่เก็บไว้
+    // (เอกสารอื่น PDF/Word/Excel ไม่ได้ประโยชน์จาก transformation นี้ ใช้ "raw" เหมือนเดิม)
+    const isImage = ["image/jpeg", "image/png"].includes(fileType);
+    // resource_type "image" ให้ Cloudinary จัดการนามสกุลเองจากเนื้อไฟล์จริง — ต้องตัดนามสกุลออกจาก
+    // public_id ก่อน ไม่งั้นจะได้ชื่อไฟล์ซ้อนนามสกุลสองต่อ (เช่น "photo.jpg.jpg")
+    const imagePublicId = sanitizedName.replace(/\.[^.]+$/, "");
+
     const uploadToCloudinary = () =>
       new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
-          {
-            resource_type: "raw",
-            folder: `events/${eventId}`,
-            // ✅ resource_type "raw" ไม่ต่อนามสกุลให้อัตโนมัติเหมือน image/video
-            // ต้องฝังนามสกุลไว้ใน public_id เองเสมอ ไม่งั้น secure_url จะไม่มีนามสกุล
-            public_id: sanitizedName,
-            use_filename: false,
-            unique_filename: false,
-            overwrite: true,
-          },
+          isImage
+            ? {
+                resource_type: "image",
+                folder: `events/${eventId}`,
+                public_id: imagePublicId,
+                use_filename: false,
+                unique_filename: false,
+                overwrite: true,
+              }
+            : {
+                resource_type: "raw",
+                folder: `events/${eventId}`,
+                // ✅ resource_type "raw" ไม่ต่อนามสกุลให้อัตโนมัติเหมือน image/video
+                // ต้องฝังนามสกุลไว้ใน public_id เองเสมอ ไม่งั้น secure_url จะไม่มีนามสกุล
+                public_id: sanitizedName,
+                use_filename: false,
+                unique_filename: false,
+                overwrite: true,
+              },
           (error, result) => {
             if (error) reject(error);
             else resolve(result);
@@ -554,6 +573,87 @@ router.put("/:id/unschedule", verifyToken, async (req, res) => {
   }
 });
 
+// ✅ บันทึกการติดตามลูกค้าเรื่องใบเสนอราคาแบบเป็นครั้งๆ (ครั้งที่ 1, 2, 3...) พร้อมหลักฐานแนบได้ถ้ามี
+// (หน้า /quotations) — เจ้าของ/ผู้ได้รับมอบหมายงานนี้หรือ admin บันทึกได้ ไม่จำกัดแค่แอดมิน เพราะคนที่
+// โทร/คุยกับลูกค้าจริงมักเป็นช่าง — attemptNumber คำนวณที่นี่เสมอ ห้ามรับจาก client (กันเลขซ้ำ/สลับ)
+router.put("/:id/quotation-followup", verifyToken, upload.single("file"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.userId;
+    const { note } = req.body;
+
+    const existingEvent = await CalendarEvent.findById(id);
+    if (!existingEvent) {
+      return res.status(404).json({ message: "ไม่พบงานนี้" });
+    }
+
+    // ✅ เงื่อนไขสิทธิ์เดียวกับ PUT /:id — เจ้าของ/ผู้ได้รับมอบหมาย (resPerson/team ตรงกับตัวเอง) หรือ admin
+    const isOwner = existingEvent.userId.toString() === userId.toString();
+    const isAssigned =
+      (existingEvent.resPerson && existingEvent.resPerson === userId) ||
+      (existingEvent.team && existingEvent.team === req.user.fname);
+    if (req.user.role !== "admin" && !isOwner && !isAssigned) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์บันทึกการติดตามงานนี้" });
+    }
+
+    if (!note || !note.trim()) {
+      return res.status(400).json({ message: "กรุณากรอกรายละเอียดการติดตาม" });
+    }
+
+    const followUp = {
+      attemptNumber: (existingEvent.quotationFollowUps?.length || 0) + 1,
+      note: note.trim(),
+      contactedAt: new Date(),
+      userId,
+      userName: [req.user.fname, req.user.lname].filter(Boolean).join(" ") || req.user.username,
+    };
+
+    // ✅ แนบหลักฐานได้ถ้ามี (ไม่บังคับ) — อัพโหลดขึ้น Cloudinary รูปแบบเดียวกับ PUT /upload/:id
+    // เติม timestamp นำหน้าชื่อไฟล์กันไฟล์ชื่อซ้ำกันข้ามแต่ละครั้งทับกันเอง (ต่างจาก /upload/:id ที่
+    // ตั้งใจให้ overwrite ไฟล์ประเภทเดิม แต่หลักฐานแต่ละครั้งของการติดตามต้องแยกจากกันชัดเจน)
+    if (req.file) {
+      const originalName = Buffer.from(req.file.originalname, "latin1").toString("utf8");
+      const sanitizedName = originalName.replace(/[^\w\-\.]/g, "_");
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            resource_type: "raw",
+            folder: `events/${id}/quotation-followups`,
+            public_id: `${Date.now()}_${sanitizedName}`,
+            use_filename: false,
+            unique_filename: false,
+            overwrite: true,
+          },
+          (error, result) => (error ? reject(error) : resolve(result)),
+        );
+        streamifier.createReadStream(req.file.buffer).pipe(stream);
+      });
+      followUp.evidenceFileName = originalName;
+      followUp.evidenceFileUrl = result.secure_url;
+      followUp.evidenceFileType = req.file.mimetype;
+    }
+
+    const logEntry = {
+      action: "quotation_followup",
+      detail: `บันทึกการติดตามครั้งที่ ${followUp.attemptNumber}`,
+      userId,
+      userName: followUp.userName,
+      timestamp: followUp.contactedAt,
+    };
+
+    const updatedEvent = await CalendarEvent.findByIdAndUpdate(
+      id,
+      { $push: { quotationFollowUps: followUp, activityLog: logEntry } },
+      { new: true },
+    );
+
+    res.status(200).json({ event: updatedEvent });
+  } catch (err) {
+    console.error("❌ Error adding quotation follow-up:", err);
+    res.status(500).json({ message: "บันทึกการติดตามไม่สำเร็จ" });
+  }
+});
+
 // ✅ รวมไฟล์เอกสารประจำงาน (Service Report/ใบเสนอราคา/ใบวางบิล/ใบส่งมอบงาน) จากทุก event
 // ให้แบนราบเป็นรายการเดียว สำหรับหน้า Files แสดงเป็นตาราง แยกจากไฟล์ทั่วไป (model File เดิม)
 // ต้องอยู่ก่อน "/:id" ไม่งั้น Express จะจับ "documents" เป็นค่า :id แทน
@@ -787,6 +887,14 @@ router.put("/:id", verifyToken, async (req, res) => {
       closeRejectReason,
       comments,
       jobGroupId, // ✅ ใช้ตอนแก้ไข event เดี่ยวแล้วเพิ่มวันที่อื่นให้กลายเป็นงานเดียวกันภายหลัง
+
+      // ✅ ระบบติดตามใบเสนอราคา (ดูหน้า /quotations)
+      quotationStatus,
+      quotationSentAt,
+      quotationDecisionAt,
+      quotationDecisionBy,
+      quotationAmount,
+      quotationFollowUpNote,
     } = req.body;
 
     const newEvent = {
@@ -840,6 +948,13 @@ router.put("/:id", verifyToken, async (req, res) => {
       closeRejectReason,
       comments,
       jobGroupId,
+
+      quotationStatus,
+      quotationSentAt,
+      quotationDecisionAt,
+      quotationDecisionBy,
+      quotationAmount,
+      quotationFollowUpNote,
 
       userId: existingEvent.userId, // ❌ ไม่เปลี่ยนเจ้าของเดิม
       // lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด

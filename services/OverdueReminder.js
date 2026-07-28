@@ -1,7 +1,7 @@
 const moment = require("moment");
 const CalendarEvent = require("../models/Events");
 const User = require("../models/User");
-const { sendPushToUsers } = require("./PushNotify");
+const { sendPushToUsers, sendPushToRoles } = require("./PushNotify");
 
 // ✅ เกณฑ์เดียวกับฝั่ง frontend (Operation/index.js) — เลยกำหนดวันสิ้นสุดงานตามแผนจริงมาแล้ว
 // อย่างน้อย 1 สัปดาห์ ถือว่า "ค้างงาน" ต้องแจ้งเตือน
@@ -108,4 +108,44 @@ async function checkAndNotifyOverdueJobs() {
   }
 }
 
-module.exports = { checkAndNotifyOverdueJobs };
+// ✅ ระบบติดตามใบเสนอราคา — เตือนแอดมิน/manager เมื่อส่งใบเสนอราคาให้ลูกค้าไปแล้วเกิน 3 วัน
+// ยังไม่มีการบันทึกผล (อนุมัติ/ปฏิเสธ/ขอแก้ไข) เพื่อกันไม่ให้ลืมติดตามลูกค้า (เทียบ pattern เดียวกับ
+// checkAndNotifyOverdueJobs ด้านบน แค่คิดจาก quotationSentAt แทนวันสิ้นสุดงาน)
+const QUOTATION_WARNING_DAYS = 3;
+
+async function checkAndNotifyStaleQuotations() {
+  try {
+    const events = await CalendarEvent.find({ quotationStatus: "sent" })
+      .select("company site title system team time jobGroupId quotationSentAt")
+      .lean();
+
+    if (events.length === 0) return;
+
+    // ✅ งานที่เข้าหลายวัน (jobGroupId เดียวกัน) มีค่า quotationSentAt ตรงกันทุกแถวอยู่แล้ว (อัปเดตทั้ง
+    // กลุ่มพร้อมกันตอนกดจากหน้า /quotations) — จัดกลุ่มก่อนนับ กันแจ้งเตือนซ้ำหลายครั้งต่องานเดียว
+    const seen = new Set();
+    let staleCount = 0;
+    events.forEach((e) => {
+      const key = getGroupKey(e);
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (!e.quotationSentAt) return;
+      const days = moment().startOf("day").diff(moment(e.quotationSentAt).startOf("day"), "days");
+      if (days > QUOTATION_WARNING_DAYS) staleCount++;
+    });
+
+    if (staleCount === 0) return;
+
+    await sendPushToRoles(["admin", "manager"], {
+      title: "📄 มีใบเสนอราคาที่ต้องติดตาม",
+      body: `มี ${staleCount} ใบเสนอราคาที่ส่งลูกค้าไปแล้วเกิน ${QUOTATION_WARNING_DAYS} วัน ยังไม่ได้บันทึกผล กรุณาติดตาม`,
+      url: "/quotations",
+      tag: "quotation-reminder",
+      renotify: true,
+    });
+  } catch (err) {
+    console.error("❌ Quotation reminder check error:", err);
+  }
+}
+
+module.exports = { checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations };

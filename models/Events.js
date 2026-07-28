@@ -46,6 +46,32 @@ const eventSchema = new mongoose.Schema(
     invoiceApplicable: { type: Boolean, default: null },
     completionApplicable: { type: Boolean, default: null },
 
+    // ✅ ระบบติดตามใบเสนอราคา (quotation tracking) — แยกจาก quotationApplicable/quotationFiles
+    // ด้านบนซึ่งบอกแค่ว่า "มีไฟล์ไหม" เท่านั้น ฟิลด์ชุดนี้ติดตามว่าเกิดอะไรขึ้นหลังจากอัพโหลดแล้ว
+    // (ส่งลูกค้าหรือยัง / ลูกค้าอนุมัติ-ปฏิเสธ-ขอแก้ไข / ใครเป็นคนบันทึกผล / มูลค่างาน)
+    quotationStatus: { type: String, enum: ["sent", "approved", "rejected", "revising"] },
+    quotationSentAt: Date,
+    quotationDecisionAt: Date,
+    quotationDecisionBy: { type: String },
+    quotationAmount: { type: Number },
+    quotationFollowUpNote: { type: String },
+
+    // ✅ ประวัติการติดตามลูกค้าเรื่องใบเสนอราคาแบบเป็นครั้งๆ (ครั้งที่ 1, 2, 3...) — ช่างหรือแอดมิน/
+    // manager คนไหนก็บันทึกได้ (คนที่โทร/คุยกับลูกค้าจริงมักเป็นช่าง) แนบหลักฐานได้ถ้ามี (ไม่บังคับ)
+    // attemptNumber คำนวณฝั่ง backend เสมอ (ห้ามรับจาก client) กันเลขซ้ำ/สลับกันตอนมีคนกดพร้อมกัน
+    quotationFollowUps: [
+      {
+        attemptNumber: Number,
+        note: String,
+        contactedAt: { type: Date, default: Date.now },
+        userId: String,
+        userName: String,
+        evidenceFileName: String,
+        evidenceFileUrl: String,
+        evidenceFileType: String,
+      },
+    ],
+
     // ✅ เอกสารแต่ละชนิดแนบได้หลายไฟล์ (array) — แต่ละไฟล์มี _id ของตัวเองในตัว
     // ไว้ใช้อ้างอิงตอนลบไฟล์เดียวออกจากชุด โดยไม่กระทบไฟล์อื่นในชนิดเดียวกัน
     quotationFiles: [
