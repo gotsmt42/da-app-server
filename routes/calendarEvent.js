@@ -29,12 +29,16 @@ router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) =
     const fileType = file.mimetype;
 
     // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างแก้ไขไฟล์อีก มีแค่ admin/manager เท่านั้นที่ทำได้
+    // ยกเว้นไฟล์ใบเสนอราคา — การติดตามใบเสนอราคามักเกิด "หลัง" งานปิดแล้ว (ช่างปิดงานหน้างานก่อน
+    // ค่อยตามเรื่องเอกสาร/ใบเสนอราคากับลูกค้าทีหลัง) ถ้าล็อกไว้เหมือนเอกสารชนิดอื่นจะทำให้ช่างแนบ/
+    // เปลี่ยนไฟล์ใบเสนอราคาของงานตัวเองไม่ได้เลยทั้งที่เป็นกรณีปกติ (ดู PUT /:id ด้านล่างที่ยกเว้น
+    // ให้เหมือนกัน)
     const eventForLock = await CalendarEvent.findById(eventId);
     if (!eventForLock) {
       return res.status(404).send("ไม่พบแผนงาน");
     }
     const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
-    if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
+    if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && type !== "quotation") {
       return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถแก้ไขไฟล์ได้");
     }
 
@@ -150,12 +154,13 @@ router.put("/delete-file/:id", verifyToken, async (req, res) => {
     const arrField = `${type}Files`;
 
     // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างลบไฟล์อีก มีแค่ admin/manager เท่านั้นที่ทำได้
+    // ยกเว้นไฟล์ใบเสนอราคา (เทียบเหตุผลเดียวกับ PUT /upload/:id ด้านบน)
     const eventForLock = await CalendarEvent.findById(id);
     if (!eventForLock) {
       return res.status(404).send("ไม่พบแผนงาน");
     }
     const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
-    if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
+    if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && type !== "quotation") {
       return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถลบไฟล์ได้");
     }
 
@@ -826,11 +831,18 @@ router.put("/:id", verifyToken, async (req, res) => {
     }
 
     // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างแก้ไขอีก มีแค่ admin/manager เท่านั้นที่ทำได้
-    // ยกเว้น: ถ้าเป็นการส่ง comment อย่างเดียว (คุยโต้ตอบกัน) ให้ทำได้แม้งานจะปิดไปแล้ว
-    // เพราะไม่ได้กระทบข้อมูลงานจริง แค่เพิ่มข้อความคุยกัน
+    // ยกเว้น: comment (คุยโต้ตอบกัน), activityLog (แค่ log ไม่กระทบข้อมูลงานจริง), และฟิลด์ระบบ
+    // ติดตามใบเสนอราคาทั้งชุด — เพราะการติดตามใบเสนอราคามักเกิด "หลัง" งานถูกปิดแล้ว (ช่างปิดงาน
+    // หน้างานก่อน ค่อยตามเรื่องเอกสาร/ใบเสนอราคากับลูกค้าทีหลัง) ถ้าล็อกไว้เหมือนข้อมูลงานอื่นจะทำให้
+    // ช่างอัปเดตสถานะใบเสนอราคาของงานตัวเองไม่ได้เลยทั้งที่เป็นกรณีปกติ ไม่ใช่ข้อยกเว้น
     const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
-    const isCommentOnlyUpdate = Object.keys(req.body).every((k) => k === "comments");
-    if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && !isCommentOnlyUpdate) {
+    const NON_BLOCKING_FIELDS = [
+      "comments", "activityLog",
+      "quotationStatus", "quotationSentAt", "quotationDecisionAt", "quotationDecisionBy",
+      "quotationAmount", "quotationFollowUpNote",
+    ];
+    const isNonBlockingUpdate = Object.keys(req.body).every((k) => NON_BLOCKING_FIELDS.includes(k));
+    if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && !isNonBlockingUpdate) {
       return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถแก้ไขได้" });
     }
 
