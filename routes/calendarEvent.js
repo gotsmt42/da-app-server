@@ -30,6 +30,18 @@ async function findDuplicateContractRound(contractGroupId, time, excludeId) {
   return CalendarEvent.findOne(query);
 }
 
+// ✅ ห้ามเลขที่สัญญาซ้ำกันข้ามสัญญา — เอกสารทุกครั้งที่ (visit) ในสัญญาเดียวกันมี contractNo เดียวกัน
+// อยู่แล้วโดยตั้งใจ (นับเป็นสัญญาเดียว ไม่ใช่ซ้ำ) ต้องกันเฉพาะกรณีเลขที่นี้ไปโผล่ที่ contractGroupId
+// อื่นเท่านั้นถึงจะถือว่าซ้ำจริง — excludeContractGroupId ไม่ใส่มาตอนสร้างสัญญาใหม่ทั้งชุด (ยังไม่มี
+// contractGroupId ให้ยกเว้น เจอที่ไหนก็ถือว่าซ้ำหมด) ใส่มาตอนแก้ไข/สร้างครั้งถัดไปของสัญญาที่มีอยู่แล้ว
+async function findDuplicateContractNo(contractNo, excludeContractGroupId) {
+  const trimmed = (contractNo || "").trim();
+  if (!trimmed) return null;
+  const query = { contractNo: trimmed };
+  if (excludeContractGroupId) query.contractGroupId = { $ne: excludeContractGroupId };
+  return CalendarEvent.findOne(query).select("contractGroupId contractNo").lean();
+}
+
 router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) => {
   try {
     const capitalize = (str = "") => str.charAt(0).toUpperCase() + str.slice(1);
@@ -273,7 +285,10 @@ router.post("/", verifyToken, async (req, res) => {
       }
 
       for (const range of rangesToCheck) {
-        const conflicts = await findResPersonConflicts({ resPerson, start: range.start, end: range.end });
+        const conflicts = await findResPersonConflicts({
+          resPerson, start: range.start, end: range.end,
+          startTime: req.body.startTime, endTime: req.body.endTime,
+        });
         if (conflicts.length > 0) {
           const c = conflicts[0];
           return res.status(409).json({
@@ -283,25 +298,33 @@ router.post("/", verifyToken, async (req, res) => {
       }
     }
 
+    // ✅ เช็คซ้ำ — กันเผลอเพิ่มครั้งที่ซ้ำกับที่มีอยู่แล้วในสัญญาเดียวกัน (ทั้งที่ลงตารางแล้วและที่เป็นแผนงานล่วงหน้า)
+    // ✅ ยกเว้น "ตั้งใจต่อวันที่ไม่ต่อเนื่องให้ครั้งเดิม" — ส่ง jobGroupId มาตรงกับของ record เดิมที่ครองครั้งนี้
+    // อยู่แล้ว (ดูหน้าภาพรวมสัญญา ปุ่ม "เพิ่มวันที่ต่อเนื่อง") กรณีนี้ไม่ถือว่าซ้ำ ปล่อยผ่านได้ — ต้องเช็คก่อน
+    // เพื่อให้เช็คจำนวนครั้งสูงสุดด้านล่างรู้ด้วยว่าไม่ควรนับเป็นครั้งใหม่
+    let isIntentionalExtend = false;
+    if (req.body.contractGroupId && req.body.time) {
+      const dupRound = await findDuplicateContractRound(req.body.contractGroupId, req.body.time);
+      if (dupRound) {
+        isIntentionalExtend = Boolean(req.body.jobGroupId) && String(dupRound.jobGroupId || "") === String(req.body.jobGroupId);
+        if (!isIntentionalExtend) {
+          return res.status(409).json({
+            message: `ครั้งที่ ${req.body.time} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ`,
+          });
+        }
+      }
+    }
+
     // ✅ ห้ามเพิ่มครั้งเกินจำนวนที่สัญญากำหนดไว้ (visitCount) — เช็คเฉพาะตอน client ระบุ contractGroupId
     // ของสัญญาที่มีอยู่แล้วมาเอง (เช่นกดปุ่ม "เพิ่มครั้งถัดไป" ในหน้าภาพรวมสัญญา) ไม่กระทบตอนสร้าง
-    // สัญญาใหม่ทั้งชุด (contractGroupId ยังไม่มีตอนนั้น เพิ่งถูกสุ่มด้านบน)
-    if (req.body.contractGroupId && Number(req.body.visitCount) > 0 && rangesToCheck.length > 0) {
+    // สัญญาใหม่ทั้งชุด (contractGroupId ยังไม่มีตอนนั้น เพิ่งถูกสุ่มด้านบน) และไม่กระทบตอนต่อวันที่ไม่
+    // ต่อเนื่องให้ครั้งเดิม (isIntentionalExtend) เพราะไม่ได้กินโควตาครั้งใหม่เพิ่ม
+    if (req.body.contractGroupId && Number(req.body.visitCount) > 0 && rangesToCheck.length > 0 && !isIntentionalExtend) {
       const visitCount = Number(req.body.visitCount);
       const existingCount = await CalendarEvent.countDocuments({ contractGroupId: req.body.contractGroupId });
       if (existingCount + rangesToCheck.length > visitCount) {
         return res.status(409).json({
           message: `สัญญานี้กำหนดไว้ ${visitCount} ครั้ง ตอนนี้มี ${existingCount} ครั้งแล้ว ไม่สามารถเพิ่มอีก ${rangesToCheck.length} ครั้งได้`,
-        });
-      }
-    }
-
-    // ✅ เช็คซ้ำอีกชั้น — กันเผลอเพิ่มครั้งที่ซ้ำกับที่มีอยู่แล้วในสัญญาเดียวกัน (ทั้งที่ลงตารางแล้วและที่เป็นแผนงานล่วงหน้า)
-    if (req.body.contractGroupId && req.body.time) {
-      const dupRound = await findDuplicateContractRound(req.body.contractGroupId, req.body.time);
-      if (dupRound) {
-        return res.status(409).json({
-          message: `ครั้งที่ ${req.body.time} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ`,
         });
       }
     }
@@ -466,6 +489,15 @@ router.post("/draft", verifyToken, async (req, res) => {
       }
     }
 
+    // ✅ ห้ามเลขที่สัญญาซ้ำกับสัญญาอื่น — excludeContractGroupId ส่ง contractGroupId ที่ client ให้มา
+    // ด้วย (ถ้ามี) เผื่อเป็นการเพิ่มแผนงานล่วงหน้าครั้งถัดไปของสัญญาเดิม ซึ่งเลขที่สัญญาจะซ้ำกับตัวเองเสมอ
+    if (isContractBatch && contractNo) {
+      const dupContractNo = await findDuplicateContractNo(contractNo, contractGroupId);
+      if (dupContractNo) {
+        return res.status(409).json({ message: `เลขที่สัญญา "${contractNo}" ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
+      }
+    }
+
     const draft = await new CalendarEvent({
       company,
       site,
@@ -556,7 +588,10 @@ router.put("/:id/schedule", verifyToken, async (req, res) => {
         }
       }
       for (const range of rangesToCheck) {
-        const conflicts = await findResPersonConflicts({ resPerson: effectiveResPerson, start: range.start, end: range.end, excludeEventId: id });
+        const conflicts = await findResPersonConflicts({
+          resPerson: effectiveResPerson, start: range.start, end: range.end,
+          startTime, endTime, excludeEventId: id,
+        });
         if (conflicts.length > 0) {
           const c = conflicts[0];
           return res.status(409).json({
@@ -971,6 +1006,15 @@ router.put("/contract/merge", verifyToken, async (req, res) => {
       return res.status(404).json({ message: "ไม่พบบางรายการที่เลือก อาจถูกลบหรือแก้ไขไปแล้ว" });
     }
 
+    // ✅ ห้ามเลขที่สัญญาซ้ำกับสัญญาอื่น — งานเก่าที่กำลังจะรวมนี้ยังไม่มี contractGroupId เลย
+    // (ไม่ต้อง exclude อะไร) เจอที่ไหนก็ถือว่าซ้ำหมด
+    if (contractNo) {
+      const dupContractNo = await findDuplicateContractNo(contractNo);
+      if (dupContractNo) {
+        return res.status(409).json({ message: `เลขที่สัญญา "${contractNo}" ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
+      }
+    }
+
     const contractGroupId = crypto.randomUUID();
     const sorted = events.slice().sort((a, b) => new Date(a.start) - new Date(b.start));
     const resolvedVisitCount = Number(visitCount) > 0 ? Number(visitCount) : eventIds.length;
@@ -1029,12 +1073,32 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
     // สัญญาอื่นๆ ด้านล่าง (เดิม route นี้แก้ได้แค่ข้อมูลสัญญา ไม่รวมผู้รับผิดชอบ ซึ่งจริงๆ ก็ควรผูก
     // กับสัญญาทั้งก้อนเหมือนกัน ไม่ใช่รายครั้ง — ดูหน้า "ภาพรวมสัญญา" ที่แก้ inline ผ่านตารางได้เลย)
     const { contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue, team, resPerson } = req.body;
+
+    // ✅ ห้ามเลขที่สัญญาซ้ำกับสัญญาอื่น — excludeContractGroupId เป็นตัวเอง เพราะทุกครั้งในสัญญานี้
+    // มี contractNo เดิมอยู่แล้วโดยตั้งใจ (ไม่ถือว่าซ้ำ)
+    if (contractNo !== undefined) {
+      const dupContractNo = await findDuplicateContractNo(contractNo, contractGroupId);
+      if (dupContractNo) {
+        return res.status(409).json({ message: `เลขที่สัญญา "${contractNo}" ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
+      }
+    }
+
     const update = {};
     if (contractNo !== undefined) update.contractNo = contractNo;
     if (quotationNo !== undefined) update.quotationNo = quotationNo;
     if (contractStart !== undefined) update.contractStart = contractStart;
     if (contractEnd !== undefined) update.contractEnd = contractEnd;
-    if (visitCount !== undefined) update.visitCount = visitCount;
+    if (visitCount !== undefined) {
+      // ✅ ห้ามลดจำนวนครั้งต่ำกว่าที่ลงตารางจริงไปแล้ว — ไม่งั้นครั้งที่เกินจะโดนคอลัมน์ "ครั้งที่ N"
+      // ในหน้าภาพรวมสัญญาตัดทิ้งจากที่แสดงผลไปเลยทั้งที่ข้อมูลยังอยู่จริงในฐานข้อมูล (ข้อมูลไม่ตรงจอ)
+      const realCount = await CalendarEvent.countDocuments({ contractGroupId, unscheduled: { $ne: true } });
+      if (Number(visitCount) < realCount) {
+        return res.status(409).json({
+          message: `ลดจำนวนครั้งต่ำกว่า ${realCount} ไม่ได้ เพราะมีงานลงตารางแล้ว ${realCount} ครั้ง`,
+        });
+      }
+      update.visitCount = visitCount;
+    }
     if (jobValue !== undefined) update.jobValue = jobValue;
     if (team !== undefined) update.team = team;
     if (resPerson !== undefined) update.resPerson = resPerson;
@@ -1044,6 +1108,27 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
     res.json({ events: updatedEvents });
   } catch (error) {
     console.error("❌ Error updating contract fields:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
+// ✅ ลบสัญญาทั้งก้อน (ทุกครั้งที่ผูก contractGroupId เดียวกัน) ในคำสั่งเดียว — เดิมมีแค่ DELETE /:id
+// ที่ลบได้ทีละ event เท่านั้น ไม่มีทางลบสัญญาทั้งสัญญาได้จากหน้า "ภาพรวมสัญญา" เลย ต้องไล่ลบทีละครั้ง
+// path นี้ยาว 2 segment ("contract" + id) ต่างจาก DELETE /:id (1 segment) จึงไม่ชนกันไม่ว่าจะประกาศ
+// ก่อน/หลัง (ไม่เหมือนกรณี PUT /contract/merge vs PUT /contract/:contractGroupId ที่ต้องระวังลำดับ)
+router.delete("/contract/:contractGroupId", verifyToken, async (req, res) => {
+  try {
+    if (!["admin", "manager"].includes(req.user.role)) {
+      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่ลบสัญญาได้" });
+    }
+    const { contractGroupId } = req.params;
+    const result = await CalendarEvent.deleteMany({ contractGroupId });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: "ไม่พบสัญญานี้" });
+    }
+    res.json({ deletedCount: result.deletedCount });
+  } catch (error) {
+    console.error("❌ Error deleting contract:", error);
     res.status(500).send("Internal Server Error");
   }
 });
@@ -1163,6 +1248,8 @@ router.put("/:id", verifyToken, async (req, res) => {
     const effectiveResPerson = resPerson !== undefined ? resPerson : existingEvent.resPerson;
     const effectiveStart = start !== undefined ? start : existingEvent.start;
     const effectiveEnd = end !== undefined ? end : existingEvent.end;
+    const effectiveStartTime = startTime !== undefined ? startTime : existingEvent.startTime;
+    const effectiveEndTime = endTime !== undefined ? endTime : existingEvent.endTime;
     const resPersonChanged = resPerson !== undefined && resPerson !== existingEvent.resPerson;
     const datesChanged =
       (start !== undefined && new Date(start).getTime() !== new Date(existingEvent.start).getTime()) ||
@@ -1173,6 +1260,8 @@ router.put("/:id", verifyToken, async (req, res) => {
         resPerson: effectiveResPerson,
         start: effectiveStart,
         end: effectiveEnd,
+        startTime: effectiveStartTime,
+        endTime: effectiveEndTime,
         excludeEventId: id,
       });
       if (conflicts.length > 0) {
@@ -1374,16 +1463,18 @@ router.delete("/:id", verifyToken, async (req, res) => {
       return res.status(404).json({ message: "Event not found" });
     }
 
-    // ✅ เงื่อนไข: admin แก้ไขได้ทุก event, user แก้ไขได้เฉพาะของตัวเอง
+    // ✅ เงื่อนไข: admin/manager ลบได้ทุก event, user คนอื่นลบได้เฉพาะของตัวเอง — เดิมเช็คแค่ "admin"
+    // เท่านั้น (manager ลบของคนอื่นไม่ได้เลย) ทั้งที่ทุก route ที่เกี่ยวกับสัญญาในไฟล์นี้ให้สิทธิ์
+    // admin/manager เท่ากันหมด และหน้า "ภาพรวมสัญญา" ที่เรียก route นี้ก็เปิดให้แค่ admin/manager อยู่แล้ว
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
     if (
-      req.user.role !== "admin" &&
+      !isAdminOrManager &&
       existingEvent.userId.toString() !== userId.toString()
     ) {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์ลบ Event นี้" });
     }
 
     // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างลบอีก มีแค่ admin/manager เท่านั้นที่ทำได้
-    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
     if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
       return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถลบได้" });
     }
