@@ -18,6 +18,17 @@ const upload = multer({ storage });
 const streamifier = require("streamifier");
 const crypto = require("crypto");
 const { sendPushToUsers, sendPushToRoles, sendPushToAllUsers } = require("../services/PushNotify");
+const { findResPersonConflicts, findMutualOverlaps } = require("../utils/scheduleConflict");
+
+// ✅ ห้ามมี 2 งานใช้ "ครั้งที่" (time) ซ้ำกันภายในสัญญาเดียวกัน (contractGroupId เดียวกัน) — ไม่ว่าจะเป็น
+// แผนงานล่วงหน้า (unscheduled) หรือลงตารางจริงแล้วก็ตาม เพราะทั้งสองแบบ "จอง" หมายเลขครั้งนั้นไปแล้ว
+// excludeId ใช้ตอนแปลง draft เดิมเป็นงานจริง (PUT /:id/schedule) เพื่อไม่ให้ชนกับตัวมันเอง
+async function findDuplicateContractRound(contractGroupId, time, excludeId) {
+  if (!contractGroupId || time === undefined || time === null || time === "") return null;
+  const query = { contractGroupId, time: String(time) };
+  if (excludeId) query._id = { $ne: excludeId };
+  return CalendarEvent.findOne(query);
+}
 
 router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) => {
   try {
@@ -217,6 +228,12 @@ router.post("/", verifyToken, async (req, res) => {
       "documentFile",
       "resPerson",
       "teamMembers",
+      "contractNo",
+      "quotationNo",
+      "contractStart",
+      "contractEnd",
+      "visitCount",
+      "jobValue",
     ];
 
     // ✅ รองรับสร้างงานที่ต้องเข้าหลายวันแบบไม่ติดกันในครั้งเดียว: ส่ง dates เป็น array ของ
@@ -227,9 +244,67 @@ router.post("/", verifyToken, async (req, res) => {
     // อยู่แล้ว (เช่น เพิ่มวันที่เข้าไปในงานที่เป็นกลุ่มอยู่ก่อนแล้ว) — เดิมสุ่ม jobGroupId ให้
     // "ทุก" งานที่สร้างใหม่แม้จะเป็นงานเดี่ยวธรรมดา ทำให้หน้า Operation เข้าใจผิดว่างานเดี่ยว
     // เป็นส่วนหนึ่งของงานหลายวัน (ขึ้นสัญลักษณ์ 🔗 ทั้งที่จริงมีวันเดียว)
-    const { dates } = req.body;
+    //
+    // ✅ isContractBatch แยกความหมายออกจาก jobGroupId ข้างบน — dates[] ชุดนี้คือ "หลายครั้ง"
+    // ของสัญญาเดียวกัน (ครั้งที่ 1, 2, 3...) ไม่ใช่วันไม่ติดกันของครั้งเดียว จึงผูกด้วย contractGroupId
+    // คนละตัวแทน ไม่แตะ jobGroupId เดิม (client เดิมที่ไม่ส่ง isContractBatch มา พฤติกรรมเหมือนเดิมทุกอย่าง)
+    const { dates, isContractBatch, resPerson } = req.body;
     const isMultiDate = Array.isArray(dates) && dates.length > 1;
-    const jobGroupId = isMultiDate ? (req.body.jobGroupId || crypto.randomUUID()) : req.body.jobGroupId;
+    const jobGroupId = (isMultiDate && !isContractBatch) ? (req.body.jobGroupId || crypto.randomUUID()) : req.body.jobGroupId;
+    // ✅ สัญญาต้องได้ contractGroupId แม้มีแค่ครั้งเดียวตอนสร้าง (ยังไม่ได้ลงครั้งที่ 2 ทันที) —
+    // ต่างจาก jobGroupId ด้านบนที่ต้องมากกว่า 1 ช่วงจริงๆ ถึงจะผูก เพราะสัญญาคือ 1 หน่วยข้อมูล
+    // (เลขที่สัญญา/มูลค่างาน ฯลฯ) ตั้งแต่ครั้งแรกอยู่แล้ว ไม่ต้องรอให้มีครั้งที่ 2 ก่อนถึงจะนับเป็นสัญญา
+    const hasContractDates = isContractBatch && Array.isArray(dates) && dates.length >= 1;
+    const contractGroupId = hasContractDates ? (req.body.contractGroupId || crypto.randomUUID()) : req.body.contractGroupId;
+
+    // ✅ ตรวจสอบช่างชนกัน (double-booking) "ก่อน" เขียนอะไรลงฐานข้อมูลเลยสักตัว — ทั้งชนกันเอง
+    // ภายในชุดที่กำลังจะสร้าง (เช่น กรอกวันที่ครั้งที่ 1/3 ทับกันเอง) และชนกับงานอื่นที่มีอยู่แล้วในระบบ
+    // กันเคสสร้างไป 2-3 ครั้งสำเร็จแล้วมาพังเอาตอนครั้งที่ 4 (ข้อมูลสัญญาครึ่งๆ กลางๆ)
+    const rangesToCheck = (Array.isArray(dates) && dates.length > 0 ? dates : [{ start: req.body.start, end: req.body.end }])
+      .filter((d) => d && d.start && d.end);
+
+    if (resPerson && rangesToCheck.length > 0) {
+      const mutualConflicts = findMutualOverlaps(rangesToCheck);
+      if (mutualConflicts.length > 0) {
+        const [a, b] = mutualConflicts[0];
+        return res.status(409).json({
+          message: `วันที่ที่กรอกทับกันเอง (${moment(a.start).locale("th").format("D MMM YYYY")} กับ ${moment(b.start).locale("th").format("D MMM YYYY")}) กรุณาตรวจสอบวันที่แต่ละครั้งอีกครั้ง`,
+        });
+      }
+
+      for (const range of rangesToCheck) {
+        const conflicts = await findResPersonConflicts({ resPerson, start: range.start, end: range.end });
+        if (conflicts.length > 0) {
+          const c = conflicts[0];
+          return res.status(409).json({
+            message: `ช่างคนนี้มีงานชนกันอยู่แล้ว: ${c.title || "งาน"} · ${c.company || "-"}${c.site ? " - " + c.site : ""} วันที่ ${moment(c.start).locale("th").format("D MMM YYYY")}`,
+          });
+        }
+      }
+    }
+
+    // ✅ ห้ามเพิ่มครั้งเกินจำนวนที่สัญญากำหนดไว้ (visitCount) — เช็คเฉพาะตอน client ระบุ contractGroupId
+    // ของสัญญาที่มีอยู่แล้วมาเอง (เช่นกดปุ่ม "เพิ่มครั้งถัดไป" ในหน้าภาพรวมสัญญา) ไม่กระทบตอนสร้าง
+    // สัญญาใหม่ทั้งชุด (contractGroupId ยังไม่มีตอนนั้น เพิ่งถูกสุ่มด้านบน)
+    if (req.body.contractGroupId && Number(req.body.visitCount) > 0 && rangesToCheck.length > 0) {
+      const visitCount = Number(req.body.visitCount);
+      const existingCount = await CalendarEvent.countDocuments({ contractGroupId: req.body.contractGroupId });
+      if (existingCount + rangesToCheck.length > visitCount) {
+        return res.status(409).json({
+          message: `สัญญานี้กำหนดไว้ ${visitCount} ครั้ง ตอนนี้มี ${existingCount} ครั้งแล้ว ไม่สามารถเพิ่มอีก ${rangesToCheck.length} ครั้งได้`,
+        });
+      }
+    }
+
+    // ✅ เช็คซ้ำอีกชั้น — กันเผลอเพิ่มครั้งที่ซ้ำกับที่มีอยู่แล้วในสัญญาเดียวกัน (ทั้งที่ลงตารางแล้วและที่เป็นแผนงานล่วงหน้า)
+    if (req.body.contractGroupId && req.body.time) {
+      const dupRound = await findDuplicateContractRound(req.body.contractGroupId, req.body.time);
+      if (dupRound) {
+        return res.status(409).json({
+          message: `ครั้งที่ ${req.body.time} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ`,
+        });
+      }
+    }
 
     const buildEventData = (dateOverride) => {
       const eventData = {};
@@ -242,8 +317,10 @@ router.post("/", verifyToken, async (req, res) => {
         eventData.start = dateOverride.start;
         eventData.end = dateOverride.end;
         eventData.date = dateOverride.date;
+        if (dateOverride.time !== undefined) eventData.time = dateOverride.time;
       }
       if (jobGroupId) eventData.jobGroupId = jobGroupId;
+      if (contractGroupId) eventData.contractGroupId = contractGroupId;
       eventData.userId = req.userId || req.body.userId;
       return eventData;
     };
@@ -360,13 +437,33 @@ router.post("/draft", verifyToken, async (req, res) => {
     const {
       company, site, title, system, time, team, resPerson, plannedMonth,
       backgroundColor, textColor, fontSize, description,
+      // ✅ สัญญาแบบยังไม่มีวันที่เข้างานเลย ("ฉบับร่าง") — เก็บเป็น draft เดียวที่มีข้อมูลสัญญาครบ
+      // แต่ยังไม่มี date/start/end/time จนกว่าจะกด "+ เพิ่มครั้งถัดไป" แปลงเป็นครั้งที่ 1 จริง
+      // (ดู PUT /:id/schedule) — ไม่ต้องสร้าง event ที่มีวันที่ปลอมๆ ขึ้นมาแค่เพื่อให้มี record
+      // ✅ contractGroupId: รับจาก client ได้ด้วย (ใช้ตอนวางแผนล่วงหน้าครั้งถัดไปของ "สัญญาที่มีอยู่แล้ว"
+      // จากหน้าแผนงานล่วงหน้า) ถ้าไม่ส่งมาค่อยสุ่มใหม่ (กรณีสร้างสัญญาใหม่ทั้งชุดจากหน้าภาพรวมสัญญา)
+      isContractBatch, contractGroupId, contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue,
     } = req.body;
 
     if (!site || !title || !system) {
       return res.status(400).json({ message: "กรุณาระบุชื่อโครงการ/ประเภทงาน/ระบบงาน" });
     }
-    if (!plannedMonth) {
+
+    // ✅ แผนงานทั่วไปให้ผู้ใช้ระบุ plannedMonth เองเสมอ แต่สัญญาฉบับร่างไม่มีช่องนี้ในฟอร์ม —
+    // อนุมานให้จากวันที่เริ่มสัญญา (ถ้ามี) ไม่งั้นใช้เดือนปัจจุบัน กันไม่ให้ติด validation ด้านล่าง
+    const resolvedPlannedMonth = plannedMonth || (isContractBatch
+      ? (contractStart ? moment(contractStart).format("YYYY-MM") : moment().format("YYYY-MM"))
+      : plannedMonth);
+    if (!resolvedPlannedMonth) {
       return res.status(400).json({ message: "กรุณาระบุเดือนที่ตั้งใจจะทำงานนี้" });
+    }
+
+    // ✅ เช็คซ้ำ — กันเพิ่มแผนงานล่วงหน้าไปทับ "ครั้งที่" ที่มีอยู่แล้วในสัญญาเดียวกัน (ทั้งที่ลงตารางแล้วและที่เป็นแผนงานอื่นค้างอยู่)
+    if (isContractBatch && contractGroupId && time) {
+      const dupRound = await findDuplicateContractRound(contractGroupId, time);
+      if (dupRound) {
+        return res.status(409).json({ message: `ครั้งที่ ${time} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
+      }
     }
 
     const draft = await new CalendarEvent({
@@ -379,13 +476,17 @@ router.post("/draft", verifyToken, async (req, res) => {
       description,
       resPerson: resPerson || undefined,
       unscheduled: true,
-      plannedMonth,
+      plannedMonth: resolvedPlannedMonth,
       // ✅ ให้ค่าเริ่มต้นเสมอ (schema บังคับ required) แทนสีที่ผู้ใช้เลือกจริงตอนลงตาราง
       // ใช้สีแดงธีมของแอป (เดิมเทา #9CA3AF ไม่ตรงกับธีม)
       backgroundColor: backgroundColor || "#dc2626",
       textColor: textColor || "#ffffff",
       fontSize: fontSize || 8,
       userId: req.userId,
+      ...(isContractBatch ? {
+        contractGroupId: contractGroupId || crypto.randomUUID(),
+        contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue,
+      } : {}),
     }).save();
 
     res.status(201).json({ event: draft });
@@ -421,7 +522,7 @@ router.get("/drafts", verifyToken, async (req, res) => {
 router.put("/:id/schedule", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { start, end, date, startTime, endTime, dates, team, resPerson, teamMembers } = req.body;
+    const { start, end, date, startTime, endTime, dates, team, resPerson, teamMembers, time } = req.body;
 
     const existingEvent = await CalendarEvent.findById(id);
     if (!existingEvent) return res.status(404).json({ message: "ไม่พบงานนี้" });
@@ -438,6 +539,31 @@ router.put("/:id/schedule", verifyToken, async (req, res) => {
     const isMultiDate = Array.isArray(dates) && dates.length > 0;
     if (!isMultiDate && !date) {
       return res.status(400).json({ message: "กรุณาระบุวันที่" });
+    }
+
+    // ✅ ลงตารางงานที่วางแผนล่วงหน้าไว้ ก็ต้องเช็คช่างชนกันเหมือนสร้างงานใหม่ปกติ — เดิมข้ามไปเลย
+    // ทำให้ลาก/กดลงตารางแล้วมอบหมายช่างที่มีงานชนกันวันเดียวกันได้โดยไม่มีอะไรเตือน
+    const effectiveResPerson = resPerson !== undefined ? resPerson : existingEvent.resPerson;
+    const rangesToCheck = isMultiDate ? dates.filter((d) => d && d.start && d.end) : [{ start: start || date, end: end || date }];
+    if (effectiveResPerson && rangesToCheck.length > 0) {
+      if (isMultiDate) {
+        const mutualConflicts = findMutualOverlaps(rangesToCheck);
+        if (mutualConflicts.length > 0) {
+          const [a, b] = mutualConflicts[0];
+          return res.status(409).json({
+            message: `วันที่ที่กรอกทับกันเอง (${moment(a.start).locale("th").format("D MMM YYYY")} กับ ${moment(b.start).locale("th").format("D MMM YYYY")}) กรุณาตรวจสอบวันที่แต่ละครั้งอีกครั้ง`,
+          });
+        }
+      }
+      for (const range of rangesToCheck) {
+        const conflicts = await findResPersonConflicts({ resPerson: effectiveResPerson, start: range.start, end: range.end, excludeEventId: id });
+        if (conflicts.length > 0) {
+          const c = conflicts[0];
+          return res.status(409).json({
+            message: `ช่างคนนี้มีงานชนกันอยู่แล้ว: ${c.title || "งาน"} · ${c.company || "-"}${c.site ? " - " + c.site : ""} วันที่ ${moment(c.start).locale("th").format("D MMM YYYY")}`,
+          });
+        }
+      }
     }
 
     if (isMultiDate) {
@@ -490,6 +616,16 @@ router.put("/:id/schedule", verifyToken, async (req, res) => {
     if (team !== undefined) existingEvent.team = team;
     if (resPerson !== undefined) existingEvent.resPerson = resPerson;
     if (teamMembers !== undefined) existingEvent.teamMembers = teamMembers;
+    // ✅ ใช้ตอนแปลงสัญญาฉบับร่าง (ยังไม่มีครั้งไหนลงตารางเลย) ให้กลายเป็น "ครั้งที่ 1" จริง —
+    // เดิม route นี้ไม่รับ time เลย เพราะฟอร์ม "ลงตาราง" ทั่วไปไม่เคยต้องกำหนดครั้งที่มาก่อน
+    if (time !== undefined) {
+      // ✅ เช็คซ้ำ — excludeId เป็นตัวมันเอง เพราะ draft ที่กำลังแปลงนี้อาจถือ "ครั้งที่" นี้อยู่แล้วตั้งแต่ตอนสร้าง
+      const dupRound = await findDuplicateContractRound(existingEvent.contractGroupId, time, existingEvent._id);
+      if (dupRound) {
+        return res.status(409).json({ message: `ครั้งที่ ${time} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
+      }
+      existingEvent.time = time;
+    }
 
     await existingEvent.save();
     res.json({ event: existingEvent });
@@ -673,7 +809,7 @@ router.get("/documents", verifyToken, async (req, res) => {
       : { unscheduled: { $ne: true }, $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
 
     const events = await CalendarEvent.find(query)
-      .select("docNo company site title system team status reportFiles quotationFiles invoiceFiles completionFiles")
+      .select("docNo company site title system team teamMembers time status reportFiles quotationFiles invoiceFiles completionFiles")
       .sort({ updatedAt: -1 })
       .lean();
 
@@ -704,6 +840,8 @@ router.get("/documents", verifyToken, async (req, res) => {
             title: ev.title || "",
             system: ev.system || "",
             team: ev.team || "",
+            teamMembers: ev.teamMembers || [],
+            time: ev.time || "",
             status: ev.status || "",
           });
         }
@@ -809,6 +947,107 @@ router.get("/:id", verifyToken, async (req, res) => {
   }
 });
 
+// ✅ รวมงานเก่าที่ยังไม่มี contractGroupId (สร้างก่อนมีฟีเจอร์สัญญา) เข้าเป็นสัญญาเดียวกัน — เลือก
+// event ที่มีอยู่แล้วมาผูก contractGroupId ใหม่ให้ พร้อมเรียง "ครั้งที่" ใหม่ตามวันที่จริง (ค่า time
+// เดิมของงานเก่าไม่น่าเชื่อถือ อาจว่าง/ซ้ำ/มั่วมาก่อน) — เฉพาะ admin/manager เพราะเป็นการแก้ไขข้อมูล
+// ย้อนหลังเป็นชุด ไม่ผูกกับสิทธิ์ความเป็นเจ้าของ/ผู้ถูกมอบหมายของ event เดี่ยวๆ แบบ PUT /:id
+//
+// ⚠️ ต้องประกาศ "ก่อน" PUT /contract/:contractGroupId ด้านล่าง — ทั้งคู่เป็น path 2 segment
+// เหมือนกัน ("contract/merge" กับ "contract/:contractGroupId") ถ้าสลับลำดับ Express จะจับ "merge"
+// เป็นค่า :contractGroupId ไปแทน route นี้จะไม่มีทางถูกเรียกถึงเลย
+router.put("/contract/merge", verifyToken, async (req, res) => {
+  try {
+    if (!["admin", "manager"].includes(req.user.role)) {
+      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่จัดกลุ่มสัญญาได้" });
+    }
+
+    const { eventIds, contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue } = req.body;
+    if (!Array.isArray(eventIds) || eventIds.length === 0) {
+      return res.status(400).json({ message: "กรุณาเลือกงานอย่างน้อย 1 รายการ" });
+    }
+
+    const events = await CalendarEvent.find({ _id: { $in: eventIds } });
+    if (events.length !== eventIds.length) {
+      return res.status(404).json({ message: "ไม่พบบางรายการที่เลือก อาจถูกลบหรือแก้ไขไปแล้ว" });
+    }
+
+    const contractGroupId = crypto.randomUUID();
+    const sorted = events.slice().sort((a, b) => new Date(a.start) - new Date(b.start));
+    const resolvedVisitCount = Number(visitCount) > 0 ? Number(visitCount) : eventIds.length;
+
+    const updated = await Promise.all(
+      sorted.map((ev, idx) =>
+        CalendarEvent.findByIdAndUpdate(
+          ev._id,
+          {
+            $set: {
+              contractGroupId,
+              contractNo: contractNo || "",
+              quotationNo: quotationNo || "",
+              contractStart: contractStart || undefined,
+              contractEnd: contractEnd || undefined,
+              visitCount: resolvedVisitCount,
+              jobValue: jobValue != null && jobValue !== "" ? Number(jobValue) : undefined,
+              time: String(idx + 1),
+            },
+          },
+          { new: true }
+        )
+      )
+    );
+
+    res.json({ events: updated, contractGroupId });
+  } catch (error) {
+    console.error("❌ Error merging events into contract:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
+// ✅ แก้ไขข้อมูลสัญญา (contractNo/quotationNo/contractStart/contractEnd/visitCount/jobValue) พร้อมกัน
+// ทุก "ครั้ง" ที่อยู่ในสัญญาเดียวกัน (ผูกด้วย contractGroupId) — กันข้อมูลสัญญาเพี้ยนไม่ตรงกันระหว่าง
+// ครั้งที่ 1-4 ถ้าแก้ทีละ record ผ่าน PUT /:id ธรรมดาซึ่งกระทบแค่ record เดียว
+// (path มี "contract" คั่นเป็นอีก segment จึงไม่ชนกับ "/:id" แม้จะประกาศก่อนหรือหลังก็ได้)
+router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
+  try {
+    const { contractGroupId } = req.params;
+    const events = await CalendarEvent.find({ contractGroupId });
+    if (events.length === 0) {
+      return res.status(404).json({ message: "ไม่พบสัญญานี้" });
+    }
+
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    const isAllowed = isAdminOrManager || events.some((e) =>
+      (e.userId && e.userId.toString() === req.userId.toString()) ||
+      e.resPerson === req.userId ||
+      (e.team && e.team === req.user.fname)
+    );
+    if (!isAllowed) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขสัญญานี้" });
+    }
+
+    // ✅ team/resPerson เพิ่มเข้ามาให้แก้ "ผู้รับผิดชอบ" ของทั้งสัญญาได้พร้อมกันทุกครั้งเหมือนฟิลด์
+    // สัญญาอื่นๆ ด้านล่าง (เดิม route นี้แก้ได้แค่ข้อมูลสัญญา ไม่รวมผู้รับผิดชอบ ซึ่งจริงๆ ก็ควรผูก
+    // กับสัญญาทั้งก้อนเหมือนกัน ไม่ใช่รายครั้ง — ดูหน้า "ภาพรวมสัญญา" ที่แก้ inline ผ่านตารางได้เลย)
+    const { contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue, team, resPerson } = req.body;
+    const update = {};
+    if (contractNo !== undefined) update.contractNo = contractNo;
+    if (quotationNo !== undefined) update.quotationNo = quotationNo;
+    if (contractStart !== undefined) update.contractStart = contractStart;
+    if (contractEnd !== undefined) update.contractEnd = contractEnd;
+    if (visitCount !== undefined) update.visitCount = visitCount;
+    if (jobValue !== undefined) update.jobValue = jobValue;
+    if (team !== undefined) update.team = team;
+    if (resPerson !== undefined) update.resPerson = resPerson;
+
+    await CalendarEvent.updateMany({ contractGroupId }, { $set: update });
+    const updatedEvents = await CalendarEvent.find({ contractGroupId }).lean();
+    res.json({ events: updatedEvents });
+  } catch (error) {
+    console.error("❌ Error updating contract fields:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
 router.put("/:id", verifyToken, async (req, res) => {
   try {
     const id = req.params.id;
@@ -907,7 +1146,42 @@ router.put("/:id", verifyToken, async (req, res) => {
       quotationDecisionBy,
       quotationAmount,
       quotationFollowUpNote,
+
+      // ✅ ข้อมูลสัญญา — แก้ทีละ record ผ่านตรงนี้ได้ (เช่นแก้แค่ครั้งเดียว) แต่ถ้าต้องการแก้พร้อมกัน
+      // ทุกครั้งในสัญญาเดียวกันให้ใช้ PUT /contract/:contractGroupId แทน (กันข้อมูลเพี้ยนไม่ตรงกัน)
+      contractGroupId,
+      contractNo,
+      quotationNo,
+      contractStart,
+      contractEnd,
+      visitCount,
+      jobValue,
     } = req.body;
+
+    // ✅ เช็คช่างชนกันเฉพาะตอนที่ resPerson/ช่วงวันที่จริงๆ เปลี่ยนไปจากเดิม — ไม่ต้องเช็คทุกครั้งที่
+    // แก้ไขงาน (เช่น แก้แค่ status/comment) เพราะข้อมูลเดิมผ่านการเช็คมาแล้วตอนสร้าง/ลงตารางครั้งแรก
+    const effectiveResPerson = resPerson !== undefined ? resPerson : existingEvent.resPerson;
+    const effectiveStart = start !== undefined ? start : existingEvent.start;
+    const effectiveEnd = end !== undefined ? end : existingEvent.end;
+    const resPersonChanged = resPerson !== undefined && resPerson !== existingEvent.resPerson;
+    const datesChanged =
+      (start !== undefined && new Date(start).getTime() !== new Date(existingEvent.start).getTime()) ||
+      (end !== undefined && new Date(end).getTime() !== new Date(existingEvent.end).getTime());
+
+    if (effectiveResPerson && effectiveStart && effectiveEnd && (resPersonChanged || datesChanged)) {
+      const conflicts = await findResPersonConflicts({
+        resPerson: effectiveResPerson,
+        start: effectiveStart,
+        end: effectiveEnd,
+        excludeEventId: id,
+      });
+      if (conflicts.length > 0) {
+        const c = conflicts[0];
+        return res.status(409).json({
+          message: `ช่างคนนี้มีงานชนกันอยู่แล้ว: ${c.title || "งาน"} · ${c.company || "-"}${c.site ? " - " + c.site : ""} วันที่ ${moment(c.start).locale("th").format("D MMM YYYY")}`,
+        });
+      }
+    }
 
     const newEvent = {
       docNo,
@@ -967,6 +1241,14 @@ router.put("/:id", verifyToken, async (req, res) => {
       quotationDecisionBy,
       quotationAmount,
       quotationFollowUpNote,
+
+      contractGroupId,
+      contractNo,
+      quotationNo,
+      contractStart,
+      contractEnd,
+      visitCount,
+      jobValue,
 
       userId: existingEvent.userId, // ❌ ไม่เปลี่ยนเจ้าของเดิม
       // lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด

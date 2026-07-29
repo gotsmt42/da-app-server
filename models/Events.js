@@ -153,6 +153,19 @@ const eventSchema = new mongoose.Schema(
     // เป็น "งานเดียวกัน" — สร้างตอน POST /events ครั้งแรก ทุก record ในชุดเดียวกันจะได้ค่านี้ตรงกัน
     jobGroupId: { type: String, index: true },
 
+    // ✅ ผูก "ครั้งที่ 1-N" ของสัญญาเดียวกันเข้าด้วยกัน (คนละแนวคิดกับ jobGroupId ด้านบนซึ่งผูก
+    // วันที่ไม่ติดกันของ "1 ครั้ง" เดียว) — ทุก event ที่เป็นคนละครั้งแต่สัญญาเดียวกันจะได้ค่านี้ตรงกัน
+    // พร้อมข้อมูลสัญญาที่ copy ไว้ซ้ำกันทุก record (เหมือน company/system ที่ทำอยู่แล้ว) ใช้แสดงผล
+    // แบบตาราง 1 แถวต่อสัญญาในหน้า "ภาพรวมสัญญา" — แก้ไขข้อมูลสัญญาต้องผ่าน PUT /events/contract/:id
+    // เพื่อให้อัปเดตพร้อมกันทุก record กันข้อมูลสัญญาเพี้ยนไม่ตรงกันระหว่างครั้ง
+    contractGroupId: { type: String, index: true },
+    contractNo: { type: String },
+    quotationNo: { type: String },
+    contractStart: Date,
+    contractEnd: Date,
+    visitCount: Number,
+    jobValue: Number,
+
     // ✅ งาน "วางแผนล่วงหน้า" — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ แต่ยังไม่ได้กำหนดวันที่ลงตาราง
     // จัดกลุ่มแสดงผลตามเดือนที่ตั้งใจ (plannedMonth) แล้วค่อยลาก/กดลงตารางจริงทีหลัง
     // (ดู POST /events/draft, GET /events/drafts, PUT /events/:id/schedule)
@@ -214,6 +227,10 @@ eventSchema.pre("save", function (next) {
   }
   next();
 });
+
+// ✅ เช็คช่างชนกัน (double-booking) ต้อง query ตาม resPerson + ช่วงวันที่ทุกครั้งที่สร้าง/แก้ไขงาน
+// เดิมไม่มี index รองรับเลย (มีแค่ jobGroupId/unscheduled แยกฟิลด์เดี่ยวๆ) query จะช้าเมื่อข้อมูลเยอะขึ้น
+eventSchema.index({ resPerson: 1, start: 1, end: 1 });
 
 const Events = mongoose.model("CalendarEvent", eventSchema);
 
