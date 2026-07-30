@@ -1047,6 +1047,166 @@ router.put("/contract/merge", verifyToken, async (req, res) => {
   }
 });
 
+// ✅ ย้าย "งานทั่วไป" (event ที่ยังไม่มี contractGroupId) เข้าไปเป็นครั้งที่ N ของสัญญาที่มีอยู่แล้ว —
+// ต่างจาก PUT /contract/merge ตรงที่ merge สร้าง contractGroupId ใหม่เสมอ ส่วนตัวนี้ผูกเข้ากับสัญญา
+// เดิมที่เลือกไว้ ใช้แก้ไขกรณีจัดกลุ่มผิด (สร้างเป็นงานเดี่ยวทั้งที่จริงควรอยู่ในสัญญานี้)
+// (path มี "attach" คั่นเป็น segment ที่ 3 จึงไม่ชนกับ PUT /contract/:contractGroupId 2 segment ด้านล่าง)
+router.put("/contract/:contractGroupId/attach", verifyToken, async (req, res) => {
+  try {
+    if (!["admin", "manager"].includes(req.user.role)) {
+      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่ย้ายงานเข้าสัญญาได้" });
+    }
+    const { contractGroupId } = req.params;
+    const { eventId, time } = req.body;
+    if (!eventId || time === undefined || time === null || time === "") {
+      return res.status(400).json({ message: "กรุณาระบุงานและครั้งที่ที่ต้องการย้ายเข้า" });
+    }
+
+    const target = await CalendarEvent.findById(eventId);
+    if (!target) {
+      return res.status(404).json({ message: "ไม่พบงานที่ต้องการย้าย" });
+    }
+
+    // ✅ ดึงข้อมูลสัญญาปลายทางจาก record ใดก็ได้ที่ผูก contractGroupId นี้อยู่แล้ว มาคัดลอกฟิลด์
+    // ที่ต้องเหมือนกันทุกครั้ง (contractNo/quotationNo/visitCount/jobValue ฯลฯ) ลงงานที่ย้ายเข้ามาด้วย
+    const contractHead = await CalendarEvent.findOne({ contractGroupId });
+    if (!contractHead) {
+      return res.status(404).json({ message: "ไม่พบสัญญานี้" });
+    }
+
+    // ✅ ครั้งที่เลือกอาจ "ลงตารางแล้ว" อยู่ก่อน — เดิมถือว่าซ้ำแล้วปฏิเสธเสมอ แต่จริงๆ ควรต่อเป็น
+    // งานเดียวกัน (ผูก jobGroupId เดียวกัน) เหมือนปุ่ม "เพิ่มวันที่ต่อเนื่อง" ในตารางเอง — ไม่กินโควตา
+    // ครั้งใหม่เพิ่ม เพราะครั้งนี้ถูกนับไปแล้ว ส่วนครั้งที่เป็นแค่ "แผนงานล่วงหน้า" (unscheduled จอง
+    // ไว้แต่ยังไม่มีวันที่จริง) ห้ามต่อด้วย เพราะจะไปชนกับแผนงานล่วงหน้านั้นตอนแปลงเป็นของจริงทีหลัง
+    const existingRoundDocs = await CalendarEvent.find({ contractGroupId, time: String(time) });
+    const scheduledRoundDocs = existingRoundDocs.filter((v) => !v.unscheduled);
+    const pendingRoundDoc = existingRoundDocs.find((v) => v.unscheduled);
+
+    let jobGroupId;
+    if (scheduledRoundDocs.length > 0) {
+      const holder = scheduledRoundDocs.find((v) => v.jobGroupId) || scheduledRoundDocs[0];
+      jobGroupId = holder.jobGroupId || crypto.randomUUID();
+      if (!holder.jobGroupId) {
+        await CalendarEvent.updateOne({ _id: holder._id }, { $set: { jobGroupId } });
+      }
+    } else if (pendingRoundDoc) {
+      return res.status(409).json({
+        message: `ครั้งที่ ${time} มีแผนงานล่วงหน้าจองไว้อยู่แล้ว กรุณาเลือกครั้งอื่น หรือไปลงวันที่จริงที่แผนงานล่วงหน้าแทน`,
+      });
+    } else {
+      // ✅ ครั้งใหม่ล้วนๆ (ยังไม่มีใครจับจองอยู่) — กินโควตาครั้งใหม่จริง ต้องเช็คเพดานจำนวนครั้ง
+      // นับ "จำนวนครั้งที่ไม่ซ้ำกัน" (ไม่ใช่จำนวน record ดิบ) เทียบ pattern เดียวกับที่แก้ไว้ใน
+      // PUT /contract/:contractGroupId — กันนับเกินจริงตอนบางครั้งเข้างานไม่ต่อเนื่องมีหลาย record
+      if (Number(contractHead.visitCount) > 0) {
+        const scheduledEvents = await CalendarEvent.find({ contractGroupId, unscheduled: { $ne: true } })
+          .select("time")
+          .lean();
+        const usedRounds = new Set(
+          scheduledEvents.map((e) => e.time).filter((t) => t !== undefined && t !== null && t !== "").map(String)
+        );
+        if (usedRounds.size >= Number(contractHead.visitCount)) {
+          return res.status(409).json({ message: "สัญญานี้ครบตามจำนวนครั้งที่กำหนดไว้แล้ว" });
+        }
+      }
+    }
+
+    const updated = await CalendarEvent.findByIdAndUpdate(
+      eventId,
+      {
+        $set: {
+          contractGroupId,
+          contractNo: contractHead.contractNo,
+          quotationNo: contractHead.quotationNo,
+          contractStart: contractHead.contractStart,
+          contractEnd: contractHead.contractEnd,
+          visitCount: contractHead.visitCount,
+          jobValue: contractHead.jobValue,
+          time: String(time),
+          ...(jobGroupId ? { jobGroupId } : {}),
+        },
+      },
+      { new: true }
+    );
+
+    res.json({ event: updated });
+  } catch (error) {
+    console.error("❌ Error attaching event to contract:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
+// ✅ แยกครั้งที่ N ออกจากสัญญา กลับไปเป็น "งานทั่วไป" เดี่ยวๆ (ใช้แก้ไขกรณีจัดกลุ่มผิด — สร้าง/ต่อเป็น
+// ครั้งหนึ่งของสัญญาไปแล้วทั้งที่จริงไม่ควรผูกกับสัญญานี้) — ทำงานกับ "ทั้งครั้ง" (ทุก record ที่แชร์
+// contractGroupId+time เดียวกัน) ไม่ใช่แค่ record เดียว เพราะครั้งที่เข้างานไม่ต่อเนื่องมีได้หลาย record
+// ต่อ 1 ครั้ง — jobGroupId (ตัวผูกวันที่ไม่ต่อเนื่องของงานเดียวกัน) ไม่ถูกแตะ ยังกลุ่มเดียวกันเหมือนเดิม
+router.put("/contract/:contractGroupId/detach", verifyToken, async (req, res) => {
+  try {
+    if (!["admin", "manager"].includes(req.user.role)) {
+      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แยกงานออกจากสัญญาได้" });
+    }
+    const { contractGroupId } = req.params;
+    const { time } = req.body;
+    if (time === undefined || time === null || time === "") {
+      return res.status(400).json({ message: "กรุณาระบุครั้งที่ที่ต้องการแยกออก" });
+    }
+
+    const result = await CalendarEvent.updateMany(
+      { contractGroupId, time: String(time) },
+      {
+        $unset: {
+          contractGroupId: "",
+          contractNo: "",
+          quotationNo: "",
+          contractStart: "",
+          contractEnd: "",
+          visitCount: "",
+          jobValue: "",
+        },
+      }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "ไม่พบครั้งที่นี้ในสัญญา" });
+    }
+
+    res.json({ success: true, modifiedCount: result.modifiedCount });
+  } catch (error) {
+    console.error("❌ Error detaching round from contract:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
+// ✅ ยืนยัน/ยกเลิกยืนยันว่างานนี้เป็น "งานทั่วไป" จริงๆ (ไม่ใช่แค่ยังไม่ได้จัดกลุ่ม) — เฉพาะงานที่ไม่มี
+// contractGroupId เท่านั้นที่มีสถานะนี้ได้ ก่อนกดยืนยันจะแสดงเป็น "งานเก่าในระบบที่ยังไม่จัดกลุ่ม" เสมอ
+// (ดูหน้า "ภาพรวมงาน" ContractOverview.js) — เฉพาะแอดมิน/manager เหมือน route จัดการสัญญาอื่นๆ ในไฟล์นี้
+// ไม่ผูกกับสิทธิ์ความเป็นเจ้าของ/ผู้ถูกมอบหมายแบบ PUT /:id ทั่วไป เพราะเป็นการจัดหมวดหมู่เชิงบริหารจัดการ
+router.put("/:id/general", verifyToken, async (req, res) => {
+  try {
+    if (!["admin", "manager"].includes(req.user.role)) {
+      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่ยืนยันงานทั่วไปได้" });
+    }
+    const { id } = req.params;
+    const { isConfirmedGeneral } = req.body;
+
+    const target = await CalendarEvent.findById(id);
+    if (!target) {
+      return res.status(404).json({ message: "ไม่พบงานนี้" });
+    }
+    if (target.contractGroupId) {
+      return res.status(400).json({ message: "งานนี้ผูกกับสัญญาอยู่แล้ว ไม่สามารถยืนยันเป็นงานทั่วไปได้" });
+    }
+
+    const updated = await CalendarEvent.findByIdAndUpdate(
+      id,
+      { $set: { isConfirmedGeneral: Boolean(isConfirmedGeneral) } },
+      { new: true }
+    );
+    res.json({ event: updated });
+  } catch (error) {
+    console.error("❌ Error marking event as general:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
 // ✅ แก้ไขข้อมูลสัญญา (contractNo/quotationNo/contractStart/contractEnd/visitCount/jobValue) พร้อมกัน
 // ทุก "ครั้ง" ที่อยู่ในสัญญาเดียวกัน (ผูกด้วย contractGroupId) — กันข้อมูลสัญญาเพี้ยนไม่ตรงกันระหว่าง
 // ครั้งที่ 1-4 ถ้าแก้ทีละ record ผ่าน PUT /:id ธรรมดาซึ่งกระทบแค่ record เดียว
@@ -1091,7 +1251,21 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
     if (visitCount !== undefined) {
       // ✅ ห้ามลดจำนวนครั้งต่ำกว่าที่ลงตารางจริงไปแล้ว — ไม่งั้นครั้งที่เกินจะโดนคอลัมน์ "ครั้งที่ N"
       // ในหน้าภาพรวมสัญญาตัดทิ้งจากที่แสดงผลไปเลยทั้งที่ข้อมูลยังอยู่จริงในฐานข้อมูล (ข้อมูลไม่ตรงจอ)
-      const realCount = await CalendarEvent.countDocuments({ contractGroupId, unscheduled: { $ne: true } });
+      // ⚠️ BUG ที่แก้: เดิมนับด้วย countDocuments (จำนวน record ดิบ) — ครั้งที่เข้างานไม่ต่อเนื่อง (เว้น
+      // ช่วงแล้วกลับมาเข้าอีก) มีหลาย record ต่อ 1 "ครั้งที่" ทำให้นับเกินจริงมาก (เช่น 3 ครั้งจริง แต่มี
+      // 7 record เพราะบางครั้งเข้าหลายวันไม่ติดกัน) ทำให้ปฏิเสธการบันทึกทั้งที่ visitCount ไม่ได้ลดจริง
+      // เลย (แค่แก้ไขงานอื่นในสัญญาแล้ว EditEvent.js ส่ง visitCount เดิมกลับมาด้วยทุกครั้ง) — ต้องนับ
+      // "จำนวนครั้งที่ไม่ซ้ำกัน" (distinct time) เหมือน countUsedRounds ฝั่ง frontend แทน
+      const scheduledEvents = await CalendarEvent.find({ contractGroupId, unscheduled: { $ne: true } })
+        .select("time")
+        .lean();
+      const usedRounds = new Set(
+        scheduledEvents
+          .map((e) => e.time)
+          .filter((t) => t !== undefined && t !== null && t !== "")
+          .map(String)
+      );
+      const realCount = usedRounds.size;
       if (Number(visitCount) < realCount) {
         return res.status(409).json({
           message: `ลดจำนวนครั้งต่ำกว่า ${realCount} ไม่ได้ เพราะมีงานลงตารางแล้ว ${realCount} ครั้ง`,

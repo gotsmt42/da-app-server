@@ -166,6 +166,11 @@ const eventSchema = new mongoose.Schema(
     visitCount: Number,
     jobValue: Number,
 
+    // ✅ งานที่ไม่มี contractGroupId แบ่งเป็น 2 สถานะ: "ยังไม่จัดกลุ่ม" (ค่าเริ่มต้น — ยังไม่มีใครยืนยัน
+    // ว่าเป็นงานเดี่ยวจริงๆ หรือควรอยู่ในสัญญาไหน) กับ "งานทั่วไป" (isConfirmedGeneral: true — แอดมิน/
+    // manager กดยืนยันแล้วว่าไม่ใช่ส่วนหนึ่งของสัญญาไหนจริงๆ) ดูหน้า "ภาพรวมงาน" (ContractOverview.js)
+    isConfirmedGeneral: { type: Boolean, default: false },
+
     // ✅ งาน "วางแผนล่วงหน้า" — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ แต่ยังไม่ได้กำหนดวันที่ลงตาราง
     // จัดกลุ่มแสดงผลตามเดือนที่ตั้งใจ (plannedMonth) แล้วค่อยลาก/กดลงตารางจริงทีหลัง
     // (ดู POST /events/draft, GET /events/drafts, PUT /events/:id/schedule)
