@@ -996,15 +996,21 @@ router.put("/contract/merge", verifyToken, async (req, res) => {
       return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่จัดกลุ่มสัญญาได้" });
     }
 
-    const { eventIds, contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue } = req.body;
-    if (!Array.isArray(eventIds) || eventIds.length === 0) {
+    // ⚠️ BUG ที่แก้: เดิมรับ eventIds (array แบนๆ) แล้วให้แต่ละ document กลายเป็นคนละ "ครั้งที่" เสมอ
+    // (idx+1 ต่อ document) — แต่ "งานทั่วไป" ที่เข้าหลายวันไม่ติดกัน (ผูกกันด้วย jobGroupId เดียวกัน)
+    // 1 แถวในตารางอาจมีหลาย document ที่ควรรวมเป็น "ครั้งเดียวกัน" ไม่ใช่แยกคนละครั้ง — เปลี่ยนมารับ
+    // rounds เป็น array ของ array (แต่ละกลุ่มย่อย = document ทั้งหมดที่ควรอยู่ครั้งเดียวกัน) แทน
+    const { rounds, contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue } = req.body;
+    if (!Array.isArray(rounds) || rounds.length === 0 || rounds.some((r) => !Array.isArray(r) || r.length === 0)) {
       return res.status(400).json({ message: "กรุณาเลือกงานอย่างน้อย 1 รายการ" });
     }
 
-    const events = await CalendarEvent.find({ _id: { $in: eventIds } });
-    if (events.length !== eventIds.length) {
+    const allEventIds = rounds.flat();
+    const events = await CalendarEvent.find({ _id: { $in: allEventIds } });
+    if (events.length !== allEventIds.length) {
       return res.status(404).json({ message: "ไม่พบบางรายการที่เลือก อาจถูกลบหรือแก้ไขไปแล้ว" });
     }
+    const eventsById = new Map(events.map((e) => [String(e._id), e]));
 
     // ✅ ห้ามเลขที่สัญญาซ้ำกับสัญญาอื่น — งานเก่าที่กำลังจะรวมนี้ยังไม่มี contractGroupId เลย
     // (ไม่ต้อง exclude อะไร) เจอที่ไหนก็ถือว่าซ้ำหมด
@@ -1016,29 +1022,49 @@ router.put("/contract/merge", verifyToken, async (req, res) => {
     }
 
     const contractGroupId = crypto.randomUUID();
-    const sorted = events.slice().sort((a, b) => new Date(a.start) - new Date(b.start));
-    const resolvedVisitCount = Number(visitCount) > 0 ? Number(visitCount) : eventIds.length;
+    // ✅ เรียง "ครั้งที่" ตามวันที่เริ่มเร็วสุดของแต่ละกลุ่ม (ไม่ใช่ตามลำดับที่เลือกในหน้าจอ)
+    const sortedRounds = rounds.slice().sort((a, b) => {
+      const aStart = Math.min(...a.map((id) => new Date(eventsById.get(String(id)).start).getTime()));
+      const bStart = Math.min(...b.map((id) => new Date(eventsById.get(String(id)).start).getTime()));
+      return aStart - bStart;
+    });
+    const resolvedVisitCount = Number(visitCount) > 0 ? Number(visitCount) : sortedRounds.length;
 
-    const updated = await Promise.all(
-      sorted.map((ev, idx) =>
-        CalendarEvent.findByIdAndUpdate(
-          ev._id,
-          {
-            $set: {
-              contractGroupId,
-              contractNo: contractNo || "",
-              quotationNo: quotationNo || "",
-              contractStart: contractStart || undefined,
-              contractEnd: contractEnd || undefined,
-              visitCount: resolvedVisitCount,
-              jobValue: jobValue != null && jobValue !== "" ? Number(jobValue) : undefined,
-              time: String(idx + 1),
-            },
-          },
-          { new: true }
-        )
+    const updated = (
+      await Promise.all(
+        sortedRounds.map(async (docIds, idx) => {
+          const time = String(idx + 1);
+          // ✅ กลุ่มที่มีมากกว่า 1 document (งานเข้าหลายวันไม่ติดกัน) ต้องผูก jobGroupId เดียวกันไว้
+          // ด้วย — ใช้ตัวที่มีอยู่แล้วก่อน (เผื่อมีมาจากตอนสร้างเป็นงานทั่วไป) ไม่มีค่อยสุ่มใหม่
+          let jobGroupId;
+          if (docIds.length > 1) {
+            const existingJobGroupId = docIds.map((id) => eventsById.get(String(id)).jobGroupId).find(Boolean);
+            jobGroupId = existingJobGroupId || crypto.randomUUID();
+          }
+          return Promise.all(
+            docIds.map((id) =>
+              CalendarEvent.findByIdAndUpdate(
+                id,
+                {
+                  $set: {
+                    contractGroupId,
+                    contractNo: contractNo || "",
+                    quotationNo: quotationNo || "",
+                    contractStart: contractStart || undefined,
+                    contractEnd: contractEnd || undefined,
+                    visitCount: resolvedVisitCount,
+                    jobValue: jobValue != null && jobValue !== "" ? Number(jobValue) : undefined,
+                    time,
+                    ...(jobGroupId ? { jobGroupId } : {}),
+                  },
+                },
+                { new: true }
+              )
+            )
+          );
+        })
       )
-    );
+    ).flat();
 
     res.json({ events: updated, contractGroupId });
   } catch (error) {
@@ -1057,14 +1083,17 @@ router.put("/contract/:contractGroupId/attach", verifyToken, async (req, res) =>
       return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่ย้ายงานเข้าสัญญาได้" });
     }
     const { contractGroupId } = req.params;
-    const { eventId, time } = req.body;
-    if (!eventId || time === undefined || time === null || time === "") {
+    // ⚠️ BUG ที่แก้: เดิมรับ eventId เดี่ยวๆ — แต่ "งานทั่วไป" ที่เข้าหลายวันไม่ติดกัน (ผูกกันด้วย
+    // jobGroupId เดียวกัน) 1 แถวในตารางอาจมีหลาย document ต้องย้ายเข้าสัญญาพร้อมกันทั้งหมด ไม่งั้น
+    // วันอื่นๆ ของงานเดียวกันจะค้างเป็นงานทั่วไปแยกจากสัญญาที่เพิ่งย้ายไป
+    const { eventIds, time } = req.body;
+    if (!Array.isArray(eventIds) || eventIds.length === 0 || time === undefined || time === null || time === "") {
       return res.status(400).json({ message: "กรุณาระบุงานและครั้งที่ที่ต้องการย้ายเข้า" });
     }
 
-    const target = await CalendarEvent.findById(eventId);
-    if (!target) {
-      return res.status(404).json({ message: "ไม่พบงานที่ต้องการย้าย" });
+    const targets = await CalendarEvent.find({ _id: { $in: eventIds } });
+    if (targets.length !== eventIds.length) {
+      return res.status(404).json({ message: "ไม่พบงานที่ต้องการย้ายบางรายการ" });
     }
 
     // ✅ ดึงข้อมูลสัญญาปลายทางจาก record ใดก็ได้ที่ผูก contractGroupId นี้อยู่แล้ว มาคัดลอกฟิลด์
@@ -1082,10 +1111,15 @@ router.put("/contract/:contractGroupId/attach", verifyToken, async (req, res) =>
     const scheduledRoundDocs = existingRoundDocs.filter((v) => !v.unscheduled);
     const pendingRoundDoc = existingRoundDocs.find((v) => v.unscheduled);
 
+    // ✅ งานที่กำลังย้ายเองอาจมีอยู่แล้วหลาย document ผูกกันด้วย jobGroupId เดิม (เข้าหลายวันไม่ต่อเนื่อง
+    // มาก่อนตั้งแต่ตอนยังเป็นงานทั่วไป) — ถ้าครั้งปลายทางมีคนครองอยู่ก่อนด้วย ต้องรวมเป็น jobGroupId
+    // เดียวกันทั้งฝั่งเดิมและฝั่งใหม่ ไม่ให้กลายเป็นสอง jobGroupId ปนกันในครั้งเดียวกัน
+    const ownJobGroupId = targets.map((t) => t.jobGroupId).find(Boolean);
+
     let jobGroupId;
     if (scheduledRoundDocs.length > 0) {
       const holder = scheduledRoundDocs.find((v) => v.jobGroupId) || scheduledRoundDocs[0];
-      jobGroupId = holder.jobGroupId || crypto.randomUUID();
+      jobGroupId = holder.jobGroupId || ownJobGroupId || crypto.randomUUID();
       if (!holder.jobGroupId) {
         await CalendarEvent.updateOne({ _id: holder._id }, { $set: { jobGroupId } });
       }
@@ -1108,10 +1142,13 @@ router.put("/contract/:contractGroupId/attach", verifyToken, async (req, res) =>
           return res.status(409).json({ message: "สัญญานี้ครบตามจำนวนครั้งที่กำหนดไว้แล้ว" });
         }
       }
+      // ✅ เก็บ jobGroupId เดิมของกลุ่มไว้ถ้ามี (งานทั่วไปที่เข้าหลายวันไม่ติดกันมาก่อนแล้ว) ไม่ต้อง
+      // สุ่มใหม่ถ้ามีแค่ document เดียว (undefined ก็ปล่อยว่างไว้ตามเดิม ไม่ผูก jobGroupId ให้เปล่าๆ)
+      jobGroupId = ownJobGroupId;
     }
 
-    const updated = await CalendarEvent.findByIdAndUpdate(
-      eventId,
+    await CalendarEvent.updateMany(
+      { _id: { $in: eventIds } },
       {
         $set: {
           contractGroupId,
@@ -1124,11 +1161,11 @@ router.put("/contract/:contractGroupId/attach", verifyToken, async (req, res) =>
           time: String(time),
           ...(jobGroupId ? { jobGroupId } : {}),
         },
-      },
-      { new: true }
+      }
     );
+    const updated = await CalendarEvent.find({ _id: { $in: eventIds } });
 
-    res.json({ event: updated });
+    res.json({ events: updated });
   } catch (error) {
     console.error("❌ Error attaching event to contract:", error);
     res.status(500).send("Internal Server Error");
@@ -1175,34 +1212,40 @@ router.put("/contract/:contractGroupId/detach", verifyToken, async (req, res) =>
   }
 });
 
-// ✅ ยืนยัน/ยกเลิกยืนยันว่างานนี้เป็น "งานทั่วไป" จริงๆ (ไม่ใช่แค่ยังไม่ได้จัดกลุ่ม) — เฉพาะงานที่ไม่มี
-// contractGroupId เท่านั้นที่มีสถานะนี้ได้ ก่อนกดยืนยันจะแสดงเป็น "งานเก่าในระบบที่ยังไม่จัดกลุ่ม" เสมอ
-// (ดูหน้า "ภาพรวมงาน" ContractOverview.js) — เฉพาะแอดมิน/manager เหมือน route จัดการสัญญาอื่นๆ ในไฟล์นี้
-// ไม่ผูกกับสิทธิ์ความเป็นเจ้าของ/ผู้ถูกมอบหมายแบบ PUT /:id ทั่วไป เพราะเป็นการจัดหมวดหมู่เชิงบริหารจัดการ
-router.put("/:id/general", verifyToken, async (req, res) => {
+// ✅ จัดหมวดหมู่งานที่ไม่มี contractGroupId — "" (ยังไม่จัดกลุ่ม) / "general" (งานทั่วไป) / "project"
+// (งานโปรเจค) เฉพาะงานที่ไม่มี contractGroupId เท่านั้นที่จัดหมวดหมู่นี้ได้ ก่อนจัดจะแสดงเป็น "งานเก่า
+// ในระบบที่ยังไม่จัดกลุ่ม" เสมอ (ดูหน้า "ภาพรวมงาน" ContractOverview.js) — เฉพาะแอดมิน/manager เหมือน
+// route จัดการสัญญาอื่นๆ ในไฟล์นี้ ไม่ผูกกับสิทธิ์ความเป็นเจ้าของ/ผู้ถูกมอบหมายแบบ PUT /:id ทั่วไป
+// เพราะเป็นการจัดหมวดหมู่เชิงบริหารจัดการ
+// (เดิมชื่อ "/general" รับแค่ true/false สำหรับ "งานทั่วไป" อย่างเดียว — เปลี่ยนเป็น "/classify" รองรับ
+// 3 หมวดหมู่แทน ตอนนี้ยังไม่มีใครเรียก path เดิมนอกจากหน้านี้ จึงเปลี่ยน path ตรงๆ ได้เลยไม่ต้องเก็บของเก่าไว้คู่กัน)
+router.put("/:id/classify", verifyToken, async (req, res) => {
   try {
     if (!["admin", "manager"].includes(req.user.role)) {
-      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่ยืนยันงานทั่วไปได้" });
+      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่จัดหมวดหมู่งานได้" });
     }
     const { id } = req.params;
-    const { isConfirmedGeneral } = req.body;
+    const { classification } = req.body;
+    if (!["", "general", "project"].includes(classification)) {
+      return res.status(400).json({ message: "ประเภทหมวดหมู่ไม่ถูกต้อง" });
+    }
 
     const target = await CalendarEvent.findById(id);
     if (!target) {
       return res.status(404).json({ message: "ไม่พบงานนี้" });
     }
     if (target.contractGroupId) {
-      return res.status(400).json({ message: "งานนี้ผูกกับสัญญาอยู่แล้ว ไม่สามารถยืนยันเป็นงานทั่วไปได้" });
+      return res.status(400).json({ message: "งานนี้ผูกกับสัญญาอยู่แล้ว ไม่สามารถจัดหมวดหมู่นี้ได้" });
     }
 
     const updated = await CalendarEvent.findByIdAndUpdate(
       id,
-      { $set: { isConfirmedGeneral: Boolean(isConfirmedGeneral) } },
+      { $set: { jobClassification: classification } },
       { new: true }
     );
     res.json({ event: updated });
   } catch (error) {
-    console.error("❌ Error marking event as general:", error);
+    console.error("❌ Error classifying event:", error);
     res.status(500).send("Internal Server Error");
   }
 });

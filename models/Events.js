@@ -166,10 +166,14 @@ const eventSchema = new mongoose.Schema(
     visitCount: Number,
     jobValue: Number,
 
-    // ✅ งานที่ไม่มี contractGroupId แบ่งเป็น 2 สถานะ: "ยังไม่จัดกลุ่ม" (ค่าเริ่มต้น — ยังไม่มีใครยืนยัน
-    // ว่าเป็นงานเดี่ยวจริงๆ หรือควรอยู่ในสัญญาไหน) กับ "งานทั่วไป" (isConfirmedGeneral: true — แอดมิน/
-    // manager กดยืนยันแล้วว่าไม่ใช่ส่วนหนึ่งของสัญญาไหนจริงๆ) ดูหน้า "ภาพรวมงาน" (ContractOverview.js)
+    // ⚠️ เดิมมีแค่ true/false (งานทั่วไป vs ยังไม่จัดกลุ่ม) — เก็บ field นี้ไว้เฉยๆ เพื่ออ่านข้อมูลเก่าที่
+    // เคยยืนยันไปแล้วก่อนหน้านี้ได้ (ดู jobClassification ด้านล่างที่ใช้แทนต่อจากนี้ไป — utils/
+    // contractOverdue.js ฝั่ง frontend จะ fallback มาอ่านค่านี้ถ้า jobClassification ยังไม่มีค่า)
     isConfirmedGeneral: { type: Boolean, default: false },
+    // ✅ งานที่ไม่มี contractGroupId แบ่งเป็น 3 สถานะ: "" (ยังไม่จัดกลุ่ม — ค่าเริ่มต้น ยังไม่มีใครยืนยัน
+    // ว่าเป็นงานเดี่ยวจริงๆ หรือควรอยู่ในสัญญาไหน), "general" (งานทั่วไป), "project" (งานโปรเจค) —
+    // แอดมิน/manager กดยืนยันเองผ่านหน้า "ภาพรวมงาน" (ContractOverview.js, ดู PUT /events/:id/classify)
+    jobClassification: { type: String, enum: ["", "general", "project"], default: "" },
 
     // ✅ งาน "วางแผนล่วงหน้า" — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ แต่ยังไม่ได้กำหนดวันที่ลงตาราง
     // จัดกลุ่มแสดงผลตามเดือนที่ตั้งใจ (plannedMonth) แล้วค่อยลาก/กดลงตารางจริงทีหลัง
