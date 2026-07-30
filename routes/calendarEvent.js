@@ -18,7 +18,10 @@ const upload = multer({ storage });
 const streamifier = require("streamifier");
 const crypto = require("crypto");
 const { sendPushToUsers, sendPushToRoles, sendPushToAllUsers } = require("../services/PushNotify");
-const { findResPersonConflicts, findMutualOverlaps } = require("../utils/scheduleConflict");
+// ⚠️ findResPersonConflicts (เช็คช่างชนกัน/double-booking กับงานอื่นในระบบ) ถูกตัดออกจากทุก route
+// แล้วตามที่ผู้ใช้ขอ — 1 ทีมรับหลายงานในวันเดียวกันได้ตามปกติ เหลือไว้แค่ findMutualOverlaps (เช็คว่า
+// วันที่ที่กรอกมาในคำขอเดียวกันชนกันเองหรือไม่ เช่น หลายวันไม่ติดกันของงานเดียวกันทับกันเอง)
+const { findMutualOverlaps } = require("../utils/scheduleConflict");
 
 // ✅ ห้ามมี 2 งานใช้ "ครั้งที่" (time) ซ้ำกันภายในสัญญาเดียวกัน (contractGroupId เดียวกัน) — ไม่ว่าจะเป็น
 // แผนงานล่วงหน้า (unscheduled) หรือลงตารางจริงแล้วก็ตาม เพราะทั้งสองแบบ "จอง" หมายเลขครั้งนั้นไปแล้ว
@@ -246,6 +249,9 @@ router.post("/", verifyToken, async (req, res) => {
       "contractEnd",
       "visitCount",
       "jobValue",
+      // ✅ เลือกหมวดหมู่ "งานทั่วไป"/"งานโปรเจค" ได้ตั้งแต่ตอนสร้างงานเลย (ขั้นตอนที่ 1 ในฟอร์ม
+      // AddEvent.js) แทนที่จะต้องไปกดจัดหมวดหมู่ย้อนหลังทีหลังในหน้า "ภาพรวมงาน" เสมอ
+      "jobClassification",
     ];
 
     // ✅ รองรับสร้างงานที่ต้องเข้าหลายวันแบบไม่ติดกันในครั้งเดียว: ส่ง dates เป็น array ของ
@@ -269,9 +275,9 @@ router.post("/", verifyToken, async (req, res) => {
     const hasContractDates = isContractBatch && Array.isArray(dates) && dates.length >= 1;
     const contractGroupId = hasContractDates ? (req.body.contractGroupId || crypto.randomUUID()) : req.body.contractGroupId;
 
-    // ✅ ตรวจสอบช่างชนกัน (double-booking) "ก่อน" เขียนอะไรลงฐานข้อมูลเลยสักตัว — ทั้งชนกันเอง
-    // ภายในชุดที่กำลังจะสร้าง (เช่น กรอกวันที่ครั้งที่ 1/3 ทับกันเอง) และชนกับงานอื่นที่มีอยู่แล้วในระบบ
-    // กันเคสสร้างไป 2-3 ครั้งสำเร็จแล้วมาพังเอาตอนครั้งที่ 4 (ข้อมูลสัญญาครึ่งๆ กลางๆ)
+    // ⚠️ ตัดการเช็คช่างชนกัน (double-booking กับงานอื่นในระบบ) ออกตามที่ผู้ใช้ขอ — 1 ทีมรับหลายงานใน
+    // วันเดียวกันได้ตามปกติ ไม่ควรบล็อก ยังคงเหลือแค่เช็ค "ชนกันเอง" ภายในชุดที่กำลังจะสร้างพร้อมกัน
+    // (เช่น กรอกวันที่ครั้งที่ 1/3 ทับกันเอง) ไว้ เพราะเป็นการกรอกข้อมูลผิดพลาดจริง ไม่ใช่ double-booking
     const rangesToCheck = (Array.isArray(dates) && dates.length > 0 ? dates : [{ start: req.body.start, end: req.body.end }])
       .filter((d) => d && d.start && d.end);
 
@@ -282,19 +288,6 @@ router.post("/", verifyToken, async (req, res) => {
         return res.status(409).json({
           message: `วันที่ที่กรอกทับกันเอง (${moment(a.start).locale("th").format("D MMM YYYY")} กับ ${moment(b.start).locale("th").format("D MMM YYYY")}) กรุณาตรวจสอบวันที่แต่ละครั้งอีกครั้ง`,
         });
-      }
-
-      for (const range of rangesToCheck) {
-        const conflicts = await findResPersonConflicts({
-          resPerson, start: range.start, end: range.end,
-          startTime: req.body.startTime, endTime: req.body.endTime,
-        });
-        if (conflicts.length > 0) {
-          const c = conflicts[0];
-          return res.status(409).json({
-            message: `ช่างคนนี้มีงานชนกันอยู่แล้ว: ${c.title || "งาน"} · ${c.company || "-"}${c.site ? " - " + c.site : ""} วันที่ ${moment(c.start).locale("th").format("D MMM YYYY")}`,
-          });
-        }
       }
     }
 
@@ -466,6 +459,10 @@ router.post("/draft", verifyToken, async (req, res) => {
       // ✅ contractGroupId: รับจาก client ได้ด้วย (ใช้ตอนวางแผนล่วงหน้าครั้งถัดไปของ "สัญญาที่มีอยู่แล้ว"
       // จากหน้าแผนงานล่วงหน้า) ถ้าไม่ส่งมาค่อยสุ่มใหม่ (กรณีสร้างสัญญาใหม่ทั้งชุดจากหน้าภาพรวมสัญญา)
       isContractBatch, contractGroupId, contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue,
+      // ✅ เลือกหมวดหมู่ "งานทั่วไป"/"งานโปรเจค" ได้ตั้งแต่ตอนสร้างแผนงานเลย (ขั้นตอนที่ 1 ในฟอร์ม
+      // AddDraftEvent.js) แทนที่จะต้องไปกดจัดหมวดหมู่ย้อนหลังทีหลังในหน้า "ภาพรวมงาน" เสมอ — ไม่เกี่ยวกับ
+      // งานตามสัญญา (isContractBatch) ซึ่งไม่มีแนวคิดหมวดหมู่นี้อยู่แล้ว (เป็นสัญญาจริงเสมอ)
+      jobClassification,
     } = req.body;
 
     if (!site || !title || !system) {
@@ -518,7 +515,7 @@ router.post("/draft", verifyToken, async (req, res) => {
       ...(isContractBatch ? {
         contractGroupId: contractGroupId || crypto.randomUUID(),
         contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue,
-      } : {}),
+      } : (jobClassification ? { jobClassification } : {})),
     }).save();
 
     res.status(201).json({ event: draft });
@@ -573,31 +570,17 @@ router.put("/:id/schedule", verifyToken, async (req, res) => {
       return res.status(400).json({ message: "กรุณาระบุวันที่" });
     }
 
-    // ✅ ลงตารางงานที่วางแผนล่วงหน้าไว้ ก็ต้องเช็คช่างชนกันเหมือนสร้างงานใหม่ปกติ — เดิมข้ามไปเลย
-    // ทำให้ลาก/กดลงตารางแล้วมอบหมายช่างที่มีงานชนกันวันเดียวกันได้โดยไม่มีอะไรเตือน
-    const effectiveResPerson = resPerson !== undefined ? resPerson : existingEvent.resPerson;
+    // ⚠️ ตัดการเช็คช่างชนกัน (double-booking กับงานอื่นในระบบ) ออกตามที่ผู้ใช้ขอ — 1 ทีมรับหลายงานใน
+    // วันเดียวกันได้ตามปกติ ไม่ควรบล็อก ยังคงเหลือแค่เช็ค "ชนกันเอง" ภายในชุดวันที่หลายวันไม่ติดกันของ
+    // งานเดียวกันไว้ (เป็นการกรอกข้อมูลผิดพลาดจริง ไม่ใช่ double-booking)
     const rangesToCheck = isMultiDate ? dates.filter((d) => d && d.start && d.end) : [{ start: start || date, end: end || date }];
-    if (effectiveResPerson && rangesToCheck.length > 0) {
-      if (isMultiDate) {
-        const mutualConflicts = findMutualOverlaps(rangesToCheck);
-        if (mutualConflicts.length > 0) {
-          const [a, b] = mutualConflicts[0];
-          return res.status(409).json({
-            message: `วันที่ที่กรอกทับกันเอง (${moment(a.start).locale("th").format("D MMM YYYY")} กับ ${moment(b.start).locale("th").format("D MMM YYYY")}) กรุณาตรวจสอบวันที่แต่ละครั้งอีกครั้ง`,
-          });
-        }
-      }
-      for (const range of rangesToCheck) {
-        const conflicts = await findResPersonConflicts({
-          resPerson: effectiveResPerson, start: range.start, end: range.end,
-          startTime, endTime, excludeEventId: id,
+    if (isMultiDate && rangesToCheck.length > 0) {
+      const mutualConflicts = findMutualOverlaps(rangesToCheck);
+      if (mutualConflicts.length > 0) {
+        const [a, b] = mutualConflicts[0];
+        return res.status(409).json({
+          message: `วันที่ที่กรอกทับกันเอง (${moment(a.start).locale("th").format("D MMM YYYY")} กับ ${moment(b.start).locale("th").format("D MMM YYYY")}) กรุณาตรวจสอบวันที่แต่ละครั้งอีกครั้ง`,
         });
-        if (conflicts.length > 0) {
-          const c = conflicts[0];
-          return res.status(409).json({
-            message: `ช่างคนนี้มีงานชนกันอยู่แล้ว: ${c.title || "งาน"} · ${c.company || "-"}${c.site ? " - " + c.site : ""} วันที่ ${moment(c.start).locale("th").format("D MMM YYYY")}`,
-          });
-        }
       }
     }
 
@@ -1329,6 +1312,41 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
   }
 });
 
+// ✅ แก้ไขบริษัท/โครงการ/ระบบ/ประเภทงาน พร้อมกันทุก document ของ "แถว" เดียวกันในหน้า "ภาพรวมงาน"
+// (ทั้งสัญญาจริง — ทุกครั้งที่ผูก contractGroupId เดียวกัน — และงานทั่วไป/โปรเจค/ยังไม่จัดกลุ่มที่อาจ
+// เข้าหลายวันไม่ติดกัน ผูกด้วย jobGroupId เดียวกัน) รับ eventIds ตรงๆ จาก frontend (ซึ่งรู้อยู่แล้วว่า
+// แถวนี้ประกอบด้วย document ไหนบ้างจาก groupEventsByContract) แทนที่จะคำนวณ query เองซ้ำฝั่งนี้
+// ⚠️ ต้องประกาศ "ก่อน" PUT /:id (path 1 segment เหมือนกัน "basic-info" vs ":id") ไม่งั้น Express จะจับ
+// "basic-info" เป็นค่า :id ไปแทน route นี้จะไม่มีทางถูกเรียกถึงเลย (เทียบปัญหาเดียวกับ /contract/merge
+// ที่ต้องมาก่อน /contract/:contractGroupId ด้านบน)
+router.put("/basic-info", verifyToken, async (req, res) => {
+  try {
+    // ✅ จำกัดเฉพาะแอดมิน/manager — ตรงกับที่หน้า "ภาพรวมงาน" (ContractOverview.js) กันช่างเปิดหน้านี้
+    // ผ่าน URL ตรงๆ ไว้อยู่แล้วที่ฝั่ง frontend อยู่แล้ว (redirect ออกถ้าไม่ใช่ role นี้)
+    if (!["admin", "manager"].includes(req.user.role)) {
+      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แก้ไขข้อมูลนี้ได้" });
+    }
+    const { eventIds, company, site, system, title } = req.body;
+    if (!Array.isArray(eventIds) || eventIds.length === 0) {
+      return res.status(400).json({ message: "ไม่พบรายการที่จะแก้ไข" });
+    }
+    const update = {};
+    if (company !== undefined) update.company = company;
+    if (site !== undefined) update.site = site;
+    if (system !== undefined) update.system = system;
+    if (title !== undefined) update.title = title;
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ message: "ไม่มีข้อมูลให้แก้ไข" });
+    }
+    await CalendarEvent.updateMany({ _id: { $in: eventIds } }, { $set: update });
+    const updatedEvents = await CalendarEvent.find({ _id: { $in: eventIds } }).lean();
+    res.json({ events: updatedEvents });
+  } catch (error) {
+    console.error("❌ Error updating basic info:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
 // ✅ ลบสัญญาทั้งก้อน (ทุกครั้งที่ผูก contractGroupId เดียวกัน) ในคำสั่งเดียว — เดิมมีแค่ DELETE /:id
 // ที่ลบได้ทีละ event เท่านั้น ไม่มีทางลบสัญญาทั้งสัญญาได้จากหน้า "ภาพรวมสัญญา" เลย ต้องไล่ลบทีละครั้ง
 // path นี้ยาว 2 segment ("contract" + id) ต่างจาก DELETE /:id (1 segment) จึงไม่ชนกันไม่ว่าจะประกาศ
@@ -1460,35 +1478,9 @@ router.put("/:id", verifyToken, async (req, res) => {
       jobValue,
     } = req.body;
 
-    // ✅ เช็คช่างชนกันเฉพาะตอนที่ resPerson/ช่วงวันที่จริงๆ เปลี่ยนไปจากเดิม — ไม่ต้องเช็คทุกครั้งที่
-    // แก้ไขงาน (เช่น แก้แค่ status/comment) เพราะข้อมูลเดิมผ่านการเช็คมาแล้วตอนสร้าง/ลงตารางครั้งแรก
-    const effectiveResPerson = resPerson !== undefined ? resPerson : existingEvent.resPerson;
-    const effectiveStart = start !== undefined ? start : existingEvent.start;
-    const effectiveEnd = end !== undefined ? end : existingEvent.end;
-    const effectiveStartTime = startTime !== undefined ? startTime : existingEvent.startTime;
-    const effectiveEndTime = endTime !== undefined ? endTime : existingEvent.endTime;
-    const resPersonChanged = resPerson !== undefined && resPerson !== existingEvent.resPerson;
-    const datesChanged =
-      (start !== undefined && new Date(start).getTime() !== new Date(existingEvent.start).getTime()) ||
-      (end !== undefined && new Date(end).getTime() !== new Date(existingEvent.end).getTime());
-
-    if (effectiveResPerson && effectiveStart && effectiveEnd && (resPersonChanged || datesChanged)) {
-      const conflicts = await findResPersonConflicts({
-        resPerson: effectiveResPerson,
-        start: effectiveStart,
-        end: effectiveEnd,
-        startTime: effectiveStartTime,
-        endTime: effectiveEndTime,
-        excludeEventId: id,
-      });
-      if (conflicts.length > 0) {
-        const c = conflicts[0];
-        return res.status(409).json({
-          message: `ช่างคนนี้มีงานชนกันอยู่แล้ว: ${c.title || "งาน"} · ${c.company || "-"}${c.site ? " - " + c.site : ""} วันที่ ${moment(c.start).locale("th").format("D MMM YYYY")}`,
-        });
-      }
-    }
-
+    // ⚠️ ตัดออกตามที่ผู้ใช้ขอ: เดิมเช็คช่างชนกัน (double-booking) ทุกครั้งที่ resPerson/ช่วงวันที่
+    // เปลี่ยนไปจากเดิม ทำให้ลากงานย้ายวันบนปฏิทิน (eventDrop → PUT /:id) พังบ่อยเพราะช่างคนเดิมมีงาน
+    // อื่นอยู่แล้ววันนั้น ทั้งที่ในทางปฏิบัติ 1 ทีมรับงานหลายงานในวันเดียวกันได้ตามปกติ ไม่ควรบล็อก
     const newEvent = {
       docNo,
       company,
