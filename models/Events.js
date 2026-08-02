@@ -164,6 +164,12 @@ const eventSchema = new mongoose.Schema(
     contractStart: Date,
     contractEnd: Date,
     visitCount: Number,
+    // ✅ ระยะห่างระหว่างรอบเข้าบำรุงรักษา (เดือน) — เช่น 3 = เข้าทุก 3 เดือน — เป็นข้อมูลอ้างอิงอิสระจาก
+    // visitCount เท่านั้น (ไม่ผูก/คำนวณทับกัน เพราะงานจริงเลื่อน/ชนกันได้เสมอ จำนวนครั้งจริงต้องให้
+    // ผู้ใช้กำหนดเอง) ใช้เป็นเกณฑ์เตือน "เลยกำหนดรอบถัดไป" แทนค่าตายตัว 3 เดือนเดิม (ดู
+    // nextVisitOverdueInfo/checkAndNotifyOverdueContracts) — สัญญาเก่าที่ไม่มีค่านี้ยังคงใช้ค่า
+    // เริ่มต้น 3 เดือนเหมือนเดิมทุกประการ ไม่ต้อง migrate ข้อมูลเก่า
+    intervalMonths: Number,
     jobValue: Number,
 
     // ⚠️ เดิมมีแค่ true/false (งานทั่วไป vs ยังไม่จัดกลุ่ม) — เก็บ field นี้ไว้เฉยๆ เพื่ออ่านข้อมูลเก่าที่
@@ -198,6 +204,23 @@ const eventSchema = new mongoose.Schema(
     closeRejectedAt: Date,
     closeRejectedBy: String,
     closeRejectReason: String,
+
+    // ✅ งานที่สร้างโดยคนที่ไม่ใช่ admin/manager (ช่าง/เซล) ต้องรอแอดมิน/manager อนุมัติก่อนถึงจะถือว่า
+    // "ยืนยันแล้วจริง" — ดีฟอลต์ "approved" เพื่อไม่ต้อง migrate ข้อมูลเก่า (งานเก่าทุกงาน + งานที่
+    // admin/manager สร้างเองถือว่า approved อัตโนมัติ) ห้ามอ่านฟิลด์นี้ตรงๆ ที่ไหนนอกจาก
+    // utils/approvalStatus.js (ฝั่ง frontend) — ต้องถือว่า "ไม่มีค่า" เทียบเท่า "approved" เสมอ
+    // แก้ค่าได้ทางเดียวคือผ่าน PUT /events/:id/approval (admin/manager เท่านั้น) ห้าม client ส่งค่า
+    // นี้ตรงๆ ผ่าน POST/PUT อื่นเด็ดขาด (ดูคอมเมนต์ allowedFields ใน routes/calendarEvent.js)
+    approvalStatus: { type: String, enum: ["approved", "pending", "rejected"], default: "approved", index: true },
+    approvalRequestedAt: Date,
+    approvalRequestedBy: String, // ชื่อคนขอ (แสดงผลอย่างเดียว)
+    // ✅ userId ของคนที่สร้างงานจริง (เทียบ pattern เดียวกับ closeRequestedByUserId ด้านบน — userId/
+    // resPerson ของ event อาจไม่ตรงกับคนสร้างจริงเสมอไป เช่น สร้างแทนทีมอื่น)
+    approvalRequestedByUserId: String,
+    approvalDecidedAt: Date,
+    approvalDecidedBy: String,
+    approvalRejectReason: String,
+
     activityLog: [
       {
         userId: String,

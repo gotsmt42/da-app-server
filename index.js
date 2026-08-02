@@ -18,7 +18,7 @@ const pushRouter = require("./routes/push");
 const jobTypeRouter = require("./routes/jobType");
 const systemTypeRouter = require("./routes/systemType");
 const checkInternetConnection = require("./middleware/checkInternetConnection");
-const { checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations } = require("./services/OverdueReminder");
+const { checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations, checkAndNotifyOverdueContracts } = require("./services/OverdueReminder");
 
 
 
@@ -86,6 +86,11 @@ setInterval(checkAndNotifyOverdueJobs, 24 * 60 * 60 * 1000);
 // (ระบบติดตามใบเสนอราคา หน้า /quotations) — เทียบ pattern เดียวกับตัวเช็คงานค้างด้านบน
 setTimeout(checkAndNotifyStaleQuotations, 2 * 60 * 1000);
 setInterval(checkAndNotifyStaleQuotations, 24 * 60 * 60 * 1000);
+
+// ✅ เช็คสัญญาที่เลยกำหนดรอบถัดไปแล้วแต่ยังไม่ได้ลงแผนงาน แจ้งเตือนแอดมิน/manager เป็นระยะๆ (หน้า
+// "ภาพรวมงาน" /contracts) — เทียบ pattern เดียวกับ 2 ตัวด้านบน
+setTimeout(checkAndNotifyOverdueContracts, 2 * 60 * 1000);
+setInterval(checkAndNotifyOverdueContracts, 24 * 60 * 60 * 1000);
 
 
 

@@ -248,6 +248,7 @@ router.post("/", verifyToken, async (req, res) => {
       "contractStart",
       "contractEnd",
       "visitCount",
+      "intervalMonths",
       "jobValue",
       // ✅ เลือกหมวดหมู่ "งานทั่วไป"/"งานโปรเจค" ได้ตั้งแต่ตอนสร้างงานเลย (ขั้นตอนที่ 1 ในฟอร์ม
       // AddEvent.js) แทนที่จะต้องไปกดจัดหมวดหมู่ย้อนหลังทีหลังในหน้า "ภาพรวมงาน" เสมอ
@@ -267,6 +268,12 @@ router.post("/", verifyToken, async (req, res) => {
     // ของสัญญาเดียวกัน (ครั้งที่ 1, 2, 3...) ไม่ใช่วันไม่ติดกันของครั้งเดียว จึงผูกด้วย contractGroupId
     // คนละตัวแทน ไม่แตะ jobGroupId เดิม (client เดิมที่ไม่ส่ง isContractBatch มา พฤติกรรมเหมือนเดิมทุกอย่าง)
     const { dates, isContractBatch, resPerson } = req.body;
+    // ✅ ใช้ตัดสินว่างานนี้ต้องรอการอนุมัติหรือไม่ (ดู buildEventData ด้านล่าง) และเลือกว่าจะแจ้งเตือน
+    // แบบไหน (ดูท้ายฟังก์ชัน) — เทียบ pattern เดียวกับทุก route ที่กันสิทธิ์ไว้เฉพาะแอดมิน/manager
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    // ✅ ใช้ทั้งใน approvalRequestedBy (ด้านล่าง) และหัวข้อแจ้งเตือน — ย้ายมาคำนวณตรงนี้แทนที่จะรอ
+    // คำนวณทีหลังตอนจะแจ้งเตือนเหมือนเดิม เพราะ buildEventData ต้องใช้ค่านี้ตั้งแต่ตอนสร้าง record ด้วย
+    const creatorName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
     const isMultiDate = Array.isArray(dates) && dates.length > 1;
     const jobGroupId = (isMultiDate && !isContractBatch) ? (req.body.jobGroupId || crypto.randomUUID()) : req.body.jobGroupId;
     // ✅ สัญญาต้องได้ contractGroupId แม้มีแค่ครั้งเดียวตอนสร้าง (ยังไม่ได้ลงครั้งที่ 2 ทันที) —
@@ -338,6 +345,17 @@ router.post("/", verifyToken, async (req, res) => {
       if (jobGroupId) eventData.jobGroupId = jobGroupId;
       if (contractGroupId) eventData.contractGroupId = contractGroupId;
       eventData.userId = req.userId || req.body.userId;
+      // ✅ งานที่สร้างโดยคนที่ไม่ใช่แอดมิน/manager (ช่าง/เซล) ต้องรอการอนุมัติก่อนถึงจะถือว่ายืนยันแล้ว
+      // จริง — ห้ามรับ approvalStatus จาก client ตรงๆ (ไม่อยู่ใน allowedFields ด้านบนเลย) คำนวณเองจาก
+      // role ของผู้เรียกเท่านั้น กันแก้ไข request เองแล้วข้ามการอนุมัติ
+      if (isAdminOrManager) {
+        eventData.approvalStatus = "approved";
+      } else {
+        eventData.approvalStatus = "pending";
+        eventData.approvalRequestedAt = new Date();
+        eventData.approvalRequestedBy = creatorName;
+        eventData.approvalRequestedByUserId = req.userId;
+      }
       return eventData;
     };
 
@@ -366,30 +384,43 @@ router.post("/", verifyToken, async (req, res) => {
     // ✅ งานเดี่ยวไม่มี jobGroupId แล้ว (ดูคอมเมนต์ด้านบน) ใช้ _id ของตัวเองแทนกัน tag ชนกัน
     // ระหว่างงานเดี่ยวหลายๆ งาน (ซึ่งจะทำให้ browser แจ้งเตือนทับ/แทนที่กันเองผิดๆ)
     const notifyTag = `event-${jobGroupId || primary._id}`;
-    // ✅ เดิมแจ้งแค่ "มีงานใหม่เข้าระบบ" เฉยๆ ไม่รู้ว่าใครเป็นคนเพิ่ม ต้องเปิดแอพเข้าไปดูเอง
-    // — verifyToken แนบ req.user (fname/lname) มาให้อยู่แล้ว ใส่ชื่อคนเพิ่มไว้ในหัวข้อแจ้งเตือนเลย
-    const creatorName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
 
-    if (primary.resPerson && primary.resPerson !== req.userId) {
-      sendPushToUsers(primary.resPerson, {
-        title: `📋 ${creatorName} มอบหมายงานใหม่ให้คุณ`,
+    // ⚠️ BUG ที่แก้ (เลี่ยง): เดิมแจ้ง "มอบหมายงานใหม่ให้คุณ" + broadcast "เพิ่มงานใหม่เข้าระบบ" ทันที
+    // ไม่ว่างานนั้นจะยังรออนุมัติอยู่หรือไม่ — ประกาศงานที่ยังไม่ผ่านการอนุมัติให้ทั้งบริษัทเห็นก่อนใครยืนยัน
+    // เป็นเรื่องเข้าใจผิดได้ง่าย (เช่น ช่างเห็นว่าตัวเอง "ถูกมอบหมาย" ทั้งที่งานนั้นอาจโดนตีกลับภายหลัง)
+    // — ถ้ายังรออนุมัติ ให้แจ้งเฉพาะแอดมิน/manager ว่ามีงานรออนุมัติแทน ส่วนแจ้งเตือน "มอบหมายงาน" ให้
+    // เลื่อนไปแจ้งตอนอนุมัติแล้วจริงๆ (ดู PUT /:id/approval) — งานที่ admin/manager สร้างเอง (ไม่ต้องรอ
+    // อนุมัติ) ยังคงพฤติกรรมเดิมทุกประการ
+    if (primary.approvalStatus === "pending") {
+      sendPushToRoles(["admin", "manager"], {
+        title: `⏳ ${creatorName} ส่งงานใหม่รออนุมัติ`,
         body: jobLabelNew,
         url: `/operation/${primary._id}`,
         tag: notifyTag,
         renotify: true,
-      }).catch((err) => console.error("❌ Push notify error (assign):", err));
+      }).catch((err) => console.error("❌ Push notify error (approval-request):", err));
+    } else {
+      if (primary.resPerson && primary.resPerson !== req.userId) {
+        sendPushToUsers(primary.resPerson, {
+          title: `📋 ${creatorName} มอบหมายงานใหม่ให้คุณ`,
+          body: jobLabelNew,
+          url: `/operation/${primary._id}`,
+          tag: notifyTag,
+          renotify: true,
+        }).catch((err) => console.error("❌ Push notify error (assign):", err));
+      }
+
+      sendPushToAllUsers(
+        {
+          title: `🆕 ${creatorName} เพิ่มงานใหม่เข้าระบบ`,
+          body: jobLabelNew,
+          url: `/operation/${primary._id}`,
+          tag: notifyTag,
+          renotify: true,
+        },
+        [req.userId, primary.resPerson]
+      ).catch((err) => console.error("❌ Push notify error (new-event-broadcast):", err));
     }
-
-    sendPushToAllUsers(
-      {
-        title: `🆕 ${creatorName} เพิ่มงานใหม่เข้าระบบ`,
-        body: jobLabelNew,
-        url: `/operation/${primary._id}`,
-        tag: notifyTag,
-        renotify: true,
-      },
-      [req.userId, primary.resPerson]
-    ).catch((err) => console.error("❌ Push notify error (new-event-broadcast):", err));
 
     res.status(201).json({ events });
   } catch (error) {
@@ -458,7 +489,7 @@ router.post("/draft", verifyToken, async (req, res) => {
       // (ดู PUT /:id/schedule) — ไม่ต้องสร้าง event ที่มีวันที่ปลอมๆ ขึ้นมาแค่เพื่อให้มี record
       // ✅ contractGroupId: รับจาก client ได้ด้วย (ใช้ตอนวางแผนล่วงหน้าครั้งถัดไปของ "สัญญาที่มีอยู่แล้ว"
       // จากหน้าแผนงานล่วงหน้า) ถ้าไม่ส่งมาค่อยสุ่มใหม่ (กรณีสร้างสัญญาใหม่ทั้งชุดจากหน้าภาพรวมสัญญา)
-      isContractBatch, contractGroupId, contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue,
+      isContractBatch, contractGroupId, contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue,
       // ✅ เลือกหมวดหมู่ "งานทั่วไป"/"งานโปรเจค" ได้ตั้งแต่ตอนสร้างแผนงานเลย (ขั้นตอนที่ 1 ในฟอร์ม
       // AddDraftEvent.js) แทนที่จะต้องไปกดจัดหมวดหมู่ย้อนหลังทีหลังในหน้า "ภาพรวมงาน" เสมอ — ไม่เกี่ยวกับ
       // งานตามสัญญา (isContractBatch) ซึ่งไม่มีแนวคิดหมวดหมู่นี้อยู่แล้ว (เป็นสัญญาจริงเสมอ)
@@ -468,6 +499,21 @@ router.post("/draft", verifyToken, async (req, res) => {
     if (!site || !title || !system) {
       return res.status(400).json({ message: "กรุณาระบุชื่อโครงการ/ประเภทงาน/ระบบงาน" });
     }
+
+    // ✅ ระยะห่างระหว่างรอบ (intervalMonths) เป็นข้อมูลอ้างอิงสำหรับเตือน "เกินกำหนด" เท่านั้น — ไม่ใช่
+    // ฟิลด์บังคับ ไม่ต้องมีช่วงสัญญาครบก็สร้างสัญญาได้เหมือนเดิม (งานจริงเลื่อน/ชนกันได้เสมอ ให้ผู้ใช้
+    // กำหนดวันที่/จำนวนครั้งเองทั้งหมด) เช็คแค่ความถูกต้องของค่านี้เองถ้ามีการระบุมา
+    if (intervalMonths !== undefined && intervalMonths !== "" && intervalMonths !== null) {
+      const n = Number(intervalMonths);
+      if (!n || n < 1 || n > 24) {
+        return res.status(400).json({ message: "ระยะห่างระหว่างรอบต้องอยู่ระหว่าง 1-24 เดือน" });
+      }
+    }
+
+    // ✅ แผนงานที่สร้างโดยคนที่ไม่ใช่แอดมิน/manager (ช่าง/เซล) ต้องรอการอนุมัติก่อน เทียบ pattern
+    // เดียวกับ POST / (สร้างงานแบบมีวันที่ทันที) เป๊ะๆ — ดูเหตุผลที่คอมเมนต์ตรงนั้น
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    const creatorName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
 
     // ✅ แผนงานทั่วไปให้ผู้ใช้ระบุ plannedMonth เองเสมอ แต่สัญญาฉบับร่างไม่มีช่องนี้ในฟอร์ม —
     // อนุมานให้จากวันที่เริ่มสัญญา (ถ้ามี) ไม่งั้นใช้เดือนปัจจุบัน กันไม่ให้ติด validation ด้านล่าง
@@ -506,17 +552,42 @@ router.post("/draft", verifyToken, async (req, res) => {
       resPerson: resPerson || undefined,
       unscheduled: true,
       plannedMonth: resolvedPlannedMonth,
-      // ✅ ให้ค่าเริ่มต้นเสมอ (schema บังคับ required) แทนสีที่ผู้ใช้เลือกจริงตอนลงตาราง
-      // ใช้สีแดงธีมของแอป (เดิมเทา #9CA3AF ไม่ตรงกับธีม)
-      backgroundColor: backgroundColor || "#dc2626",
+      // ✅ ให้ค่าเริ่มต้นเสมอ (schema บังคับ required) แทนสีที่ผู้ใช้เลือกจริงตอนลงตาราง — ใช้สีม่วงคราม
+      // #6366f1 สื่อว่า "งานใหม่" (เดิมใช้สีแดงธีมแอป แต่สีแดงตอนนี้ถูกใช้สื่อ "ไม่อนุมัติ"/วันหยุด
+      // ราชการไปแล้วในปฏิทิน ทำให้แผนงานใหม่ปนกับสองอย่างนั้นจนแยกไม่ออก — เทียบสีเดียวกับ
+      // EventCalendar/index.js defaultBackgroundColor และไอคอนแจ้งเตือน "งานใหม่" ใน NotificationBell.js)
+      backgroundColor: backgroundColor || "#6366f1",
       textColor: textColor || "#ffffff",
       fontSize: fontSize || 8,
       userId: req.userId,
       ...(isContractBatch ? {
         contractGroupId: contractGroupId || crypto.randomUUID(),
-        contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue,
+        contractNo, quotationNo, contractStart, contractEnd, intervalMonths, visitCount,
       } : (jobClassification ? { jobClassification } : {})),
+      // ✅ ห้ามรับ approvalStatus จาก client ตรงๆ (ไม่อยู่ใน destructure ด้านบนเลย) คำนวณเองจาก role
+      // ของผู้เรียกเท่านั้น — เทียบ pattern เดียวกับ POST / (buildEventData) เป๊ะๆ
+      ...(isAdminOrManager
+        ? { approvalStatus: "approved" }
+        : {
+            approvalStatus: "pending",
+            approvalRequestedAt: new Date(),
+            approvalRequestedBy: creatorName,
+            approvalRequestedByUserId: req.userId,
+          }),
     }).save();
+
+    // ✅ เดิม route นี้ไม่แจ้งเตือนเลย — แจ้งแอดมิน/manager เฉพาะตอนรออนุมัติ (เทียบ pattern เดียวกับ
+    // POST / เป๊ะๆ) ใช้ deep-link ?draft=<id>&month=<เดือน> ที่ EventCalendar/index.js เปิดฟังอยู่แล้ว
+    // (ใช้เปิดแผงงานล่วงหน้าไปที่แผนงานนี้โดยตรง ไม่ต้องเพิ่ม routing ฝั่ง frontend เลย)
+    if (draft.approvalStatus === "pending") {
+      sendPushToRoles(["admin", "manager"], {
+        title: `⏳ ${creatorName} ส่งแผนงานล่วงหน้ารออนุมัติ`,
+        body: `${draft.title || "งาน"} · ${draft.company || "-"}${draft.site ? " - " + draft.site : ""} · เดือน ${resolvedPlannedMonth}`,
+        url: `/event?draft=${draft._id}&month=${resolvedPlannedMonth}`,
+        tag: `approval-draft-${draft._id}`,
+        renotify: true,
+      }).catch((err) => console.error("❌ Push notify error (approval-request-draft):", err));
+    }
 
     res.status(201).json({ event: draft });
   } catch (error) {
@@ -548,6 +619,11 @@ router.get("/drafts", verifyToken, async (req, res) => {
 // แล้วเลือกใส่วันที่ start/end เอง (เหมือนฟอร์มเพิ่มงานปกติ)
 // ✅ รองรับ dates[] (งานเข้าหลายวันไม่ติดกัน) แบบเดียวกับ POST / — ช่วงแรกอัปเดตลงตัว draft เดิม
 // ช่วงที่เหลือ clone เป็น record ใหม่ผูกด้วย jobGroupId เดียวกัน
+// ✅ ไม่บล็อกการ "ลงตาราง" งานที่ยังรออนุมัติ/ถูกปฏิเสธ (approvalStatus ไม่ใช่ "approved") ตามที่ผู้ใช้
+// ขอไว้ — ปล่อยให้ลงตารางได้ตามปกติ ค่า approvalStatus/approvalRequestedBy/ฯลฯ ของ existingEvent จะ
+// ยังคงอยู่ในเอกสารเดิมโดยอัตโนมัติต่อไป (route นี้ mutate เฉพาะ field ที่แก้ไว้ด้านล่างเท่านั้น ไม่ใช่
+// full replace) งานจึงยังคงขึ้นเป็น "รออนุมัติ"/"ถูกปฏิเสธ" ต่อไปแม้จะมีวันที่จริงแล้วก็ตาม จนกว่าแอดมิน/
+// manager จะกดอนุมัติที่ PUT /:id/approval
 router.put("/:id/schedule", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -688,7 +764,32 @@ router.put("/:id/draft", verifyToken, async (req, res) => {
     existingEvent.plannedMonth = plannedMonth;
     existingEvent.description = description;
 
+    // ✅ แก้ไขแผนงานที่ถูกปฏิเสธไปแล้วถือเป็นการส่งขออนุมัติใหม่อัตโนมัติ — route นี้เขียนฟิลด์เนื้อหา
+    // งานทุกช่องอยู่แล้วทุกครั้งที่เรียก (ไม่มีการแก้ไขบางส่วน) จึงถือว่าทุกครั้งที่เจ้าของ/ผู้ถูกมอบหมาย
+    // (ไม่ใช่แอดมิน/manager) บันทึกสำเร็จคือ "แก้ไขแล้วส่งใหม่" เทียบ pattern เดียวกับ PUT /:id
+    let resubmitted = false;
+    if (existingEvent.approvalStatus === "rejected" && !isAdminOrManager) {
+      existingEvent.approvalStatus = "pending";
+      existingEvent.approvalRequestedAt = new Date();
+      existingEvent.approvalRequestedBy = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
+      existingEvent.approvalRequestedByUserId = req.userId;
+      existingEvent.approvalDecidedAt = null;
+      existingEvent.approvalDecidedBy = "";
+      resubmitted = true;
+    }
+
     await existingEvent.save();
+
+    if (resubmitted) {
+      sendPushToRoles(["admin", "manager"], {
+        title: `🔄 ${existingEvent.approvalRequestedBy} แก้ไขแผนงานที่ถูกตีกลับ ส่งขออนุมัติใหม่`,
+        body: `${existingEvent.title || "งาน"} · ${existingEvent.company || "-"}${existingEvent.site ? " - " + existingEvent.site : ""}`,
+        url: `/event?draft=${existingEvent._id}&month=${existingEvent.plannedMonth}`,
+        tag: `approval-resubmit-draft-${existingEvent._id}`,
+        renotify: true,
+      }).catch((err) => console.error("❌ Push notify error (approval-resubmit-draft):", err));
+    }
+
     res.json({ event: existingEvent });
   } catch (error) {
     console.error("❌ Error updating draft event:", error);
@@ -983,7 +1084,7 @@ router.put("/contract/merge", verifyToken, async (req, res) => {
     // (idx+1 ต่อ document) — แต่ "งานทั่วไป" ที่เข้าหลายวันไม่ติดกัน (ผูกกันด้วย jobGroupId เดียวกัน)
     // 1 แถวในตารางอาจมีหลาย document ที่ควรรวมเป็น "ครั้งเดียวกัน" ไม่ใช่แยกคนละครั้ง — เปลี่ยนมารับ
     // rounds เป็น array ของ array (แต่ละกลุ่มย่อย = document ทั้งหมดที่ควรอยู่ครั้งเดียวกัน) แทน
-    const { rounds, contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue } = req.body;
+    const { rounds, contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue } = req.body;
     if (!Array.isArray(rounds) || rounds.length === 0 || rounds.some((r) => !Array.isArray(r) || r.length === 0)) {
       return res.status(400).json({ message: "กรุณาเลือกงานอย่างน้อย 1 รายการ" });
     }
@@ -1035,6 +1136,7 @@ router.put("/contract/merge", verifyToken, async (req, res) => {
                     quotationNo: quotationNo || "",
                     contractStart: contractStart || undefined,
                     contractEnd: contractEnd || undefined,
+                    intervalMonths: Number(intervalMonths) > 0 ? Number(intervalMonths) : undefined,
                     visitCount: resolvedVisitCount,
                     jobValue: jobValue != null && jobValue !== "" ? Number(jobValue) : undefined,
                     time,
@@ -1233,6 +1335,87 @@ router.put("/:id/classify", verifyToken, async (req, res) => {
   }
 });
 
+// ✅ อนุมัติ/ไม่อนุมัติงานที่ช่าง/เซล (ใครก็ตามที่ไม่ใช่แอดมิน/manager) เป็นคนสร้าง — ดู
+// approvalStatus/POST //POST /draft ที่ตั้งค่า "pending" ไว้ตั้งแต่ตอนสร้าง เฉพาะแอดมิน/manager
+// เท่านั้นที่ตัดสินใจได้ ต้องอยู่ก่อน PUT /:id (path 1 segment เหมือนกันแค่ ":id" vs ":id/approval"
+// ไม่ชนกันอยู่แล้วเพราะ /:id/approval มี 2 segment — แต่วางไว้ก่อนตามธรรมเนียมไฟล์นี้ที่ให้ route
+// เฉพาะเจาะจงกว่ามาก่อนเสมอ)
+router.put("/:id/approval", verifyToken, async (req, res) => {
+  try {
+    if (!["admin", "manager"].includes(req.user.role)) {
+      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่อนุมัติงานได้" });
+    }
+    const { id } = req.params;
+    const { decision, reason } = req.body;
+    if (!["approve", "reject"].includes(decision)) {
+      return res.status(400).json({ message: "กรุณาระบุผลการอนุมัติ" });
+    }
+
+    const target = await CalendarEvent.findById(id);
+    if (!target) {
+      return res.status(404).json({ message: "ไม่พบงานนี้" });
+    }
+    // ✅ กันแอดมิน 2 คนกดตัดสินใจงานเดียวกันซ้ำ (race) — ตัดสินใจได้แค่ตอนยัง "pending" เท่านั้น
+    if (target.approvalStatus !== "pending") {
+      return res.status(400).json({ message: "งานนี้ไม่ได้อยู่ระหว่างรออนุมัติ" });
+    }
+
+    const approverName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "แอดมิน";
+    const update = decision === "approve"
+      ? {
+          approvalStatus: "approved",
+          approvalDecidedAt: new Date(),
+          approvalDecidedBy: approverName,
+          // ✅ ล้างเหตุผลไม่อนุมัติรอบก่อนหน้าทิ้ง (ถ้ามี จากรอบ reject → แก้ไข → resubmit → approve)
+          // กันข้อความเก่าค้างอยู่ทั้งที่อนุมัติไปแล้วจริง
+          approvalRejectReason: "",
+        }
+      : {
+          approvalStatus: "rejected",
+          approvalDecidedAt: new Date(),
+          approvalDecidedBy: approverName,
+          approvalRejectReason: reason || "",
+        };
+
+    // ✅ งานที่เข้าหลายวันไม่ติดกัน (ผูกด้วย jobGroupId เดียวกัน) ต้องตัดสินใจพร้อมกันทั้งกลุ่ม ไม่ใช่
+    // แค่ document เดียว ไม่งั้นวันอื่นๆ ของงานเดียวกันจะค้างสถานะ "รออนุมัติ" ทั้งที่จริงตัดสินใจไปแล้ว
+    const filter = target.jobGroupId ? { jobGroupId: target.jobGroupId } : { _id: id };
+    await CalendarEvent.updateMany(filter, { $set: update });
+    const events = await CalendarEvent.find(filter);
+
+    // ✅ แจ้งผู้ขออนุมัติเสมอ (ทั้งอนุมัติและไม่อนุมัติ) — ใช้ลำดับ fallback เดียวกับที่อื่นในไฟล์นี้:
+    // คนที่ขออนุมัติจริง (approvalRequestedByUserId) → คนสร้าง (userId) → ผู้รับผิดชอบ (resPerson)
+    const notifyUserId = target.approvalRequestedByUserId || target.userId || target.resPerson;
+    if (notifyUserId) {
+      const jobLabel = `${target.title || "งาน"} · ${target.company || "-"}${target.site ? " - " + target.site : ""}`;
+      sendPushToUsers(notifyUserId, {
+        title: decision === "approve" ? "✅ งานของคุณได้รับการอนุมัติแล้ว" : "❌ งานของคุณไม่ได้รับการอนุมัติ",
+        body: decision === "approve" ? jobLabel : `${jobLabel}${reason ? " · เหตุผล: " + reason : ""}`,
+        url: `/operation/${id}`,
+        tag: `approval-decided-${target.jobGroupId || id}`,
+        renotify: true,
+      }).catch((err) => console.error("❌ Push notify error (approval-decided):", err));
+
+      // ✅ เดิม POST / เลื่อนการแจ้งเตือน "มอบหมายงานใหม่ให้คุณ" มาไว้ตรงนี้แทน (ดูคอมเมนต์ที่นั่น) —
+      // แจ้งเฉพาะตอนอนุมัติ (ไม่ใช่ตอนสร้าง) และเฉพาะเมื่อมีคนรับผิดชอบจริงที่ไม่ใช่ตัวผู้ขอเอง
+      if (decision === "approve" && target.resPerson && target.resPerson !== notifyUserId) {
+        sendPushToUsers(target.resPerson, {
+          title: `📋 ${approverName} อนุมัติและมอบหมายงานให้คุณ`,
+          body: jobLabel,
+          url: `/operation/${id}`,
+          tag: `approval-decided-${target.jobGroupId || id}`,
+          renotify: true,
+        }).catch((err) => console.error("❌ Push notify error (approval-assign):", err));
+      }
+    }
+
+    res.json({ events });
+  } catch (error) {
+    console.error("❌ Error deciding job approval:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
 // ✅ แก้ไขข้อมูลสัญญา (contractNo/quotationNo/contractStart/contractEnd/visitCount/jobValue) พร้อมกัน
 // ทุก "ครั้ง" ที่อยู่ในสัญญาเดียวกัน (ผูกด้วย contractGroupId) — กันข้อมูลสัญญาเพี้ยนไม่ตรงกันระหว่าง
 // ครั้งที่ 1-4 ถ้าแก้ทีละ record ผ่าน PUT /:id ธรรมดาซึ่งกระทบแค่ record เดียว
@@ -1258,7 +1441,7 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
     // ✅ team/resPerson เพิ่มเข้ามาให้แก้ "ผู้รับผิดชอบ" ของทั้งสัญญาได้พร้อมกันทุกครั้งเหมือนฟิลด์
     // สัญญาอื่นๆ ด้านล่าง (เดิม route นี้แก้ได้แค่ข้อมูลสัญญา ไม่รวมผู้รับผิดชอบ ซึ่งจริงๆ ก็ควรผูก
     // กับสัญญาทั้งก้อนเหมือนกัน ไม่ใช่รายครั้ง — ดูหน้า "ภาพรวมสัญญา" ที่แก้ inline ผ่านตารางได้เลย)
-    const { contractNo, quotationNo, contractStart, contractEnd, visitCount, jobValue, team, resPerson } = req.body;
+    const { contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue, team, resPerson } = req.body;
 
     // ✅ ห้ามเลขที่สัญญาซ้ำกับสัญญาอื่น — excludeContractGroupId เป็นตัวเอง เพราะทุกครั้งในสัญญานี้
     // มี contractNo เดิมอยู่แล้วโดยตั้งใจ (ไม่ถือว่าซ้ำ)
@@ -1269,11 +1452,22 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
       }
     }
 
+    if (intervalMonths !== undefined && intervalMonths !== "" && intervalMonths !== null) {
+      const n = Number(intervalMonths);
+      if (!n || n < 1 || n > 24) {
+        return res.status(400).json({ message: "ระยะห่างระหว่างรอบต้องอยู่ระหว่าง 1-24 เดือน" });
+      }
+    }
+
     const update = {};
     if (contractNo !== undefined) update.contractNo = contractNo;
     if (quotationNo !== undefined) update.quotationNo = quotationNo;
     if (contractStart !== undefined) update.contractStart = contractStart;
     if (contractEnd !== undefined) update.contractEnd = contractEnd;
+    // ✅ ระยะห่างระหว่างรอบ — ใช้เป็นข้อมูลอ้างอิงสำหรับเตือน "เกินกำหนดรอบถัดไป" เท่านั้น (ดู
+    // checkAndNotifyOverdueContracts/nextVisitOverdueInfo) ไม่ผูก/คำนวณทับ visitCount ให้เอง เพราะ
+    // งานจริงเลื่อน/ชนกันได้เสมอ จำนวนครั้งจริงต้องให้ผู้ใช้เป็นคนกำหนดเองเท่านั้น
+    if (intervalMonths !== undefined) update.intervalMonths = intervalMonths;
     if (visitCount !== undefined) {
       // ✅ ห้ามลดจำนวนครั้งต่ำกว่าที่ลงตารางจริงไปแล้ว — ไม่งั้นครั้งที่เกินจะโดนคอลัมน์ "ครั้งที่ N"
       // ในหน้าภาพรวมสัญญาตัดทิ้งจากที่แสดงผลไปเลยทั้งที่ข้อมูลยังอยู่จริงในฐานข้อมูล (ข้อมูลไม่ตรงจอ)
@@ -1385,7 +1579,11 @@ router.put("/:id", verifyToken, async (req, res) => {
       (existingEvent.resPerson && existingEvent.resPerson === userId) ||
       (existingEvent.team && existingEvent.team === req.user.fname);
 
-    if (req.user.role !== "admin" && !isOwner && !isAssigned) {
+    // ⚠️ BUG ที่แก้: เดิมเช็คแค่ req.user.role !== "admin" ตรงนี้ (manager ที่ไม่ใช่เจ้าของ/ไม่ได้รับ
+    // มอบหมายจะโดน 403 ทั้งที่ทุก route อื่นในไฟล์นี้ให้สิทธิ์ admin/manager เท่ากันหมด) — แก้ให้ตรง
+    // กับทุกจุดอื่น เทียบ pattern เดียวกับ isAdminOrManager ด้านล่าง (ย้ายมาคำนวณก่อนใช้ตรงนี้เลย)
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    if (!isAdminOrManager && !isOwner && !isAssigned) {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไข Event นี้" });
     }
 
@@ -1394,7 +1592,6 @@ router.put("/:id", verifyToken, async (req, res) => {
     // ติดตามใบเสนอราคาทั้งชุด — เพราะการติดตามใบเสนอราคามักเกิด "หลัง" งานถูกปิดแล้ว (ช่างปิดงาน
     // หน้างานก่อน ค่อยตามเรื่องเอกสาร/ใบเสนอราคากับลูกค้าทีหลัง) ถ้าล็อกไว้เหมือนข้อมูลงานอื่นจะทำให้
     // ช่างอัปเดตสถานะใบเสนอราคาของงานตัวเองไม่ได้เลยทั้งที่เป็นกรณีปกติ ไม่ใช่ข้อยกเว้น
-    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
     const NON_BLOCKING_FIELDS = [
       "comments", "activityLog",
       "quotationStatus", "quotationSentAt", "quotationDecisionAt", "quotationDecisionBy",
@@ -1404,6 +1601,33 @@ router.put("/:id", verifyToken, async (req, res) => {
     if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && !isNonBlockingUpdate) {
       return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถแก้ไขได้" });
     }
+
+    // ✅ งานที่ยังรออนุมัติ/ถูกปฏิเสธ (approvalStatus ไม่ใช่ "approved") ยังทำงานต่อได้ (แก้ไขข้อมูล/
+    // ปรับสถานะเป็น "กำลังดำเนินการ" ได้ตามปกติ — ตัวจับเวลาอัตโนมัติที่ EventCalendar/index.js เปลี่ยน
+    // สถานะเป็น "กำลังดำเนินการ" เองทุก 30 วินาทีต้องไม่โดนบล็อกตรงนี้ ไม่งั้นจะ retry ค้างวนไม่จบ) แต่ห้าม
+    // "ขอปิดงาน" หรือปิดงานจนกว่าจะได้รับการอนุมัติก่อน — งานที่ยังไม่ผ่านการอนุมัติไม่ควรถือว่า "เสร็จ" ได้
+    const approvalState = existingEvent.approvalStatus || "approved";
+    if (approvalState !== "approved" && !isAdminOrManager) {
+      if (req.body.closeRequested === true) {
+        return res.status(403).json({ message: "งานนี้ยังไม่ได้รับการอนุมัติ ยังขอปิดงานไม่ได้" });
+      }
+      if (req.body.status === "ดำเนินการเสร็จสิ้น") {
+        return res.status(403).json({ message: "งานนี้ยังไม่ได้รับการอนุมัติ ยังปิดงานไม่ได้" });
+      }
+    }
+
+    // ✅ แก้ไขงานที่ถูกปฏิเสธไปแล้ว (approvalStatus:"rejected") ถือเป็นการ "ส่งขออนุมัติใหม่"
+    // โดยอัตโนมัติ ถ้าแก้ไข "เนื้อหางานจริง" (ไม่ใช่แค่ comment/log/สถานะเอกสารซึ่งไม่เกี่ยวกับสิ่งที่
+    // แอดมินเคยปฏิเสธไป) — เจ้าของ/ผู้ถูกมอบหมายแก้ไขแล้วส่งกลับเข้าคิวรออนุมัติได้เองโดยไม่ต้องรอแอดมิน
+    // สร้างงานใหม่ทั้งอัน — เก็บ approvalRejectReason เดิมไว้ให้เห็นเป็นประวัติ (จะถูกล้างทิ้งเองตอน
+    // ตัดสินใจครั้งถัดไปที่ PUT /:id/approval)
+    const APPROVAL_RESUBMIT_FIELDS = [
+      "company", "site", "title", "system", "time", "team", "resPerson", "teamMembers",
+      "date", "start", "end", "startTime", "endTime", "subject", "description", "docNo", "jobValue",
+    ];
+    const touchesResubmitField = APPROVAL_RESUBMIT_FIELDS.some((f) => req.body[f] !== undefined);
+    const shouldResubmit = approvalState === "rejected" && !isAdminOrManager && touchesResubmitField;
+    const resubmitterName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
 
     const {
       docNo,
@@ -1548,6 +1772,17 @@ router.put("/:id", verifyToken, async (req, res) => {
       visitCount,
       jobValue,
 
+      // ✅ ส่งขออนุมัติใหม่อัตโนมัติ (ดู shouldResubmit ด้านบน) — ไม่เข้าเงื่อนไขก็ไม่ใส่ key พวกนี้เลย
+      // (ไม่ใช่ใส่เป็น undefined) ปล่อยให้ approvalStatus เดิมในฐานข้อมูลไม่ถูกแตะต้อง
+      ...(shouldResubmit ? {
+        approvalStatus: "pending",
+        approvalRequestedAt: new Date(),
+        approvalRequestedBy: resubmitterName,
+        approvalRequestedByUserId: userId,
+        approvalDecidedAt: null,
+        approvalDecidedBy: "",
+      } : {}),
+
       userId: existingEvent.userId, // ❌ ไม่เปลี่ยนเจ้าของเดิม
       // lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด
     };
@@ -1564,6 +1799,16 @@ router.put("/:id", verifyToken, async (req, res) => {
     // ✅ แจ้งเตือนตามการเปลี่ยนแปลงสำคัญ (ไม่ await เพื่อไม่ให้ response ช้าลง)
     // เทียบค่าก่อน (existingEvent) กับค่าที่ส่งมาใหม่ เพื่อดูว่า "เพิ่งเกิดการเปลี่ยนแปลง" จริงๆ ไม่ใช่แค่ค่าเดิม
     const jobLabel = `${updatedEvent.company || "-"}${updatedEvent.site ? " - " + updatedEvent.site : ""}`;
+
+    if (shouldResubmit) {
+      sendPushToRoles(["admin", "manager"], {
+        title: `🔄 ${resubmitterName} แก้ไขงานที่ถูกตีกลับ ส่งขออนุมัติใหม่`,
+        body: `${updatedEvent.title || "งาน"} · ${jobLabel}`,
+        url: `/operation/${updatedEvent._id}`,
+        tag: `approval-resubmit-${updatedEvent.jobGroupId || updatedEvent._id}`,
+        renotify: true,
+      }).catch((err) => console.error("❌ Push notify error (approval-resubmit):", err));
+    }
 
     // ✅ งานที่เข้าหลายวันไม่ติดกัน (ผูกด้วย jobGroupId เดียวกัน) ตอนนี้ action อย่าง "ขอปิดงาน"/
     // "อนุมัติ"/"ไม่อนุมัติ" ฝั่ง frontend อัปเดตทุกวันในกลุ่มพร้อมกันด้วย Promise.all ยิง PUT

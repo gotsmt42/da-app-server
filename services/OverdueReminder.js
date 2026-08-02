@@ -2,6 +2,7 @@ const moment = require("moment");
 const CalendarEvent = require("../models/Events");
 const User = require("../models/User");
 const { sendPushToUsers, sendPushToRoles } = require("./PushNotify");
+const { DEFAULT_INTERVAL_MONTHS } = require("../utils/contractVisits");
 
 // ✅ เกณฑ์เดียวกับฝั่ง frontend (Operation/index.js) — เลยกำหนดวันสิ้นสุดงานตามแผนจริงมาแล้ว
 // อย่างน้อย 1 สัปดาห์ ถือว่า "ค้างงาน" ต้องแจ้งเตือน
@@ -148,4 +149,56 @@ async function checkAndNotifyStaleQuotations() {
   }
 }
 
-module.exports = { checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations };
+// ✅ เตือนแอดมิน/manager ว่ามีสัญญาที่รอบล่าสุดผ่านมาเกินระยะห่างระหว่างรอบที่กำหนดไว้แล้ว แต่ยังไม่ได้
+// ลงแผนงานครั้งถัดไปเลย — เดิมเห็นได้แค่จุดแดงในตาราง "ภาพรวมงาน" ตอนเปิดหน้าค้างไว้เท่านั้น ⚠️ ตรรกะ
+// ต้องตรงกับ utils/contractOverdue.js (nextVisitOverdueInfo) ฝั่ง frontend เป๊ะๆ ไม่งั้นตัวเลขในแจ้งเตือน
+// กับจุดแดงในตารางจะไม่ตรงกัน — query ด้วย contractGroupId เฉยๆ (ไม่กรอง unscheduled) เพราะ
+// countUsedRounds ฝั่งจอนับรวมแผนงานล่วงหน้าด้วย
+async function checkAndNotifyOverdueContracts() {
+  try {
+    const events = await CalendarEvent.find({ contractGroupId: { $exists: true, $nin: [null, ""] } })
+      .select("contractGroupId visitCount intervalMonths time start end unscheduled")
+      .lean();
+    if (events.length === 0) return;
+
+    const byContract = new Map();
+    events.forEach((e) => {
+      if (!byContract.has(e.contractGroupId)) byContract.set(e.contractGroupId, []);
+      byContract.get(e.contractGroupId).push(e);
+    });
+
+    const overdueMonths = [];
+    byContract.forEach((visits) => {
+      const sorted = visits.slice().sort((a, b) => (Number(a.time) || 0) - (Number(b.time) || 0));
+      const head = sorted[0];
+      const visitCount = Number(head.visitCount);
+      if (!visitCount) return;
+      const usedRounds = new Set(
+        sorted.map((v) => v.time).filter((t) => t !== undefined && t !== null && t !== "").map(String)
+      );
+      if (usedRounds.size >= visitCount) return;
+      const realVisits = sorted.filter((v) => !v.unscheduled);
+      if (realVisits.length === 0) return;
+      const lastVisitDate = realVisits.reduce((latest, v) => {
+        const d = moment(v.end || v.start);
+        return !latest || d.isAfter(latest) ? d : latest;
+      }, null);
+      const dueDate = lastVisitDate.clone().add(Number(head.intervalMonths) || DEFAULT_INTERVAL_MONTHS, "months");
+      if (dueDate.isAfter(moment())) return;
+      overdueMonths.push(Math.max(1, moment().diff(dueDate, "months") + 1));
+    });
+    if (overdueMonths.length === 0) return;
+
+    await sendPushToRoles(["admin", "manager"], {
+      title: "📋 มีสัญญาที่ยังไม่ได้วางแผนรอบถัดไป",
+      body: `มี ${overdueMonths.length} สัญญาที่เลยกำหนดรอบถัดไปแล้ว (นานสุด ${Math.max(...overdueMonths)} เดือน) กรุณาตรวจสอบและลงแผนงานครั้งถัดไป`,
+      url: "/contracts",
+      tag: "contract-round-reminder",
+      renotify: true,
+    });
+  } catch (err) {
+    console.error("❌ Contract round reminder check error:", err);
+  }
+}
+
+module.exports = { checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations, checkAndNotifyOverdueContracts };
