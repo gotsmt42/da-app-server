@@ -814,8 +814,12 @@ router.put("/:id/unschedule", verifyToken, async (req, res) => {
     if (!isAdminOrManager && !isOwner) {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });
     }
-    // ❌ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามย้ายกลับไปแผนล่วงหน้า มีแค่ admin/manager เท่านั้นที่ทำได้
-    if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
+    // ❌ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามย้ายกลับไปแผนล่วงหน้าเด็ดขาด ไม่มีข้อยกเว้นแม้แต่ admin/
+    // manager — ต่างจากจุดล็อกอื่นๆ ในไฟล์นี้ (แก้ไข/อัปโหลดไฟล์/ลบไฟล์) ที่ยกเว้นให้ admin/manager
+    // เพราะจุดเหล่านั้นแก้ไข "ข้อมูลของงานเดิม" เท่านั้น แต่ unschedule ไปเคลียร์ date/start/end ทิ้ง
+    // (ดูด้านล่าง) โดยไม่แตะ status เลย ทำให้เกิดสถานะขัดแย้งกันเอง: "แผนงานล่วงหน้า" ที่ status ยังเป็น
+    // "ดำเนินการเสร็จสิ้น" อยู่ ซึ่งไม่มีเหตุผลใดที่ควรเกิดขึ้นได้จริง จึงต้องปิดเด็ดขาด ไม่ใช่แค่จำกัดสิทธิ์
+    if (existingEvent.status === "ดำเนินการเสร็จสิ้น") {
       return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถย้ายกลับไปแผนล่วงหน้าได้" });
     }
 
@@ -1428,14 +1432,14 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
       return res.status(404).json({ message: "ไม่พบสัญญานี้" });
     }
 
+    // ✅ ข้อมูลสัญญา (เลขที่สัญญา/ใบเสนอราคา/วันที่/จำนวนครั้ง/มูลค่างาน) เป็นข้อมูลเชิงบริหาร/การเงิน
+    // เฉพาะแอดมิน/manager เท่านั้นที่แก้ได้ — ไม่ใช้เกณฑ์เจ้าของ/ผู้ได้รับมอบหมายเหมือน route อื่นๆ ใน
+    // ไฟล์นี้ เพราะที่นี่แก้ "ทั้งสัญญา" พร้อมกันทุกครั้ง (updateMany ด้านล่าง) ผิดพลาดแล้วกระทบทุกครั้ง
+    // ที่ผูกสัญญาเดียวกันทันที ต่างจากแก้ไขงานรายครั้งปกติที่กระทบแค่ record เดียว (ดู EditEvent.js
+    // ที่ตอนนี้แสดงข้อมูลสัญญาแบบดูอย่างเดียว/disabled ให้ช่างแล้วเช่นกัน)
     const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
-    const isAllowed = isAdminOrManager || events.some((e) =>
-      (e.userId && e.userId.toString() === req.userId.toString()) ||
-      e.resPerson === req.userId ||
-      (e.team && e.team === req.user.fname)
-    );
-    if (!isAllowed) {
-      return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขสัญญานี้" });
+    if (!isAdminOrManager) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขข้อมูลสัญญานี้" });
     }
 
     // ✅ team/resPerson เพิ่มเข้ามาให้แก้ "ผู้รับผิดชอบ" ของทั้งสัญญาได้พร้อมกันทุกครั้งเหมือนฟิลด์
