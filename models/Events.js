@@ -12,6 +12,13 @@ const eventSchema = new mongoose.Schema(
     time: { type: String },
     team: { type: String },
 
+    // ✅ "ผู้รับผิดชอบ" — คนละแนวคิดกับ team ด้านบน (team คือใครเข้างานจริงในแต่ละครั้ง เปลี่ยนได้ทุกครั้ง
+    // ที่มอบหมายคนอื่นไปทำแทน) ตัวนี้คือคนที่รับผิดชอบสัญญา/ลูกค้ารายนี้โดยรวม แก้ไขแยกจาก team ได้อิสระ
+    // ผ่านหน้า "ภาพรวมงาน" (ContractOverview.js) — ไม่ได้ตั้งอัตโนมัติตามทีมที่เลือกอีกต่อไปเหมือน
+    // resPerson ด้านล่าง ปล่อยว่างได้ (ฝั่งจอ fallback ไปใช้ค่า team เดิมแสดงแทนถ้ายังไม่เคยตั้งค่านี้)
+    responsiblePerson: { type: String },
+    responsiblePersonId: { type: String },
+
     // ✅ วันที่บังคับกรอกเฉพาะงานที่ลงตารางแล้วเท่านั้น — งาน "วางแผนล่วงหน้า" (unscheduled)
     // ยังไม่รู้วันที่แน่นอน จึงต้องปล่อยว่างได้จนกว่าจะถูกลาก/กดลงตารางจริง
     date: { type: Date, required: function () { return !this.unscheduled; } },

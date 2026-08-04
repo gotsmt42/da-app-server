@@ -45,6 +45,34 @@ async function findDuplicateContractNo(contractNo, excludeContractGroupId) {
   return CalendarEvent.findOne(query).select("contractGroupId contractNo").lean();
 }
 
+// ✅ "ผู้รับผิดชอบตัวจริง" (effective responsible person) — ใช้กับ "การดำเนินงาน"/"ติดตามใบเสนอราคา"/
+// หน้า "ภาพรวมงาน" ของช่าง ที่ผู้ใช้ต้องการให้เป็นสิทธิ์ของ "ผู้รับผิดชอบ" (responsiblePerson) ล้วนๆ
+// ไม่ใช่ "ทีมที่เข้างาน" (team) อีกต่อไป — แต่ต้อง fallback ไปที่ team/resPerson เมื่องานนั้นยังไม่เคย
+// ถูกตั้งค่าผู้รับผิดชอบแยกไว้เลย (responsiblePerson ว่างเปล่า) ไม่งั้นงานเก่า/งานใหม่ทุกงานที่ยังไม่มี
+// ใครไปตั้งค่านี้ให้ชัดเจน จะกลายเป็นไม่มีใครนอกจากแอดมิน/manager เข้าถึงได้เลยทันที (พังงานที่ทำอยู่
+// ทุกวันนี้ทั้งหมด) — พอแอดมิน/manager มอบหมาย "ผู้รับผิดชอบ" ให้คนละคนกับทีมที่เข้างานเมื่อไหร่
+// (ผ่านหน้า "ภาพรวมงาน") ทีมที่เข้างานเดิมจะหลุดจากสิทธิ์กลุ่มนี้ทันที เหลือแค่ผู้รับผิดชอบคนใหม่เท่านั้น
+function effectiveResponsibleOrClauses(userId, fname) {
+  const emptyOrMissing = (field) => ({ $or: [{ [field]: { $exists: false } }, { [field]: "" }, { [field]: null }] });
+  return [
+    { responsiblePersonId: userId },
+    { $and: [emptyOrMissing("responsiblePersonId"), { resPerson: userId }] },
+    { responsiblePerson: fname },
+    { $and: [emptyOrMissing("responsiblePerson"), { team: fname }] },
+  ];
+}
+
+// ✅ เทียบ pattern เดียวกับ effectiveResponsibleOrClauses ด้านบนเป๊ะๆ แต่ใช้เช็ค document เดียวที่โหลด
+// มาแล้ว (ไม่ใช่สร้าง Mongo query) — ใช้กับ route ที่เช็คสิทธิ์ทีละ event เช่น quotation-followup
+function isEffectiveResponsiblePerson(event, userId, fname) {
+  const hasResponsiblePersonId = Boolean(event.responsiblePersonId);
+  const hasResponsiblePerson = Boolean(event.responsiblePerson);
+  return (
+    (hasResponsiblePersonId ? event.responsiblePersonId === userId : event.resPerson === userId) ||
+    (hasResponsiblePerson ? event.responsiblePerson === fname : event.team === fname)
+  );
+}
+
 router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) => {
   try {
     const capitalize = (str = "") => str.charAt(0).toUpperCase() + str.slice(1);
@@ -434,13 +462,21 @@ router.get("/event-op", verifyToken, async (req, res) => {
     const userId = req.userId; // ดึง userId จาก Token
     const userRole = req.user.role; // ดึง role ของ User
 
-    // ✅ จับคู่ด้วย resPerson (ID จริง จาก event ที่สร้าง/แก้ไขใหม่),
-    // team (fallback ด้วยชื่อ สำหรับ event เก่าที่มอบหมายไว้ก่อนหน้านี้ ยังไม่มี resPerson),
-    // หรือ userId (คนที่เพิ่ม event นี้เอง แม้จะไม่ได้ตั้ง resPerson/team ไว้เลยก็ตาม)
+    // ✅ ป้อนข้อมูลให้ทั้งหน้า "การดำเนินงาน" และ "ภาพรวมงาน" — ผู้ใช้ต้องการให้สองหน้านี้เป็นสิทธิ์ของ
+    // "ผู้รับผิดชอบ" (responsiblePerson) โดยเฉพาะ ไม่ใช่ "ทีมที่เข้างาน" (team) เหมือนเดิมอีกต่อไป —
+    // ใช้ effectiveResponsibleOrClauses (fallback ไปที่ team/resPerson เฉพาะงานที่ยังไม่เคยตั้งค่า
+    // ผู้รับผิดชอบแยกไว้เลย กันงานเก่า/งานที่ยังไม่ได้มอบหมายผู้รับผิดชอบชัดเจนหายไปจากทุกคนกะทันหัน)
+    // บวก userId (คนที่เพิ่ม event นี้เอง ให้เห็นงานที่ตัวเองสร้างไว้เสมอแม้จะไม่ได้เป็นผู้รับผิดชอบ/ทีม)
+    // ⚠️ BUG ที่แก้: เดิมเช็คแค่ userRole === "admin" (ไม่รวม manager) ทำให้ manager ถูกกรองเหลือแค่งาน
+    // ตัวเองด้วย ทั้งที่ทุกจุดอื่นในไฟล์นี้ให้สิทธิ์ manager เท่า admin — แก้ให้ตรงกัน
     // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรปนกับงานที่ลงตารางแล้ว
-    const query = userRole === "admin"
+    const isAdminOrManagerRole = ["admin", "manager"].includes(userRole);
+    const query = isAdminOrManagerRole
       ? { unscheduled: { $ne: true } }
-      : { unscheduled: { $ne: true }, $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
+      : { unscheduled: { $ne: true }, $or: [
+          { userId: userId },
+          ...effectiveResponsibleOrClauses(userId, req.user.fname),
+        ] };
 
     const userEvents = await CalendarEvent.find(query)
       .sort({ start: -1 })
@@ -507,6 +543,16 @@ router.post("/draft", verifyToken, async (req, res) => {
       const n = Number(intervalMonths);
       if (!n || n < 1 || n > 24) {
         return res.status(400).json({ message: "ระยะห่างระหว่างรอบต้องอยู่ระหว่าง 1-24 เดือน" });
+      }
+    }
+
+    // ✅ ห้ามใส่จำนวนครั้งทั้งหมดเกิน 12 — เทียบ pattern เดียวกับ intervalMonths ด้านบน (เช็คซ้ำฝั่ง
+    // backend เสมอ ไม่พึ่งฝั่งจอเช็คอย่างเดียว) กันตาราง "ภาพรวมงาน" เรนเดอร์คอลัมน์ "ครั้งที่ N"
+    // เกินจำเป็นจนหน้าพัง (ดู maxVisitCount ใน ContractOverview.js)
+    if (visitCount !== undefined && visitCount !== "" && visitCount !== null) {
+      const n = Number(visitCount);
+      if (!n || n < 1 || n > 12) {
+        return res.status(400).json({ message: "จำนวนครั้งทั้งหมดต้องอยู่ระหว่าง 1-12 ครั้ง" });
       }
     }
 
@@ -602,9 +648,14 @@ router.get("/drafts", verifyToken, async (req, res) => {
     const userRole = req.user.role;
     const isAdminOrManager = ["admin", "manager"].includes(userRole);
 
+    // ✅ ป้อนแผงงานล่วงหน้าให้ทั้งหน้า "การดำเนินงาน"/"ภาพรวมงาน" — เทียบ pattern เดียวกับ GET /event-op
+    // เป๊ะๆ (ดูคอมเมนต์ละเอียดที่นั่น) สิทธิ์เป็นของ "ผู้รับผิดชอบ" ไม่ใช่ "ทีมที่เข้างาน" อีกต่อไป
     const query = isAdminOrManager
       ? { unscheduled: true }
-      : { unscheduled: true, $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
+      : { unscheduled: true, $or: [
+          { userId: userId },
+          ...effectiveResponsibleOrClauses(userId, req.user.fname),
+        ] };
 
     const drafts = await CalendarEvent.find(query).sort({ createdAt: -1 }).lean();
     res.json({ drafts });
@@ -838,8 +889,10 @@ router.put("/:id/unschedule", verifyToken, async (req, res) => {
 });
 
 // ✅ บันทึกการติดตามลูกค้าเรื่องใบเสนอราคาแบบเป็นครั้งๆ (ครั้งที่ 1, 2, 3...) พร้อมหลักฐานแนบได้ถ้ามี
-// (หน้า /quotations) — เจ้าของ/ผู้ได้รับมอบหมายงานนี้หรือ admin บันทึกได้ ไม่จำกัดแค่แอดมิน เพราะคนที่
-// โทร/คุยกับลูกค้าจริงมักเป็นช่าง — attemptNumber คำนวณที่นี่เสมอ ห้ามรับจาก client (กันเลขซ้ำ/สลับ)
+// (หน้า /quotations) — ผู้ใช้ต้องการให้เป็นสิทธิ์ของ "ผู้รับผิดชอบ" (responsiblePerson) โดยเฉพาะ ไม่ใช่
+// "ทีมที่เข้างาน" (team) เหมือนเดิมอีกต่อไป (หัวหน้าทีมเข้างานไม่มีสิทธิ์จัดการส่วนนี้แล้ว) — เจ้าของ
+// (คนสร้างงาน)/ผู้รับผิดชอบ/admin/manager จัดการได้ — ใช้ effectiveResponsiblePerson (fallback ไปที่
+// team/resPerson เฉพาะงานที่ยังไม่เคยตั้งค่าผู้รับผิดชอบแยกไว้เลย กันงานเก่าพังกะทันหัน)
 router.put("/:id/quotation-followup", verifyToken, upload.single("file"), async (req, res) => {
   try {
     const { id } = req.params;
@@ -851,12 +904,12 @@ router.put("/:id/quotation-followup", verifyToken, upload.single("file"), async 
       return res.status(404).json({ message: "ไม่พบงานนี้" });
     }
 
-    // ✅ เงื่อนไขสิทธิ์เดียวกับ PUT /:id — เจ้าของ/ผู้ได้รับมอบหมาย (resPerson/team ตรงกับตัวเอง) หรือ admin
+    // ⚠️ BUG ที่แก้: เดิมเช็คแค่ req.user.role !== "admin" (ไม่รวม manager เหมือนทุกจุดอื่น) และเดิม
+    // เช็คแค่ team/resPerson (ทีมที่เข้างาน) ไม่ใช่ผู้รับผิดชอบ — เปลี่ยนมาเช็คผู้รับผิดชอบแทนตามที่ขอ
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
     const isOwner = existingEvent.userId.toString() === userId.toString();
-    const isAssigned =
-      (existingEvent.resPerson && existingEvent.resPerson === userId) ||
-      (existingEvent.team && existingEvent.team === req.user.fname);
-    if (req.user.role !== "admin" && !isOwner && !isAssigned) {
+    const isResponsible = isEffectiveResponsiblePerson(existingEvent, userId, req.user.fname);
+    if (!isAdminOrManager && !isOwner && !isResponsible) {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์บันทึกการติดตามงานนี้" });
     }
 
@@ -929,7 +982,10 @@ router.get("/documents", verifyToken, async (req, res) => {
     const isAdminOrManager = ["admin", "manager"].includes(userRole);
     const query = isAdminOrManager
       ? { unscheduled: { $ne: true } }
-      : { unscheduled: { $ne: true }, $or: [{ resPerson: userId }, { team: req.user.fname }, { userId: userId }] };
+      : { unscheduled: { $ne: true }, $or: [
+          { resPerson: userId }, { team: req.user.fname }, { userId: userId },
+          { responsiblePersonId: userId }, { responsiblePerson: req.user.fname },
+        ] };
 
     const events = await CalendarEvent.find(query)
       .select("docNo company site title system team teamMembers time status reportFiles quotationFiles invoiceFiles completionFiles")
@@ -1091,6 +1147,10 @@ router.put("/contract/merge", verifyToken, async (req, res) => {
     const { rounds, contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue } = req.body;
     if (!Array.isArray(rounds) || rounds.length === 0 || rounds.some((r) => !Array.isArray(r) || r.length === 0)) {
       return res.status(400).json({ message: "กรุณาเลือกงานอย่างน้อย 1 รายการ" });
+    }
+    // ✅ ห้ามใส่จำนวนครั้งทั้งหมดเกิน 12 — เทียบ pattern เดียวกับ PUT /contract/:contractGroupId
+    if (Number(visitCount) > 12) {
+      return res.status(400).json({ message: "จำนวนครั้งทั้งหมดต้องไม่เกิน 12 ครั้ง" });
     }
 
     const allEventIds = rounds.flat();
@@ -1442,10 +1502,14 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขข้อมูลสัญญานี้" });
     }
 
-    // ✅ team/resPerson เพิ่มเข้ามาให้แก้ "ผู้รับผิดชอบ" ของทั้งสัญญาได้พร้อมกันทุกครั้งเหมือนฟิลด์
-    // สัญญาอื่นๆ ด้านล่าง (เดิม route นี้แก้ได้แค่ข้อมูลสัญญา ไม่รวมผู้รับผิดชอบ ซึ่งจริงๆ ก็ควรผูก
-    // กับสัญญาทั้งก้อนเหมือนกัน ไม่ใช่รายครั้ง — ดูหน้า "ภาพรวมสัญญา" ที่แก้ inline ผ่านตารางได้เลย)
-    const { contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue, team, resPerson } = req.body;
+    // ✅ team/resPerson (ทีมที่เข้างาน) และ responsiblePerson/responsiblePersonId (ผู้รับผิดชอบ —
+    // คนละแนวคิดกัน ดูคอมเมนต์ที่ schema) เพิ่มเข้ามาให้แก้ผ่านทั้งสัญญาพร้อมกันทุกครั้งเหมือนฟิลด์
+    // สัญญาอื่นๆ ด้านล่าง (เดิม route นี้แก้ได้แค่ข้อมูลสัญญา ไม่รวมสองอย่างนี้ ซึ่งจริงๆ ก็ควรผูกกับ
+    // สัญญาทั้งก้อนเหมือนกัน ไม่ใช่รายครั้ง — ดูหน้า "ภาพรวมสัญญา" ที่แก้ inline ผ่านตารางได้เลย)
+    const {
+      contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue,
+      team, resPerson, responsiblePerson, responsiblePersonId,
+    } = req.body;
 
     // ✅ ห้ามเลขที่สัญญาซ้ำกับสัญญาอื่น — excludeContractGroupId เป็นตัวเอง เพราะทุกครั้งในสัญญานี้
     // มี contractNo เดิมอยู่แล้วโดยตั้งใจ (ไม่ถือว่าซ้ำ)
@@ -1473,6 +1537,13 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
     // งานจริงเลื่อน/ชนกันได้เสมอ จำนวนครั้งจริงต้องให้ผู้ใช้เป็นคนกำหนดเองเท่านั้น
     if (intervalMonths !== undefined) update.intervalMonths = intervalMonths;
     if (visitCount !== undefined) {
+      // ✅ ห้ามใส่จำนวนครั้งทั้งหมดเกิน 12 — ป้องกันไม่ให้ตาราง "ภาพรวมงาน" ต้องเรนเดอร์คอลัมน์
+      // "ครั้งที่ N" เกินจำเป็น (maxVisitCount ในหน้านั้นคำนวณจากค่าสูงสุดของทุกแถวที่กรองอยู่ ถ้ามี
+      // สัญญาไหนตั้งไว้สูงมากๆ ตารางทั้งหน้าจะกว้างจนพังไปด้วย) เทียบ pattern เดียวกับ intervalMonths
+      // ด้านบนที่ backend เช็คซ้ำอีกชั้นเสมอ ไม่พึ่งฝั่งจอเช็คอย่างเดียว
+      if (Number(visitCount) > 12) {
+        return res.status(400).json({ message: "จำนวนครั้งทั้งหมดต้องไม่เกิน 12 ครั้ง" });
+      }
       // ✅ ห้ามลดจำนวนครั้งต่ำกว่าที่ลงตารางจริงไปแล้ว — ไม่งั้นครั้งที่เกินจะโดนคอลัมน์ "ครั้งที่ N"
       // ในหน้าภาพรวมสัญญาตัดทิ้งจากที่แสดงผลไปเลยทั้งที่ข้อมูลยังอยู่จริงในฐานข้อมูล (ข้อมูลไม่ตรงจอ)
       // ⚠️ BUG ที่แก้: เดิมนับด้วย countDocuments (จำนวน record ดิบ) — ครั้งที่เข้างานไม่ต่อเนื่อง (เว้น
@@ -1500,6 +1571,8 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
     if (jobValue !== undefined) update.jobValue = jobValue;
     if (team !== undefined) update.team = team;
     if (resPerson !== undefined) update.resPerson = resPerson;
+    if (responsiblePerson !== undefined) update.responsiblePerson = responsiblePerson;
+    if (responsiblePersonId !== undefined) update.responsiblePersonId = responsiblePersonId;
 
     await CalendarEvent.updateMany({ contractGroupId }, { $set: update });
     const updatedEvents = await CalendarEvent.find({ contractGroupId }).lean();
@@ -1524,7 +1597,12 @@ router.put("/basic-info", verifyToken, async (req, res) => {
     if (!["admin", "manager"].includes(req.user.role)) {
       return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แก้ไขข้อมูลนี้ได้" });
     }
-    const { eventIds, company, site, system, title } = req.body;
+    // ✅ docNo/team/resPerson/responsiblePerson เพิ่มเข้ามาให้แก้ไขผ่าน route นี้ได้ด้วย (ใช้กับแถว
+    // งานทั่วไป/โปรเจคใน ContractOverview.js ที่ไม่มี contractGroupId จริงให้ใช้ PUT
+    // /contract/:contractGroupId เหมือนสัญญาจริง — ดู commitEdit ในหน้านั้น) team/responsiblePerson
+    // ของสัญญาจริงยังคงแก้ผ่าน PUT /contract/:contractGroupId เหมือนเดิม (อัปเดตทุกครั้งของสัญญา
+    // พร้อมกัน) ไม่ได้มาทาง route นี้
+    const { eventIds, company, site, system, title, docNo, team, resPerson, responsiblePerson, responsiblePersonId } = req.body;
     if (!Array.isArray(eventIds) || eventIds.length === 0) {
       return res.status(400).json({ message: "ไม่พบรายการที่จะแก้ไข" });
     }
@@ -1533,6 +1611,11 @@ router.put("/basic-info", verifyToken, async (req, res) => {
     if (site !== undefined) update.site = site;
     if (system !== undefined) update.system = system;
     if (title !== undefined) update.title = title;
+    if (docNo !== undefined) update.docNo = docNo;
+    if (team !== undefined) update.team = team;
+    if (resPerson !== undefined) update.resPerson = resPerson;
+    if (responsiblePerson !== undefined) update.responsiblePerson = responsiblePerson;
+    if (responsiblePersonId !== undefined) update.responsiblePersonId = responsiblePersonId;
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ message: "ไม่มีข้อมูลให้แก้ไข" });
     }
@@ -1578,10 +1661,16 @@ router.put("/:id", verifyToken, async (req, res) => {
 
     // ✅ เงื่อนไข: admin แก้ไขได้ทุก event, ส่วนคนอื่นแก้ไขได้เฉพาะ event ที่ตัวเองเพิ่ม
     // หรือ event ที่ได้รับมอบหมาย (resPerson ตรงกับ ID ตัวเอง หรือ team ตรงกับชื่อตัวเอง — เผื่อ event เก่า)
+    // หรือเป็น "ผู้รับผิดชอบ" ของงานนี้ (responsiblePersonId/responsiblePerson — คนละแนวคิดกับ team/
+    // resPerson ด้านบน อาจไม่ได้เข้างานเองแต่ยังรับผิดชอบอยู่)
+    // ⚠️ BUG ที่แก้: เดิมไม่เช็ค responsiblePerson เลย ทำให้คนที่ถูกตั้งเป็นผู้รับผิดชอบแต่ไม่ได้อยู่ใน
+    // team/resPerson ของครั้งนี้ แก้ไขงานตัวเองไม่ได้เลย (403 ทุกครั้ง)
     const isOwner = existingEvent.userId.toString() === userId.toString();
     const isAssigned =
       (existingEvent.resPerson && existingEvent.resPerson === userId) ||
-      (existingEvent.team && existingEvent.team === req.user.fname);
+      (existingEvent.team && existingEvent.team === req.user.fname) ||
+      (existingEvent.responsiblePersonId && existingEvent.responsiblePersonId === userId) ||
+      (existingEvent.responsiblePerson && existingEvent.responsiblePerson === req.user.fname);
 
     // ⚠️ BUG ที่แก้: เดิมเช็คแค่ req.user.role !== "admin" ตรงนี้ (manager ที่ไม่ใช่เจ้าของ/ไม่ได้รับ
     // มอบหมายจะโดน 403 ทั้งที่ทุก route อื่นในไฟล์นี้ให้สิทธิ์ admin/manager เท่ากันหมด) — แก้ให้ตรง

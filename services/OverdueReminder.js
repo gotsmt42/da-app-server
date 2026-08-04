@@ -18,6 +18,31 @@ const getGroupKey = (ev) => {
     .join("|");
 };
 
+// ✅ หาผู้รับผิดชอบงานจริงด้วยลำดับความสำคัญ — ผู้ใช้ต้องการให้การแจ้งเตือน "งานคงค้าง"/"ใบเสนอราคาค้าง"
+// เป็นสิ่งที่ "ผู้รับผิดชอบ" (responsiblePerson) ต้องติดตามเอง ไม่ใช่ "ทีมที่เข้างาน" (team) เหมือนเดิม
+// อีกต่อไป — เช็ค responsiblePersonId/responsiblePerson ก่อน แล้วค่อย fallback ไปที่ resPerson → team →
+// คนที่สร้าง event เอง (userId) — ข้อมูลจริงในระบบพบว่าหลายงานตั้งชื่อคนที่ลาออก/ไม่มีบัญชีจริงแล้ว
+// (ไม่ match กับ user คนไหนเลย) จึงต้อง cascade ผ่านหลายชั้นแบบนี้ กันไม่มีทางแจ้งเตือนใครได้เลย
+// ใช้ร่วมกันทั้ง checkAndNotifyOverdueJobs/checkAndNotifyStaleQuotations ด้านล่าง
+function resolveResponsibleUser(sessions, userById, userByFname) {
+  for (const e of sessions) {
+    if (e.responsiblePersonId && userById.has(e.responsiblePersonId.toString())) return userById.get(e.responsiblePersonId.toString());
+  }
+  for (const e of sessions) {
+    if (e.responsiblePerson && userByFname.has(e.responsiblePerson)) return userByFname.get(e.responsiblePerson);
+  }
+  for (const e of sessions) {
+    if (e.resPerson && userById.has(e.resPerson.toString())) return userById.get(e.resPerson.toString());
+  }
+  for (const e of sessions) {
+    if (e.team && userByFname.has(e.team)) return userByFname.get(e.team);
+  }
+  for (const e of sessions) {
+    if (e.userId && userById.has(e.userId.toString())) return userById.get(e.userId.toString());
+  }
+  return null;
+}
+
 // ✅ เช็คงานค้างเกิน 1 สัปดาห์แล้วส่ง push แจ้งเตือนช่างที่รับผิดชอบ — เรียกซ้ำเป็นระยะๆ ได้เรื่อยๆ
 // (ตั้งเวลาเรียกจาก index.js) ไม่หยุดเตือนจนกว่าช่างจะปิดงาน/ขอปิดงานจริง ตรงตามที่ต้องการให้
 // แจ้งเตือน "เป็นระยะๆ" ผ่านหน้าจอจริงของช่าง ไม่ใช่แค่ badge เงียบๆ ในแอป
@@ -27,7 +52,7 @@ async function checkAndNotifyOverdueJobs() {
       status: { $ne: "ดำเนินการเสร็จสิ้น" },
       closeRequested: { $ne: true },
     })
-      .select("company site title system team time jobGroupId resPerson userId end start allDay")
+      .select("company site title system team time jobGroupId resPerson userId end start allDay responsiblePersonId responsiblePerson")
       .lean();
 
     if (events.length === 0) return;
@@ -58,48 +83,39 @@ async function checkAndNotifyOverdueJobs() {
 
     if (overdueJobs.length === 0) return;
 
-    // ✅ หาเจ้าของงานจริงด้วยลำดับความสำคัญเดียวกับที่ backend ใช้ตัดสินว่า "งานนี้ของช่างคนไหน"
-    // ใน GET /events/event-op (resPerson ตรงๆ → ชื่อทีมตรงกับ fname → คนที่สร้าง event เอง)
-    // ข้อมูลจริงในระบบพบว่า resPerson แทบไม่ถูกตั้งเลย และหลายงานตั้ง team เป็นชื่อคนที่ลาออก/ไม่มี
-    // บัญชีจริงแล้ว (ไม่ match กับ user คนไหนเลย) — กรณีนั้นไม่มีทางแจ้งเตือนใครได้ ข้ามไปเงียบๆ
     const allUsers = await User.find({}).select("fname role").lean();
     const userById = new Map(allUsers.map((u) => [u._id.toString(), u]));
     const userByFname = new Map(allUsers.map((u) => [u.fname, u]));
 
-    const resolveTech = (sessions) => {
-      for (const e of sessions) {
-        if (e.resPerson && userById.has(e.resPerson.toString())) return userById.get(e.resPerson.toString());
-      }
-      for (const e of sessions) {
-        if (e.team && userByFname.has(e.team)) return userByFname.get(e.team);
-      }
-      for (const e of sessions) {
-        if (e.userId && userById.has(e.userId.toString())) return userById.get(e.userId.toString());
-      }
-      return null;
-    };
-
-    // ✅ แจ้งเฉพาะช่าง — ถ้าหาเจ้าของจริงไม่เจอ หรือดันไปตรงกับแอดมิน/manager (เช่น เป็นคนสร้าง
-    // event เองแต่ไม่ได้เป็นคนทำ) ให้ข้าม ไม่ใช่เป้าหมายของการแจ้งเตือนนี้
+    // ✅ แจ้งเฉพาะช่าง — ถ้าหาผู้รับผิดชอบจริงไม่เจอ หรือดันไปตรงกับแอดมิน/manager (เช่น เป็นคนสร้าง
+    // event เองแต่ไม่ได้เป็นคนรับผิดชอบ) ให้ข้าม ไม่ใช่เป้าหมายของการแจ้งเตือนนี้
     const overdueByTech = new Map();
     overdueJobs.forEach(({ sessions, daysPastDue }) => {
-      const user = resolveTech(sessions);
+      const user = resolveResponsibleUser(sessions, userById, userByFname);
       if (!user || user.role !== "technician") return;
       const techId = user._id.toString();
       if (!overdueByTech.has(techId)) overdueByTech.set(techId, []);
-      overdueByTech.get(techId).push(daysPastDue);
+      // ✅ เก็บ id ตัวแทนของงานนี้ไว้ด้วย (เอา session แรกพอ) ไม่ใช่แค่จำนวนวันที่ค้างเฉยๆ — ใช้พาไปที่
+      // งานนั้นตรงๆ ได้เลยถ้าช่างคนนี้มีงานค้างแค่งานเดียว ไม่ต้องเปิด /operation แล้วไล่หาเอง
+      overdueByTech.get(techId).push({ daysPastDue, id: sessions[0]._id.toString() });
     });
 
-    for (const [techId, daysList] of overdueByTech.entries()) {
+    for (const [techId, jobs] of overdueByTech.entries()) {
+      const daysList = jobs.map((j) => j.daysPastDue);
       const severeCount = daysList.filter((d) => d > SEVERE_DAYS_AFTER_END).length;
       const body = severeCount > 0
         ? `มี ${daysList.length} งานเลยกำหนดส่งมอบ (${severeCount} งานเกิน 2 สัปดาห์) กรุณาตรวจสอบและปิดงาน`
         : `มี ${daysList.length} งานเลยกำหนดส่งมอบแล้ว กรุณาตรวจสอบและปิดงาน`;
 
+      // ✅ ค้างแค่งานเดียว — เจาะจงพาไปที่งานนั้นเลย (/operation/:id?group=overdue ตรงกับ pattern เดียว
+      // กับที่การ์ด "งานค้างของช่าง" ใน Dashboard ใช้อยู่แล้ว — group=overdue สั่งให้แถบสถานะบนหน้า
+      // Operation ไฮไลต์ถูกกลุ่มด้วย) มากกว่า 1 งานถึงค่อยพาไปหน้ารวมเหมือนเดิม
+      const url = jobs.length === 1 ? `/operation/${jobs[0].id}?group=overdue` : "/operation";
+
       await sendPushToUsers(techId, {
         title: "⚠️ มีงานค้างเกิน 1 สัปดาห์",
         body,
-        url: "/operation",
+        url,
         tag: "overdue-reminder",
         renotify: true,
       });
@@ -109,55 +125,93 @@ async function checkAndNotifyOverdueJobs() {
   }
 }
 
-// ✅ ระบบติดตามใบเสนอราคา — เตือนแอดมิน/manager เมื่อส่งใบเสนอราคาให้ลูกค้าไปแล้วเกิน 3 วัน
-// ยังไม่มีการบันทึกผล (อนุมัติ/ปฏิเสธ/ขอแก้ไข) เพื่อกันไม่ให้ลืมติดตามลูกค้า (เทียบ pattern เดียวกับ
-// checkAndNotifyOverdueJobs ด้านบน แค่คิดจาก quotationSentAt แทนวันสิ้นสุดงาน)
+// ✅ ระบบติดตามใบเสนอราคา — เตือนแอดมิน/manager แบบภาพรวม (เหมือนเดิม) และเตือน "ผู้รับผิดชอบ" ของ
+// แต่ละงานเป็นรายคนด้วย (เพิ่มใหม่ — ผู้ใช้ต้องการให้ผู้รับผิดชอบเป็นคนติดตามใบเสนอราคาของงานตัวเองเอง
+// ไม่ใช่ "ทีมที่เข้างาน") เมื่อส่งใบเสนอราคาให้ลูกค้าไปแล้วเกิน 3 วันยังไม่มีการบันทึกผล (อนุมัติ/ปฏิเสธ/
+// ขอแก้ไข) เพื่อกันไม่ให้ลืมติดตามลูกค้า (เทียบ pattern เดียวกับ checkAndNotifyOverdueJobs ด้านบน
+// แค่คิดจาก quotationSentAt แทนวันสิ้นสุดงาน)
 const QUOTATION_WARNING_DAYS = 3;
 
 async function checkAndNotifyStaleQuotations() {
   try {
     const events = await CalendarEvent.find({ quotationStatus: "sent" })
-      .select("company site title system team time jobGroupId quotationSentAt")
+      .select("company site title system team time jobGroupId quotationSentAt resPerson userId responsiblePersonId responsiblePerson")
       .lean();
 
     if (events.length === 0) return;
 
     // ✅ งานที่เข้าหลายวัน (jobGroupId เดียวกัน) มีค่า quotationSentAt ตรงกันทุกแถวอยู่แล้ว (อัปเดตทั้ง
     // กลุ่มพร้อมกันตอนกดจากหน้า /quotations) — จัดกลุ่มก่อนนับ กันแจ้งเตือนซ้ำหลายครั้งต่องานเดียว
-    const seen = new Set();
-    let staleCount = 0;
+    const bySignature = new Map();
     events.forEach((e) => {
       const key = getGroupKey(e);
-      if (seen.has(key)) return;
-      seen.add(key);
-      if (!e.quotationSentAt) return;
-      const days = moment().startOf("day").diff(moment(e.quotationSentAt).startOf("day"), "days");
-      if (days > QUOTATION_WARNING_DAYS) staleCount++;
+      if (!bySignature.has(key)) bySignature.set(key, []);
+      bySignature.get(key).push(e);
     });
 
-    if (staleCount === 0) return;
+    const staleJobs = []; // { sessions, jobId }
+    bySignature.forEach((sessions) => {
+      const head = sessions[0];
+      if (!head.quotationSentAt) return;
+      const days = moment().startOf("day").diff(moment(head.quotationSentAt).startOf("day"), "days");
+      if (days > QUOTATION_WARNING_DAYS) staleJobs.push({ sessions, jobId: head._id.toString() });
+    });
+
+    if (staleJobs.length === 0) return;
+
+    // ✅ ค้างแค่ใบเดียว — เจาะจงพาไปเปิด Dialog รายละเอียดใบนั้นเลย (?jobId= ตรงกับ deep-link ที่
+    // QuotationTracking.js รองรับอยู่แล้ว จากกล่องแจ้งเตือนใน Dashboard) มากกว่า 1 ใบถึงค่อยพาไปหน้า
+    // รวม (ซึ่ง default อยู่ที่แท็บ "รอลูกค้าตอบ" เรียงใบที่ต้องติดตามด่วนขึ้นก่อนอยู่แล้วเช่นกัน)
+    const url = staleJobs.length === 1 ? `/quotations?jobId=${staleJobs[0].jobId}` : "/quotations";
 
     await sendPushToRoles(["admin", "manager"], {
       title: "📄 มีใบเสนอราคาที่ต้องติดตาม",
-      body: `มี ${staleCount} ใบเสนอราคาที่ส่งลูกค้าไปแล้วเกิน ${QUOTATION_WARNING_DAYS} วัน ยังไม่ได้บันทึกผล กรุณาติดตาม`,
-      url: "/quotations",
+      body: `มี ${staleJobs.length} ใบเสนอราคาที่ส่งลูกค้าไปแล้วเกิน ${QUOTATION_WARNING_DAYS} วัน ยังไม่ได้บันทึกผล กรุณาติดตาม`,
+      url,
       tag: "quotation-reminder",
       renotify: true,
     });
+
+    // ✅ แจ้งผู้รับผิดชอบของแต่ละงานเป็นรายคนด้วย (เทียบ pattern เดียวกับ checkAndNotifyOverdueJobs)
+    const allUsers = await User.find({}).select("fname role").lean();
+    const userById = new Map(allUsers.map((u) => [u._id.toString(), u]));
+    const userByFname = new Map(allUsers.map((u) => [u.fname, u]));
+
+    const staleByTech = new Map();
+    staleJobs.forEach(({ sessions, jobId }) => {
+      const user = resolveResponsibleUser(sessions, userById, userByFname);
+      if (!user || user.role !== "technician") return;
+      const techId = user._id.toString();
+      if (!staleByTech.has(techId)) staleByTech.set(techId, []);
+      staleByTech.get(techId).push(jobId);
+    });
+
+    for (const [techId, jobIds] of staleByTech.entries()) {
+      const techUrl = jobIds.length === 1 ? `/quotations?jobId=${jobIds[0]}` : "/quotations";
+      await sendPushToUsers(techId, {
+        title: "📄 มีใบเสนอราคาที่ต้องติดตาม",
+        body: `มี ${jobIds.length} ใบเสนอราคาของงานที่คุณรับผิดชอบ ส่งลูกค้าไปแล้วเกิน ${QUOTATION_WARNING_DAYS} วัน ยังไม่ได้บันทึกผล กรุณาติดตาม`,
+        url: techUrl,
+        tag: "quotation-reminder",
+        renotify: true,
+      });
+    }
   } catch (err) {
     console.error("❌ Quotation reminder check error:", err);
   }
 }
 
-// ✅ เตือนแอดมิน/manager ว่ามีสัญญาที่รอบล่าสุดผ่านมาเกินระยะห่างระหว่างรอบที่กำหนดไว้แล้ว แต่ยังไม่ได้
-// ลงแผนงานครั้งถัดไปเลย — เดิมเห็นได้แค่จุดแดงในตาราง "ภาพรวมงาน" ตอนเปิดหน้าค้างไว้เท่านั้น ⚠️ ตรรกะ
-// ต้องตรงกับ utils/contractOverdue.js (nextVisitOverdueInfo) ฝั่ง frontend เป๊ะๆ ไม่งั้นตัวเลขในแจ้งเตือน
-// กับจุดแดงในตารางจะไม่ตรงกัน — query ด้วย contractGroupId เฉยๆ (ไม่กรอง unscheduled) เพราะ
-// countUsedRounds ฝั่งจอนับรวมแผนงานล่วงหน้าด้วย
+// ✅ เตือนแอดมิน/manager แบบภาพรวม (เหมือนเดิม) และเตือน "ผู้รับผิดชอบ" ของแต่ละสัญญาเป็นรายคนด้วย
+// (เพิ่มใหม่ — เทียบ pattern เดียวกับ checkAndNotifyOverdueJobs/checkAndNotifyStaleQuotations)
+// ว่ามีสัญญาที่รอบล่าสุดผ่านมาเกินระยะห่างระหว่างรอบที่กำหนดไว้แล้ว แต่ยังไม่ได้ลงแผนงานครั้งถัดไปเลย —
+// เดิมเห็นได้แค่จุดแดงในตาราง "ภาพรวมงาน" ตอนเปิดหน้าค้างไว้เท่านั้น ⚠️ ตรรกะต้องตรงกับ
+// utils/contractOverdue.js (nextVisitOverdueInfo) ฝั่ง frontend เป๊ะๆ ไม่งั้นตัวเลขในแจ้งเตือนกับจุดแดง
+// ในตารางจะไม่ตรงกัน — query ด้วย contractGroupId เฉยๆ (ไม่กรอง unscheduled) เพราะ countUsedRounds
+// ฝั่งจอนับรวมแผนงานล่วงหน้าด้วย
 async function checkAndNotifyOverdueContracts() {
   try {
     const events = await CalendarEvent.find({ contractGroupId: { $exists: true, $nin: [null, ""] } })
-      .select("contractGroupId visitCount intervalMonths time start end unscheduled")
+      .select("contractGroupId visitCount intervalMonths time start end allDay unscheduled resPerson team userId responsiblePersonId responsiblePerson")
       .lean();
     if (events.length === 0) return;
 
@@ -167,7 +221,7 @@ async function checkAndNotifyOverdueContracts() {
       byContract.get(e.contractGroupId).push(e);
     });
 
-    const overdueMonths = [];
+    const overdueContracts = []; // { visits, monthsOverdue }
     byContract.forEach((visits) => {
       const sorted = visits.slice().sort((a, b) => (Number(a.time) || 0) - (Number(b.time) || 0));
       const head = sorted[0];
@@ -179,23 +233,54 @@ async function checkAndNotifyOverdueContracts() {
       if (usedRounds.size >= visitCount) return;
       const realVisits = sorted.filter((v) => !v.unscheduled);
       if (realVisits.length === 0) return;
+      // ⚠️ BUG ที่แก้: เดิมใช้ v.end ตรงๆ — แต่ end ของงาน allDay ถูกบวกไป 1 วันตอนบันทึกเสมอ (ค่า end
+      // แบบ exclusive ของ FullCalendar) ทำให้ "รอบล่าสุด" ที่ใช้คำนวณเพี้ยนไปวันหนึ่งเสมอ ไม่ตรงกับ
+      // nextVisitOverdueInfo ฝั่ง frontend ที่แก้จุดนี้ไปแล้วก่อนหน้านี้ — ต้องแก้ให้ตรงกันเป๊ะๆ ตามคอมเมนต์
+      // ด้านบนของฟังก์ชัน ไม่งั้นตัวเลขในแจ้งเตือนจะไม่ตรงกับจุดแดงในตาราง "ภาพรวมงาน"
       const lastVisitDate = realVisits.reduce((latest, v) => {
-        const d = moment(v.end || v.start);
+        const d = v.end
+          ? moment(v.end).subtract(v.allDay ? 1 : 0, "days")
+          : moment(v.start);
         return !latest || d.isAfter(latest) ? d : latest;
       }, null);
       const dueDate = lastVisitDate.clone().add(Number(head.intervalMonths) || DEFAULT_INTERVAL_MONTHS, "months");
       if (dueDate.isAfter(moment())) return;
-      overdueMonths.push(Math.max(1, moment().diff(dueDate, "months") + 1));
+      overdueContracts.push({ visits: sorted, monthsOverdue: Math.max(1, moment().diff(dueDate, "months") + 1) });
     });
-    if (overdueMonths.length === 0) return;
+    if (overdueContracts.length === 0) return;
 
+    // ✅ ?view=overdue — เปิดหน้า "ภาพรวมงาน" มาที่แท็บ "เลยกำหนด/คงค้าง" ให้เลยทันที (ดู viewFilter
+    // ใน ContractOverview.js) แทนที่จะเปิดมาแท็บ "งานสัญญา/งานรายปี" เริ่มต้นแล้วต้องกดกรองเอง
     await sendPushToRoles(["admin", "manager"], {
       title: "📋 มีสัญญาที่ยังไม่ได้วางแผนรอบถัดไป",
-      body: `มี ${overdueMonths.length} สัญญาที่เลยกำหนดรอบถัดไปแล้ว (นานสุด ${Math.max(...overdueMonths)} เดือน) กรุณาตรวจสอบและลงแผนงานครั้งถัดไป`,
-      url: "/contracts",
+      body: `มี ${overdueContracts.length} สัญญาที่เลยกำหนดรอบถัดไปแล้ว (นานสุด ${Math.max(...overdueContracts.map((c) => c.monthsOverdue))} เดือน) กรุณาตรวจสอบและลงแผนงานครั้งถัดไป`,
+      url: "/contracts?view=overdue",
       tag: "contract-round-reminder",
       renotify: true,
     });
+
+    // ✅ แจ้งผู้รับผิดชอบของแต่ละสัญญาเป็นรายคนด้วย (เทียบ pattern เดียวกับ checkAndNotifyOverdueJobs)
+    const allUsers = await User.find({}).select("fname role").lean();
+    const userById = new Map(allUsers.map((u) => [u._id.toString(), u]));
+    const userByFname = new Map(allUsers.map((u) => [u.fname, u]));
+
+    const overdueByTech = new Map();
+    overdueContracts.forEach(({ visits }) => {
+      const user = resolveResponsibleUser(visits, userById, userByFname);
+      if (!user || user.role !== "technician") return;
+      const techId = user._id.toString();
+      overdueByTech.set(techId, (overdueByTech.get(techId) || 0) + 1);
+    });
+
+    for (const [techId, count] of overdueByTech.entries()) {
+      await sendPushToUsers(techId, {
+        title: "📋 มีสัญญาที่ยังไม่ได้วางแผนรอบถัดไป",
+        body: `มี ${count} สัญญาที่คุณรับผิดชอบเลยกำหนดรอบถัดไปแล้ว กรุณาตรวจสอบและลงแผนงานครั้งถัดไป`,
+        url: "/contracts?view=overdue",
+        tag: "contract-round-reminder",
+        renotify: true,
+      });
+    }
   } catch (err) {
     console.error("❌ Contract round reminder check error:", err);
   }

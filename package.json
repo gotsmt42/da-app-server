@@ -6,7 +6,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "nodemon index.js",
-    "force-logout-all": "node scripts/forceLogoutAll.js"
+    "force-logout-all": "node scripts/forceLogoutAll.js",
+    "backfill-responsible-person": "node scripts/backfillResponsiblePerson.js"
   },
   "keywords": [],
   "author": "",
