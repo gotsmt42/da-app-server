@@ -281,6 +281,11 @@ router.post("/", verifyToken, async (req, res) => {
       // ✅ เลือกหมวดหมู่ "งานทั่วไป"/"งานโปรเจค" ได้ตั้งแต่ตอนสร้างงานเลย (ขั้นตอนที่ 1 ในฟอร์ม
       // AddEvent.js) แทนที่จะต้องไปกดจัดหมวดหมู่ย้อนหลังทีหลังในหน้า "ภาพรวมงาน" เสมอ
       "jobClassification",
+      // ✅ งานทั่วไป/งานโปรเจคที่สร้างจาก AddEvent.js ตั้งผู้สร้างเป็นผู้รับผิดชอบให้อัตโนมัติทันที
+      // (ดู payload ฝั่ง frontend) — งานตามสัญญายังคงปล่อยว่างไว้เหมือนเดิม (admin/manager มอบหมายเอง
+      // ผ่านหน้า "ภาพรวมงาน" เท่านั้น ฟอร์มฝั่งสัญญาไม่ได้ส่งฟิลด์นี้มาด้วย)
+      "responsiblePerson",
+      "responsiblePersonId",
     ];
 
     // ✅ รองรับสร้างงานที่ต้องเข้าหลายวันแบบไม่ติดกันในครั้งเดียว: ส่ง dates เป็น array ของ
@@ -530,6 +535,9 @@ router.post("/draft", verifyToken, async (req, res) => {
       // AddDraftEvent.js) แทนที่จะต้องไปกดจัดหมวดหมู่ย้อนหลังทีหลังในหน้า "ภาพรวมงาน" เสมอ — ไม่เกี่ยวกับ
       // งานตามสัญญา (isContractBatch) ซึ่งไม่มีแนวคิดหมวดหมู่นี้อยู่แล้ว (เป็นสัญญาจริงเสมอ)
       jobClassification,
+      // ✅ แผนงานทั่วไป/โปรเจค — คนที่เพิ่มเองเป็นผู้รับผิดชอบทันที (ดู payload ฝั่ง AddDraftEvent.js
+      // ไม่ส่งมาสำหรับแผนงานตามสัญญา ยังคงให้ admin/manager มอบหมายเองผ่านหน้า "ภาพรวมงาน" เหมือนเดิม)
+      responsiblePerson, responsiblePersonId,
     } = req.body;
 
     if (!site || !title || !system) {
@@ -596,6 +604,8 @@ router.post("/draft", verifyToken, async (req, res) => {
       team,
       description,
       resPerson: resPerson || undefined,
+      responsiblePerson: responsiblePerson || undefined,
+      responsiblePersonId: responsiblePersonId || undefined,
       unscheduled: true,
       plannedMonth: resolvedPlannedMonth,
       // ✅ ให้ค่าเริ่มต้นเสมอ (schema บังคับ required) แทนสีที่ผู้ใช้เลือกจริงตอนลงตาราง — ใช้สีม่วงคราม
@@ -864,6 +874,10 @@ router.put("/:id/unschedule", verifyToken, async (req, res) => {
     const isOwner = existingEvent.userId.toString() === req.userId.toString();
     if (!isAdminOrManager && !isOwner) {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });
+    }
+    // ❌ งานที่ยังรออนุมัติ ช่างทำอะไรไม่ได้เลย (เทียบ pattern เดียวกับ PUT /:id) — เปิดดูได้อย่างเดียว
+    if ((existingEvent.approvalStatus || "approved") === "pending" && !isAdminOrManager) {
+      return res.status(403).json({ message: "งานนี้ยังไม่ได้รับการอนุมัติ ดูข้อมูลได้อย่างเดียว แก้ไขไม่ได้จนกว่าจะอนุมัติหรือไม่อนุมัติก่อน" });
     }
     // ❌ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามย้ายกลับไปแผนล่วงหน้าเด็ดขาด ไม่มีข้อยกเว้นแม้แต่ admin/
     // manager — ต่างจากจุดล็อกอื่นๆ ในไฟล์นี้ (แก้ไข/อัปโหลดไฟล์/ลบไฟล์) ที่ยกเว้นให้ admin/manager
@@ -1592,11 +1606,6 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
 // ที่ต้องมาก่อน /contract/:contractGroupId ด้านบน)
 router.put("/basic-info", verifyToken, async (req, res) => {
   try {
-    // ✅ จำกัดเฉพาะแอดมิน/manager — ตรงกับที่หน้า "ภาพรวมงาน" (ContractOverview.js) กันช่างเปิดหน้านี้
-    // ผ่าน URL ตรงๆ ไว้อยู่แล้วที่ฝั่ง frontend อยู่แล้ว (redirect ออกถ้าไม่ใช่ role นี้)
-    if (!["admin", "manager"].includes(req.user.role)) {
-      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แก้ไขข้อมูลนี้ได้" });
-    }
     // ✅ docNo/team/resPerson/responsiblePerson เพิ่มเข้ามาให้แก้ไขผ่าน route นี้ได้ด้วย (ใช้กับแถว
     // งานทั่วไป/โปรเจคใน ContractOverview.js ที่ไม่มี contractGroupId จริงให้ใช้ PUT
     // /contract/:contractGroupId เหมือนสัญญาจริง — ดู commitEdit ในหน้านั้น) team/responsiblePerson
@@ -1606,6 +1615,35 @@ router.put("/basic-info", verifyToken, async (req, res) => {
     if (!Array.isArray(eventIds) || eventIds.length === 0) {
       return res.status(400).json({ message: "ไม่พบรายการที่จะแก้ไข" });
     }
+
+    const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+    if (!isAdminOrManager) {
+      // ✅ ผู้รับผิดชอบงานแก้ไข "ทีมที่เข้างาน" (team/resPerson) ของแต่ละครั้งได้อยู่แล้ว (ดู
+      // beginRoundTeamEdit ใน ContractOverview.js) — ตอนนี้เพิ่มให้แก้ไขข้อมูลพื้นฐาน (บริษัท/โครงการ/
+      // ระบบ/ประเภทงาน/เอกสาร) ของ "งานทั่วไป/งานโปรเจคที่ตัวเองรับผิดชอบ" ได้ด้วยตามที่ผู้ใช้ขอ — ยกเว้น
+      // การมอบหมาย "ผู้รับผิดชอบ" เอง (responsiblePerson/responsiblePersonId) ยังคงเฉพาะแอดมิน/manager
+      // เท่านั้น (ไม่ให้โยนความรับผิดชอบทิ้งเองได้) และงานตามสัญญาจริงยังคงเฉพาะแอดมิน/manager ทุกฟิลด์
+      // เหมือนเดิม (เช็คจาก contractGroupId ด้านล่าง) เพราะต้องผ่านการตรวจสอบจากส่วนกลางก่อนเสมอ
+      if (responsiblePerson !== undefined || responsiblePersonId !== undefined) {
+        return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่มอบหมายผู้รับผิดชอบได้" });
+      }
+      // ✅ ต้องเป็น "ผู้รับผิดชอบ" ของทุก event ที่จะแก้ไขจริง (เช็คค่าที่ตั้งไว้ตรงๆ ไม่ fallback ไปที่
+      // ทีมเดิมเหมือน isEffectiveResponsiblePerson — สิทธิ์นี้ต้องถูกมอบหมายไว้ชัดเจนก่อนเท่านั้น เทียบ
+      // pattern เดียวกับ canEditTeamAssignment ใน EditEvent.js) และห้ามเป็นงานตามสัญญาจริงเด็ดขาด
+      const targetEvents = await CalendarEvent.find({ _id: { $in: eventIds } })
+        .select("responsiblePersonId responsiblePerson contractGroupId").lean();
+      const userId = req.userId;
+      const isAllResponsible = targetEvents.length === eventIds.length && targetEvents.every((e) =>
+        !e.contractGroupId && (
+          (e.responsiblePersonId && e.responsiblePersonId === userId) ||
+          (e.responsiblePerson && e.responsiblePerson === req.user.fname)
+        )
+      );
+      if (!isAllResponsible) {
+        return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });
+      }
+    }
+
     const update = {};
     if (company !== undefined) update.company = company;
     if (site !== undefined) update.site = site;
@@ -1695,12 +1733,19 @@ router.put("/:id", verifyToken, async (req, res) => {
       return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถแก้ไขได้" });
     }
 
-    // ✅ งานที่ยังรออนุมัติ/ถูกปฏิเสธ (approvalStatus ไม่ใช่ "approved") ยังทำงานต่อได้ (แก้ไขข้อมูล/
-    // ปรับสถานะเป็น "กำลังดำเนินการ" ได้ตามปกติ — ตัวจับเวลาอัตโนมัติที่ EventCalendar/index.js เปลี่ยน
-    // สถานะเป็น "กำลังดำเนินการ" เองทุก 30 วินาทีต้องไม่โดนบล็อกตรงนี้ ไม่งั้นจะ retry ค้างวนไม่จบ) แต่ห้าม
-    // "ขอปิดงาน" หรือปิดงานจนกว่าจะได้รับการอนุมัติก่อน — งานที่ยังไม่ผ่านการอนุมัติไม่ควรถือว่า "เสร็จ" ได้
+    // ✅ งานที่ยัง "รออนุมัติ" (pending) — ช่าง/ผู้รับผิดชอบเปิดดูได้อย่างเดียว ทำอะไรไม่ได้เลยจนกว่า
+    // แอดมิน/manager จะตัดสินใจก่อน (ตามที่ผู้ใช้ยืนยัน) บล็อกทุกฟิลด์แบบเข้ม ไม่ใช่แค่ปิดงานเหมือนเดิม
+    // — ⚠️ เดิมมีคอมเมนต์เตือนว่าตัวจับเวลาอัตโนมัติที่เปลี่ยนสถานะเป็น "กำลังดำเนินการ" ทุก 30 วินาที
+    // (ฝั่ง EventCalendar/index.js) ต้องไม่โดนบล็อกตรงนี้ ไม่งั้นจะ retry ค้างวนไม่จบ — ปัจจุบันไม่ใช่ปัญหา
+    // แล้ว เพราะจุดนั้นกรองงานที่ยังไม่ approved ออกไปตั้งแต่ต้นแล้ว (ดู getApprovalState(event) ===
+    // "approved" ที่นั่น) จึงไม่มีทางยิง PUT มาโดนบล็อกตรงนี้ซ้ำๆ อีกต่อไป
     const approvalState = existingEvent.approvalStatus || "approved";
-    if (approvalState !== "approved" && !isAdminOrManager) {
+    if (approvalState === "pending" && !isAdminOrManager) {
+      return res.status(403).json({ message: "งานนี้ยังไม่ได้รับการอนุมัติ ดูข้อมูลได้อย่างเดียว แก้ไขไม่ได้จนกว่าจะอนุมัติหรือไม่อนุมัติก่อน" });
+    }
+    // ✅ งานที่ "ถูกปฏิเสธ" (rejected) ยังแก้ไขต่อได้ตามปกติ เพื่อส่งขออนุมัติใหม่ (ดู shouldResubmit
+    // ด้านล่าง) — คนละเคสกับ pending ด้านบน แต่ยังห้าม "ขอปิดงาน"/ปิดงานจนกว่าจะได้รับการอนุมัติก่อน
+    if (approvalState === "rejected" && !isAdminOrManager) {
       if (req.body.closeRequested === true) {
         return res.status(403).json({ message: "งานนี้ยังไม่ได้รับการอนุมัติ ยังขอปิดงานไม่ได้" });
       }
@@ -2024,6 +2069,12 @@ router.delete("/:id", verifyToken, async (req, res) => {
     // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างลบอีก มีแค่ admin/manager เท่านั้นที่ทำได้
     if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager) {
       return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถลบได้" });
+    }
+
+    // ❌ งานที่ยังรออนุมัติ ช่างทำอะไรไม่ได้เลย รวมถึงลบด้วย (เทียบ pattern เดียวกับ PUT /:id) —
+    // เปิดดูได้อย่างเดียว
+    if ((existingEvent.approvalStatus || "approved") === "pending" && !isAdminOrManager) {
+      return res.status(403).json({ message: "งานนี้ยังไม่ได้รับการอนุมัติ ดูข้อมูลได้อย่างเดียว แก้ไขไม่ได้จนกว่าจะอนุมัติหรือไม่อนุมัติก่อน" });
     }
 
     // Delete file from database
