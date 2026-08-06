@@ -535,8 +535,11 @@ router.post("/draft", verifyToken, async (req, res) => {
       // AddDraftEvent.js) แทนที่จะต้องไปกดจัดหมวดหมู่ย้อนหลังทีหลังในหน้า "ภาพรวมงาน" เสมอ — ไม่เกี่ยวกับ
       // งานตามสัญญา (isContractBatch) ซึ่งไม่มีแนวคิดหมวดหมู่นี้อยู่แล้ว (เป็นสัญญาจริงเสมอ)
       jobClassification,
-      // ✅ แผนงานทั่วไป/โปรเจค — คนที่เพิ่มเองเป็นผู้รับผิดชอบทันที (ดู payload ฝั่ง AddDraftEvent.js
-      // ไม่ส่งมาสำหรับแผนงานตามสัญญา ยังคงให้ admin/manager มอบหมายเองผ่านหน้า "ภาพรวมงาน" เหมือนเดิม)
+      // ✅ ผู้รับผิดชอบงาน — มาได้ 2 ทาง: (1) แผนงานทั่วไป/โปรเจค คนที่เพิ่มเองเป็นผู้รับผิดชอบทันที
+      // (ดู payload ฝั่ง AddDraftEvent.js) (2) สัญญาที่สร้างจากฟอร์ม "เพิ่มสัญญาใหม่" ในหน้า "ภาพรวมงาน"
+      // ซึ่ง admin/manager เลือกผู้รับผิดชอบไว้ตั้งแต่ตอนสร้าง — ต้องเก็บค่าตรงๆ ที่ส่งมาเท่านั้น ห้าม
+      // fallback ไปที่ team เอง เพราะสิทธิ์ที่ผูกกับ "ผู้รับผิดชอบตัวจริง" (แก้ไขทีมรายครั้ง ฯลฯ) เช็คแบบ
+      // เข้มงวดว่าต้องมอบหมายไว้ชัดเจนเท่านั้น (ดู rawResponsiblePersonId ฝั่ง frontend)
       responsiblePerson, responsiblePersonId,
     } = req.body;
 
@@ -569,12 +572,18 @@ router.post("/draft", verifyToken, async (req, res) => {
     const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
     const creatorName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
 
-    // ✅ แผนงานทั่วไปให้ผู้ใช้ระบุ plannedMonth เองเสมอ แต่สัญญาฉบับร่างไม่มีช่องนี้ในฟอร์ม —
-    // อนุมานให้จากวันที่เริ่มสัญญา (ถ้ามี) ไม่งั้นใช้เดือนปัจจุบัน กันไม่ให้ติด validation ด้านล่าง
-    const resolvedPlannedMonth = plannedMonth || (isContractBatch
-      ? (contractStart ? moment(contractStart).format("YYYY-MM") : moment().format("YYYY-MM"))
-      : plannedMonth);
-    if (!resolvedPlannedMonth) {
+    // ⚠️ BUG ที่แก้: เดิมสัญญาฉบับร่างที่ไม่ได้ส่ง plannedMonth มา (ฟอร์ม "เพิ่มสัญญาใหม่" ในหน้า
+    // "ภาพรวมงาน" ไม่มีช่องนี้เลย) จะถูก "เดา" เดือนให้เองเสมอ — จากวันที่เริ่มสัญญา ไม่งั้นใช้เดือน
+    // ปัจจุบัน — ทำให้สัญญาที่ผู้ใช้ตั้งใจสร้างเป็น "สัญญาเปล่า ยังไม่มีวันที่" กลายเป็นมีเดือนติดมาเอง
+    // แล้วไปโผล่ในแผง/วิดเจ็ต "งานวางแผนล่วงหน้า" เหมือนถูกวางแผนไว้เดือนนั้นจริงๆ ทั้งที่ยังไม่เคยมีใคร
+    // ระบุ — ตอนนี้เก็บเฉพาะค่าที่ผู้ใช้ระบุมาจริงเท่านั้น ไม่ระบุมาก็ปล่อยว่างไว้ (สัญญาเปล่าจริงๆ)
+    // ค่อยไปลงวันที่ครั้งที่ 1 ทีหลังผ่านปุ่มในตาราง "ภาพรวมงาน" (ดู handleAddVisitSubmit ซึ่งแปลง
+    // ฉบับร่างนี้เป็นครั้งที่ 1 จริงผ่าน PUT /:id/schedule)
+    // ⚠️ ยังบังคับสำหรับแผนงานทั่วไป/โปรเจคเหมือนเดิม — ฟอร์ม AddDraftEvent.js มีช่องให้เลือกเดือนอยู่แล้ว
+    // และแผงงานล่วงหน้าในปฏิทินจัดกลุ่มการ์ดตามเดือนนี้ ถ้าว่างจะไม่มีที่อยู่ให้แสดง (ต่างจากสัญญาซึ่ง
+    // ไม่โผล่ในแผงนั้นอยู่แล้ว — ดู visibleDrafts ใน EventCalendar/index.js)
+    const resolvedPlannedMonth = plannedMonth || undefined;
+    if (!isContractBatch && !resolvedPlannedMonth) {
       return res.status(400).json({ message: "กรุณาระบุเดือนที่ตั้งใจจะทำงานนี้" });
     }
 
@@ -635,11 +644,18 @@ router.post("/draft", verifyToken, async (req, res) => {
     // ✅ เดิม route นี้ไม่แจ้งเตือนเลย — แจ้งแอดมิน/manager เฉพาะตอนรออนุมัติ (เทียบ pattern เดียวกับ
     // POST / เป๊ะๆ) ใช้ deep-link ?draft=<id>&month=<เดือน> ที่ EventCalendar/index.js เปิดฟังอยู่แล้ว
     // (ใช้เปิดแผงงานล่วงหน้าไปที่แผนงานนี้โดยตรง ไม่ต้องเพิ่ม routing ฝั่ง frontend เลย)
+    // ⚠️ ยกเว้นฉบับร่างของ "สัญญา" — ไม่โผล่ในแผงงานล่วงหน้าของปฏิทินเลย (ดู visibleDrafts ใน
+    // EventCalendar/index.js) deep-link นั้นจึงพาไปหน้าที่ไม่มีการ์ดนี้อยู่ ต้องส่งไปหน้า "ภาพรวมงาน"
+    // ซึ่งเป็นที่เดียวที่จัดการสัญญาฉบับร่างได้จริงแทน — และเดือนอาจว่างได้แล้ว (สัญญาเปล่า) จึงไม่ต่อ
+    // ท้ายข้อความ/URL ถ้าไม่มีค่า กัน "เดือน undefined" โผล่ในแจ้งเตือน
     if (draft.approvalStatus === "pending") {
+      const monthSuffix = resolvedPlannedMonth ? ` · เดือน ${resolvedPlannedMonth}` : "";
       sendPushToRoles(["admin", "manager"], {
         title: `⏳ ${creatorName} ส่งแผนงานล่วงหน้ารออนุมัติ`,
-        body: `${draft.title || "งาน"} · ${draft.company || "-"}${draft.site ? " - " + draft.site : ""} · เดือน ${resolvedPlannedMonth}`,
-        url: `/event?draft=${draft._id}&month=${resolvedPlannedMonth}`,
+        body: `${draft.title || "งาน"} · ${draft.company || "-"}${draft.site ? " - " + draft.site : ""}${monthSuffix}`,
+        url: draft.contractGroupId
+          ? "/contracts"
+          : `/event?draft=${draft._id}${resolvedPlannedMonth ? `&month=${resolvedPlannedMonth}` : ""}`,
         tag: `approval-draft-${draft._id}`,
         renotify: true,
       }).catch((err) => console.error("❌ Push notify error (approval-request-draft):", err));
@@ -845,7 +861,12 @@ router.put("/:id/draft", verifyToken, async (req, res) => {
       sendPushToRoles(["admin", "manager"], {
         title: `🔄 ${existingEvent.approvalRequestedBy} แก้ไขแผนงานที่ถูกตีกลับ ส่งขออนุมัติใหม่`,
         body: `${existingEvent.title || "งาน"} · ${existingEvent.company || "-"}${existingEvent.site ? " - " + existingEvent.site : ""}`,
-        url: `/event?draft=${existingEvent._id}&month=${existingEvent.plannedMonth}`,
+        // ⚠️ เหมือน POST /draft: ฉบับร่างของ "สัญญา" ไม่โผล่ในแผงงานล่วงหน้าของปฏิทินแล้ว (ดู
+        // visibleDrafts) ลิงก์ ?draft= จะพาไปหน้าที่ไม่มีการ์ดนี้อยู่ ต้องส่งไปหน้า "ภาพรวมงาน" แทน —
+        // และ plannedMonth ว่างได้แล้ว (สัญญาเปล่า) จึงต้องไม่ต่อท้าย URL เป็น "month=undefined"
+        url: existingEvent.contractGroupId
+          ? "/contracts"
+          : `/event?draft=${existingEvent._id}${existingEvent.plannedMonth ? `&month=${existingEvent.plannedMonth}` : ""}`,
         tag: `approval-resubmit-draft-${existingEvent._id}`,
         renotify: true,
       }).catch((err) => console.error("❌ Push notify error (approval-resubmit-draft):", err));
