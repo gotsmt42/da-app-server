@@ -625,9 +625,14 @@ router.post("/draft", verifyToken, async (req, res) => {
       textColor: textColor || "#ffffff",
       fontSize: fontSize || 8,
       userId: req.userId,
+      // 🐛 BUG ที่แก้ (กรอกมูลค่างานตอนสร้างสัญญาแล้วไม่ขึ้นในตาราง): jobValue ถูก destructure จาก
+      // req.body ไว้แล้ว (ดูด้านบน) แต่ตกหล่นไม่ได้ถูกเขียนลง document เลยสักครั้ง — ค่าที่ผู้ใช้กรอก
+      // จึงหายไปเงียบๆ ทุกครั้งที่สร้าง "สัญญาเปล่า" (ไม่ระบุวันที่ครั้งที่ 1 ซึ่งเป็นเส้นทางปกติ)
+      // ⚠️ เส้นทางที่ระบุวันที่มาด้วยไม่เจอปัญหานี้ เพราะไปทาง POST / ซึ่งมี jobValue ใน allowedFields
+      // อยู่แล้ว — ผู้ใช้เลยเจออาการ "บางทีก็ขึ้น บางทีก็ไม่ขึ้น" แล้วแต่ว่ากรอกวันที่มาหรือเปล่า
       ...(isContractBatch ? {
         contractGroupId: contractGroupId || crypto.randomUUID(),
-        contractNo, quotationNo, contractStart, contractEnd, intervalMonths, visitCount,
+        contractNo, quotationNo, contractStart, contractEnd, intervalMonths, visitCount, jobValue,
       } : (jobClassification ? { jobClassification } : {})),
       // ✅ ห้ามรับ approvalStatus จาก client ตรงๆ (ไม่อยู่ใน destructure ด้านบนเลย) คำนวณเองจาก role
       // ของผู้เรียกเท่านั้น — เทียบ pattern เดียวกับ POST / (buildEventData) เป๊ะๆ
@@ -1110,8 +1115,11 @@ router.get("/", verifyToken, async (req, res) => {
     // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรโผล่ในปฏิทิน
     const userEvents = await CalendarEvent.find({ unscheduled: { $ne: true } }).lean();
 
-    const userIds = userEvents.map((event) => event.userId.toString());
-    const uniqueUserIds = [...new Set(userIds)];
+    // 🐛 BUG ที่แก้ (ปฏิทินพังทั้งหน้าถ้ามี event สักตัวที่ไม่มี userId): userId ใน schema ไม่ได้เป็น
+    // required — งานที่หลุดมาโดยไม่มี userId (ข้อมูลเก่า/นำเข้า/สร้างผ่านทางอื่น) จะทำให้
+    // event.userId.toString() โยน TypeError → 500 ทั้ง endpoint → ปฏิทินโหลดไม่ขึ้นเลยสำหรับทุกคน
+    // เพราะงานเสียแค่ตัวเดียว — กันด้วย optional chaining แล้วข้ามเฉพาะตัวที่ไม่มีไปเงียบๆ
+    const uniqueUserIds = [...new Set(userEvents.map((e) => e.userId?.toString()).filter(Boolean))];
 
     const users = await User.find({ _id: { $in: uniqueUserIds } }).lean();
 
@@ -1121,7 +1129,7 @@ router.get("/", verifyToken, async (req, res) => {
     });
 
     const updatedUserEvents = userEvents.map((event) => {
-      const user = userMap.get(event.userId.toString());
+      const user = event.userId ? userMap.get(event.userId.toString()) : null;
       if (user) {
         const { _id, password, ...userDataWithoutId } = user;
         return { ...event, user: userDataWithoutId };
@@ -1129,11 +1137,11 @@ router.get("/", verifyToken, async (req, res) => {
       return event;
     });
 
-    // ถ้าไม่มีข้อมูล
-    if (!userEvents.length) {
-      return res.status(404).json({ message: "ไม่พบข้อมูลปฏิทิน" });
-    }
-
+    // 🐛 BUG ที่แก้ (ไม่มีงานเลย = วันหยุดหายทั้งปฏิทิน): เดิมตอบ 404 เมื่อยังไม่มีงานสักรายการ ซึ่งไม่ใช่
+    // ข้อผิดพลาด — "ยังไม่มีงาน" เป็นผลลัพธ์ที่ถูกต้อง — axios ฝั่งจอจะ throw ทำให้ Promise.all ใน
+    // getFetchEvents (ที่ดึงงาน + วันหยุดราชการพร้อมกัน) reject ทั้งก้อน วันหยุดที่ดึงมาสำเร็จแล้วจึงถูก
+    // ทิ้งไปด้วย ปฏิทินเลยว่างสนิทไม่มีแม้แต่วันหยุด + ขึ้น error ใน console ทุก 30 วินาทีจาก polling
+    // ✅ ตอบ 200 พร้อม array ว่างตามหลัก REST — ฝั่งจอจัดการเคสว่างได้อยู่แล้ว
     res.json({ userEvents: updatedUserEvents });
   } catch (err) {
     console.error("❌ Error fetching calendar events:", err);
@@ -1858,8 +1866,31 @@ router.put("/:id", verifyToken, async (req, res) => {
       contractStart,
       contractEnd,
       visitCount,
+      // 🐛 BUG ที่แก้ (แก้ "เข้าทุกกี่เดือน" จากหน้าปฏิทินแล้วหายเงียบ): route นี้ไม่เคยรับ intervalMonths
+      // เลยแม้แต่ครั้งเดียว ทั้งที่ฟอร์มแก้ไขงาน (EditEvent.js) มีช่องนี้ให้กรอกและส่งค่ามาทุกครั้งที่บันทึก
+      // — ผู้ใช้แก้แล้วกดบันทึก ได้ข้อความ "สำเร็จ" แต่ค่าไม่เคยถูกเก็บ ต้องไปแก้ที่หน้า "ภาพรวมงาน"
+      // (PUT /contract/:contractGroupId ซึ่งรับฟิลด์นี้อยู่แล้ว) เท่านั้นถึงจะได้ผลจริง
+      intervalMonths,
       jobValue,
     } = req.body;
+
+    // ✅ ตรวจข้อมูลสัญญาให้ตรงกับ PUT /contract/:contractGroupId และ POST /draft เป๊ะๆ — เดิม route นี้
+    // ไม่ตรวจอะไรเลย ทำให้ "ฟิลด์เดียวกันของสัญญาเดียวกัน" มีกติกาคนละชุดขึ้นกับว่าแก้จากหน้าไหน:
+    // แก้จากหน้า "ภาพรวมงาน" ติดเพดาน 12 ครั้ง แต่แก้จากฟอร์มในปฏิทินใส่เท่าไหร่ก็ได้ — ตั้งเกิน 12 ไป
+    // แล้วตารางภาพรวมงานจะเรนเดอร์ได้แค่ 12 คอลัมน์ (ดู maxVisitCount) ครั้งที่เกินมามองไม่เห็น/เข้าไม่ถึง
+    // และแก้กลับจากหน้านั้นก็ไม่ได้อีก (โดนเพดานบล็อก) กลายเป็นสัญญาที่ค้างอยู่ในสถานะที่ซ่อมได้ทางเดียว
+    if (intervalMonths !== undefined && intervalMonths !== "" && intervalMonths !== null) {
+      const n = Number(intervalMonths);
+      if (!n || n < 1 || n > 24) {
+        return res.status(400).json({ message: "ระยะห่างระหว่างรอบต้องอยู่ระหว่าง 1-24 เดือน" });
+      }
+    }
+    if (visitCount !== undefined && visitCount !== "" && visitCount !== null) {
+      const n = Number(visitCount);
+      if (!n || n < 1 || n > 12) {
+        return res.status(400).json({ message: "จำนวนครั้งทั้งหมดต้องอยู่ระหว่าง 1-12 ครั้ง" });
+      }
+    }
 
     // ⚠️ ตัดออกตามที่ผู้ใช้ขอ: เดิมเช็คช่างชนกัน (double-booking) ทุกครั้งที่ resPerson/ช่วงวันที่
     // เปลี่ยนไปจากเดิม ทำให้ลากงานย้ายวันบนปฏิทิน (eventDrop → PUT /:id) พังบ่อยเพราะช่างคนเดิมมีงาน
@@ -1929,6 +1960,7 @@ router.put("/:id", verifyToken, async (req, res) => {
       contractStart,
       contractEnd,
       visitCount,
+      intervalMonths, // ✅ เดิมตกหล่นไป ทำให้ค่าที่แก้จากฟอร์มในปฏิทินไม่เคยถูกบันทึก (ดูคอมเมนต์ด้านบน)
       jobValue,
 
       // ✅ ส่งขออนุมัติใหม่อัตโนมัติ (ดู shouldResubmit ด้านบน) — ไม่เข้าเงื่อนไขก็ไม่ใส่ key พวกนี้เลย
