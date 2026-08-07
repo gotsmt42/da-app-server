@@ -17,6 +17,10 @@ const upload = multer({ storage });
 
 const streamifier = require("streamifier");
 const crypto = require("crypto");
+
+// ✅ จำนวนครั้งสูงสุดต่อสัญญา — ต้องตรงกับ MAX_VISIT_COUNT ฝั่งหน้าจอ (ContractOverview.js) เป๊ะๆ
+// ใช้จำกัดเลข "ครั้งที่" ปลายทางตอนย้ายครั้ง (ดู PUT /contract/:contractGroupId/move-round)
+const MAX_VISIT_COUNT = 12;
 const { sendPushToUsers, sendPushToRoles, sendPushToAllUsers } = require("../services/PushNotify");
 // ⚠️ findResPersonConflicts (เช็คช่างชนกัน/double-booking กับงานอื่นในระบบ) ถูกตัดออกจากทุก route
 // แล้วตามที่ผู้ใช้ขอ — 1 ทีมรับหลายงานในวันเดียวกันได้ตามปกติ เหลือไว้แค่ findMutualOverlaps (เช็คว่า
@@ -1404,6 +1408,61 @@ router.put("/contract/:contractGroupId/detach", verifyToken, async (req, res) =>
   }
 });
 
+// ✅ ย้าย "ครั้งที่ N" ไปเป็นครั้งที่อื่นในสัญญาเดียวกัน — ย้ายยกทั้งครั้ง (ทุก document ของครั้งนั้น
+// พร้อมกัน: วันที่/สถานะ/ทีม/ประวัติงานทั้งหมดติดไปด้วยครบ ไม่ได้ย้ายแค่ตัวเลข) ใช้แก้กรณีลงครั้งผิดลำดับ
+// หรืองานเลื่อน/สลับรอบกัน ซึ่งเกิดขึ้นประจำในงานจริง
+// ⚠️ ถ้าปลายทางมีครั้งอยู่แล้ว = "สลับที่กัน" (swap) ไม่ใช่เขียนทับ — ข้อมูลของทั้งสองครั้งต้องอยู่ครบ
+// เสมอ ห้ามมีทางที่กดผิดแล้วข้อมูลหายถาวรโดยไม่มีอะไรเตือน
+router.put("/contract/:contractGroupId/move-round", verifyToken, async (req, res) => {
+  try {
+    if (!["admin", "manager"].includes(req.user.role)) {
+      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่ย้ายครั้งที่ได้" });
+    }
+    const { contractGroupId } = req.params;
+    const { fromTime, toTime } = req.body;
+    if (fromTime === undefined || fromTime === null || fromTime === "" ||
+        toTime === undefined || toTime === null || toTime === "") {
+      return res.status(400).json({ message: "กรุณาระบุครั้งที่ต้นทางและปลายทาง" });
+    }
+    const from = Number(fromTime);
+    const to = Number(toTime);
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < 1 || to > MAX_VISIT_COUNT) {
+      return res.status(400).json({ message: `ครั้งที่ต้องเป็นจำนวนเต็มระหว่าง 1-${MAX_VISIT_COUNT}` });
+    }
+    if (from === to) {
+      return res.status(400).json({ message: "ครั้งที่ต้นทางและปลายทางเป็นครั้งเดียวกัน" });
+    }
+
+    // ✅ เก็บ _id ไว้ล่วงหน้าทั้งสองฝั่งก่อนเริ่มแก้ไข — สำคัญมาก เพราะหลังอัปเดตขั้นแรก ค่า time จะซ้ำกัน
+    // ชั่วขณะ (ทั้งต้นทางและปลายทางเป็นเลขเดียวกัน) ถ้าขั้นที่สองไปค้นด้วย time อีกทีจะจับได้ทั้งสองก้อน
+    // ปนกันจนสลับผิด — อ้างอิงด้วย _id ที่จับไว้ตั้งแต่ต้นเท่านั้นจึงจะแม่นยำเสมอ
+    const [sourceDocs, targetDocs] = await Promise.all([
+      CalendarEvent.find({ contractGroupId, time: String(from) }).select("_id").lean(),
+      CalendarEvent.find({ contractGroupId, time: String(to) }).select("_id").lean(),
+    ]);
+    if (sourceDocs.length === 0) {
+      return res.status(404).json({ message: `ไม่พบครั้งที่ ${from} ในสัญญานี้` });
+    }
+    const sourceIds = sourceDocs.map((d) => d._id);
+    const targetIds = targetDocs.map((d) => d._id);
+
+    await CalendarEvent.updateMany({ _id: { $in: sourceIds } }, { $set: { time: String(to) } });
+    if (targetIds.length > 0) {
+      await CalendarEvent.updateMany({ _id: { $in: targetIds } }, { $set: { time: String(from) } });
+    }
+
+    res.json({
+      success: true,
+      swapped: targetIds.length > 0,
+      movedCount: sourceIds.length,
+      swappedCount: targetIds.length,
+    });
+  } catch (error) {
+    console.error("❌ Error moving contract round:", error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
 // ✅ จัดหมวดหมู่งานที่ไม่มี contractGroupId — "" (ยังไม่จัดกลุ่ม) / "general" (งานทั่วไป) / "project"
 // (งานโปรเจค) เฉพาะงานที่ไม่มี contractGroupId เท่านั้นที่จัดหมวดหมู่นี้ได้ ก่อนจัดจะแสดงเป็น "งานเก่า
 // ในระบบที่ยังไม่จัดกลุ่ม" เสมอ (ดูหน้า "ภาพรวมงาน" ContractOverview.js) — เฉพาะแอดมิน/manager เหมือน
@@ -1640,9 +1699,20 @@ router.put("/basic-info", verifyToken, async (req, res) => {
     // /contract/:contractGroupId เหมือนสัญญาจริง — ดู commitEdit ในหน้านั้น) team/responsiblePerson
     // ของสัญญาจริงยังคงแก้ผ่าน PUT /contract/:contractGroupId เหมือนเดิม (อัปเดตทุกครั้งของสัญญา
     // พร้อมกัน) ไม่ได้มาทาง route นี้
-    const { eventIds, company, site, system, title, docNo, team, resPerson, responsiblePerson, responsiblePersonId } = req.body;
+    // ✅ jobValue เพิ่มเข้ามาให้แก้ไขผ่าน route นี้ได้ด้วย — หน้า "ภาพรวมงาน" แสดงมูลค่างานทุกแท็บแล้ว
+    // (ไม่ใช่เฉพาะสัญญาจริงเหมือนเดิม) งานทั่วไป/โปรเจค/ยังไม่จัดกลุ่มไม่มี contractGroupId จริงจึงใช้
+    // PUT /contract/:contractGroupId ไม่ได้ ต้องมาทางนี้ (เทียบ pattern เดียวกับ docNo) — ส่วนมูลค่างาน
+    // ของสัญญาจริงยังแก้ผ่าน /contract/:contractGroupId เหมือนเดิม (อัปเดตทุกครั้งของสัญญาพร้อมกัน)
+    const { eventIds, company, site, system, title, docNo, team, resPerson, responsiblePerson, responsiblePersonId, jobValue } = req.body;
     if (!Array.isArray(eventIds) || eventIds.length === 0) {
       return res.status(400).json({ message: "ไม่พบรายการที่จะแก้ไข" });
+    }
+    // ✅ กันค่าติดลบ/ไม่ใช่ตัวเลข (ฝั่งจอเช็คให้แล้วชั้นหนึ่ง — เช็คซ้ำที่นี่เพราะ API เรียกตรงได้เสมอ)
+    if (jobValue !== undefined && jobValue !== null && jobValue !== "") {
+      const n = Number(jobValue);
+      if (Number.isNaN(n) || n < 0) {
+        return res.status(400).json({ message: "มูลค่างานต้องเป็นตัวเลขและต้องไม่ติดลบ" });
+      }
     }
 
     const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
@@ -1655,6 +1725,12 @@ router.put("/basic-info", verifyToken, async (req, res) => {
       // เหมือนเดิม (เช็คจาก contractGroupId ด้านล่าง) เพราะต้องผ่านการตรวจสอบจากส่วนกลางก่อนเสมอ
       if (responsiblePerson !== undefined || responsiblePersonId !== undefined) {
         return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่มอบหมายผู้รับผิดชอบได้" });
+      }
+      // ✅ มูลค่างานเป็นข้อมูลการเงิน — ให้แก้ได้เฉพาะแอดมิน/manager เท่านั้นเหมือนกัน (ผู้รับผิดชอบงาน
+      // แก้ข้อมูลพื้นฐานของงานตัวเองได้ก็จริง แต่ไม่ควรแก้ตัวเลขมูลค่าเองได้) — ตรงกับฝั่งจอที่เปิดให้
+      // แก้ช่องนี้เฉพาะ isAdminOrManager อยู่แล้ว (ดู ContractOverview.js)
+      if (jobValue !== undefined) {
+        return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แก้ไขมูลค่างานได้" });
       }
       // ✅ ต้องเป็น "ผู้รับผิดชอบ" ของทุก event ที่จะแก้ไขจริง (เช็คค่าที่ตั้งไว้ตรงๆ ไม่ fallback ไปที่
       // ทีมเดิมเหมือน isEffectiveResponsiblePerson — สิทธิ์นี้ต้องถูกมอบหมายไว้ชัดเจนก่อนเท่านั้น เทียบ
@@ -1683,6 +1759,8 @@ router.put("/basic-info", verifyToken, async (req, res) => {
     if (resPerson !== undefined) update.resPerson = resPerson;
     if (responsiblePerson !== undefined) update.responsiblePerson = responsiblePerson;
     if (responsiblePersonId !== undefined) update.responsiblePersonId = responsiblePersonId;
+    // ✅ ล้างค่าได้ด้วยการส่ง "" มา (ให้กลับไปเป็น "ยังไม่ระบุ") ไม่งั้นลบค่าที่เคยใส่ผิดไว้ไม่ได้เลย
+    if (jobValue !== undefined) update.jobValue = (jobValue === "" || jobValue === null) ? null : Number(jobValue);
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ message: "ไม่มีข้อมูลให้แก้ไข" });
     }
