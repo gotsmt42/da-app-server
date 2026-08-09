@@ -480,11 +480,21 @@ router.get("/event-op", verifyToken, async (req, res) => {
     // ตัวเองด้วย ทั้งที่ทุกจุดอื่นในไฟล์นี้ให้สิทธิ์ manager เท่า admin — แก้ให้ตรงกัน
     // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรปนกับงานที่ลงตารางแล้ว
     const isAdminOrManagerRole = ["admin", "manager"].includes(userRole);
+    // ✅ "ลูกทีม" ที่มีชื่ออยู่ในงาน ต้องเห็นงานนั้นบนปฏิทินของตัวเองด้วย (ตามที่ผู้ใช้ขอ) — เดิมถูกกรอง
+    // ทิ้งตั้งแต่ชั้นนี้ คนที่ถูกใส่ชื่อเป็นลูกทีมจึงไม่เห็นงานที่ตัวเองต้องไปทำเลยแม้แต่งานเดียว
+    // ⚠️ ตั้งใจเพิ่มเฉพาะที่ query "การมองเห็น" ตรงนี้เท่านั้น ไม่เพิ่มเข้าไปใน effectiveResponsibleOrClauses
+    // เพราะฟังก์ชันนั้นถูกใช้ตัดสิน "สิทธิ์แก้ไข" ในอีกหลาย route ด้วย — ถ้าเพิ่มเข้าไปตรงนั้น ลูกทีมจะ
+    // กลายเป็นแก้ไข/ลบงานได้ทันที ซึ่งขัดกับที่ต้องการ (ดูอย่างเดียวเท่านั้น)
+    const teamMemberViewClauses = [
+      { "teamMembers.userId": userId },
+      { "teamMembers.name": req.user.fname },
+    ];
     const query = isAdminOrManagerRole
       ? { unscheduled: { $ne: true } }
       : { unscheduled: { $ne: true }, $or: [
           { userId: userId },
           ...effectiveResponsibleOrClauses(userId, req.user.fname),
+          ...teamMemberViewClauses,
         ] };
 
     const userEvents = await CalendarEvent.find(query)
@@ -914,8 +924,15 @@ router.put("/:id/unschedule", verifyToken, async (req, res) => {
     // เพราะจุดเหล่านั้นแก้ไข "ข้อมูลของงานเดิม" เท่านั้น แต่ unschedule ไปเคลียร์ date/start/end ทิ้ง
     // (ดูด้านล่าง) โดยไม่แตะ status เลย ทำให้เกิดสถานะขัดแย้งกันเอง: "แผนงานล่วงหน้า" ที่ status ยังเป็น
     // "ดำเนินการเสร็จสิ้น" อยู่ ซึ่งไม่มีเหตุผลใดที่ควรเกิดขึ้นได้จริง จึงต้องปิดเด็ดขาด ไม่ใช่แค่จำกัดสิทธิ์
-    if (existingEvent.status === "ดำเนินการเสร็จสิ้น") {
-      return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถย้ายกลับไปแผนล่วงหน้าได้" });
+    // ✅ เพิ่ม "ยืนยันแล้ว"/"กำลังดำเนินการ" ตามที่ผู้ใช้ขอ — สองสถานะนี้แปลว่างานถูกนัดหมาย/เริ่มลงมือ
+    // ไปแล้วจริง การดึงกลับไปเป็นแผนล่วงหน้าที่ไม่มีวันที่ ทำให้ประวัติงานขัดแย้งกันเองแบบเดียวกัน
+    // ⚠️ ต้องเช็คที่ backend ด้วย ไม่ใช่แค่ซ่อนปุ่ม/กันการลากที่หน้าจอ — ทั้งสองทางนั้นเลี่ยงได้ด้วยการ
+    // ยิง API ตรง จุดนี้คือด่านสุดท้ายที่เลี่ยงไม่ได้จริง
+    const UNSCHEDULE_BLOCKED_STATUSES = ["ดำเนินการเสร็จสิ้น", "ยืนยันแล้ว", "กำลังดำเนินการ"];
+    if (UNSCHEDULE_BLOCKED_STATUSES.includes(existingEvent.status)) {
+      return res.status(403).json({
+        message: `งานสถานะ "${existingEvent.status}" ไม่สามารถย้ายกลับไปแผนล่วงหน้าได้`,
+      });
     }
 
     existingEvent.unscheduled = true;
