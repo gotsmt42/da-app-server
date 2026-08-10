@@ -319,6 +319,26 @@ router.post("/", verifyToken, async (req, res) => {
     const hasContractDates = isContractBatch && Array.isArray(dates) && dates.length >= 1;
     const contractGroupId = hasContractDates ? (req.body.contractGroupId || crypto.randomUUID()) : req.body.contractGroupId;
 
+    // 🐛 BUG ที่แก้ (เพิ่มวันเข้ากลุ่มเดิมแล้ววันนั้นหลุดหมวดหมู่): "หมวดหมู่งาน" (งานทั่วไป/งานโปรเจค)
+    // เก็บอยู่ที่ทุก document แยกกัน แต่ความหมายจริงเป็นของ "ทั้งงาน" (ทั้ง jobGroupId) — เวลาเพิ่มวันที่
+    // ใหม่เข้าไปในงานที่มีอยู่แล้ว client ไม่ได้ส่ง jobClassification มาด้วย (เช่น rangeData ใน
+    // EditEvent.js ประกอบจาก buildSharedFields ซึ่งไม่มีฟิลด์นี้เลย) document ใหม่จึงเกิดมาเป็น ""
+    // = "ยังไม่จัดกลุ่ม" ทั้งที่พี่น้องในกลุ่มเดียวกันเป็น "project" อยู่ ผลคือข้อมูลชุดเดียวกันขัดกันเอง
+    // แล้วลามไปทุกหน้าที่อ่านค่านี้: หน้า "การดำเนินงาน" การ์ดบางใบไม่มีชิปหมวดหมู่ · ปฏิทินแถบสีขอบซ้าย
+    // ไม่ตรงกันรายวัน · หน้า "ภาพรวมงาน" อ่านจาก document แรกของกลุ่ม ถ้าดันเป็นตัวที่ว่าง ทั้งแถวจะ
+    // หลุดออกจากแท็บ "งานโปรเจค" ไปเลย
+    // ✅ แก้ที่ backend จุดเดียวให้ครอบคลุมทุกเส้นทางที่สร้างงานเข้ากลุ่มเดิม (แก้ไขช่วงวันที่ใน
+    // EditEvent, ต่อวันจากภาพรวมงาน, คัดลอก-วาง ฯลฯ) แทนไล่แก้ทีละ client แล้วตกหล่นอีกในอนาคต —
+    // ถ้า client ส่งค่ามาเองก็เคารพค่านั้น (ไม่ทับ) ไม่งั้นสืบทอดจากกลุ่มเดิมให้อัตโนมัติ
+    let inheritedJobClassification;
+    if (!isContractBatch && jobGroupId && req.body.jobClassification === undefined) {
+      const sibling = await CalendarEvent.findOne({
+        jobGroupId,
+        jobClassification: { $in: ["general", "project"] },
+      }).select("jobClassification").lean();
+      if (sibling) inheritedJobClassification = sibling.jobClassification;
+    }
+
     // ⚠️ ตัดการเช็คช่างชนกัน (double-booking กับงานอื่นในระบบ) ออกตามที่ผู้ใช้ขอ — 1 ทีมรับหลายงานใน
     // วันเดียวกันได้ตามปกติ ไม่ควรบล็อก ยังคงเหลือแค่เช็ค "ชนกันเอง" ภายในชุดที่กำลังจะสร้างพร้อมกัน
     // (เช่น กรอกวันที่ครั้งที่ 1/3 ทับกันเอง) ไว้ เพราะเป็นการกรอกข้อมูลผิดพลาดจริง ไม่ใช่ double-booking
@@ -381,6 +401,8 @@ router.post("/", verifyToken, async (req, res) => {
       }
       if (jobGroupId) eventData.jobGroupId = jobGroupId;
       if (contractGroupId) eventData.contractGroupId = contractGroupId;
+      // ✅ สืบทอดหมวดหมู่งานจากพี่น้องในกลุ่มเดิม (ดูเหตุผลเต็มที่ inheritedJobClassification ด้านบน)
+      if (inheritedJobClassification) eventData.jobClassification = inheritedJobClassification;
       eventData.userId = req.userId || req.body.userId;
       // ✅ งานที่สร้างโดยคนที่ไม่ใช่แอดมิน/manager (ช่าง/เซล) ต้องรอการอนุมัติก่อนถึงจะถือว่ายืนยันแล้ว
       // จริง — ห้ามรับ approvalStatus จาก client ตรงๆ (ไม่อยู่ใน allowedFields ด้านบนเลย) คำนวณเองจาก
@@ -1506,11 +1528,18 @@ router.put("/:id/classify", verifyToken, async (req, res) => {
       return res.status(400).json({ message: "งานนี้ผูกกับสัญญาอยู่แล้ว ไม่สามารถจัดหมวดหมู่นี้ได้" });
     }
 
-    const updated = await CalendarEvent.findByIdAndUpdate(
-      id,
-      { $set: { jobClassification: classification } },
-      { new: true }
-    );
+    // 🐛 BUG ที่แก้ (จัดหมวดหมู่แล้วไม่ครบทุกวันของงานเดียวกัน): เดิมอัปเดตแค่ document เดียวตาม id
+    // ที่ส่งมา — แต่ "งานที่เข้าหลายวันไม่ติดกัน" เป็นหลาย document ที่ผูกกันด้วย jobGroupId และหมวดหมู่
+    // เป็นคุณสมบัติของ "ทั้งงาน" ไม่ใช่ของวันใดวันหนึ่ง — ฝั่งจอ (ContractOverview) ต้องวนยิงเองทีละ
+    // document ถึงจะครบ ซึ่งพลาดได้ง่ายและไม่ช่วยอะไรกับข้อมูลที่ปนกันอยู่แล้ว
+    // ✅ อัปเดตทั้งกลุ่มในคำสั่งเดียวเสมอ — กันหมวดหมู่ปนกันเองภายในงานเดียว และเป็นตัว "ซ่อม" ข้อมูลเก่า
+    // ที่ปนไปแล้วด้วย (กดจัดหมวดหมู่ซ้ำอีกครั้งเดียว ทุกวันในงานนั้นจะกลับมาตรงกันทั้งหมด)
+    const groupFilter = target.jobGroupId
+      ? { jobGroupId: target.jobGroupId, contractGroupId: { $in: [null, ""] } }
+      : { _id: id };
+    await CalendarEvent.updateMany(groupFilter, { $set: { jobClassification: classification } });
+
+    const updated = await CalendarEvent.findById(id).lean();
     res.json({ event: updated });
   } catch (error) {
     console.error("❌ Error classifying event:", error);

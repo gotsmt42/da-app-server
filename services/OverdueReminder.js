@@ -125,17 +125,36 @@ async function checkAndNotifyOverdueJobs() {
   }
 }
 
-// ✅ ระบบติดตามใบเสนอราคา — เตือนแอดมิน/manager แบบภาพรวม (เหมือนเดิม) และเตือน "ผู้รับผิดชอบ" ของ
-// แต่ละงานเป็นรายคนด้วย (เพิ่มใหม่ — ผู้ใช้ต้องการให้ผู้รับผิดชอบเป็นคนติดตามใบเสนอราคาของงานตัวเองเอง
-// ไม่ใช่ "ทีมที่เข้างาน") เมื่อส่งใบเสนอราคาให้ลูกค้าไปแล้วเกิน 3 วันยังไม่มีการบันทึกผล (อนุมัติ/ปฏิเสธ/
-// ขอแก้ไข) เพื่อกันไม่ให้ลืมติดตามลูกค้า (เทียบ pattern เดียวกับ checkAndNotifyOverdueJobs ด้านบน
-// แค่คิดจาก quotationSentAt แทนวันสิ้นสุดงาน)
-const QUOTATION_WARNING_DAYS = 3;
+// ✅ ระบบติดตามใบเสนอราคา — เตือนแอดมิน/manager แบบภาพรวม และเตือน "ผู้รับผิดชอบ" ของแต่ละงานเป็นราย
+// คนด้วย (ผู้รับผิดชอบเป็นคนติดตามใบเสนอราคาของงานตัวเอง ไม่ใช่ "ทีมที่เข้างาน")
+//
+// ⚠️ ตรรกะต้องตรงกับ src/utils/quotationTracking.js ฝั่งหน้าจอเป๊ะๆ (คนละโปรเจกต์ import ข้ามกันไม่ได้
+// จึงต้องคัดลอกมา — แก้ที่ไหนต้องแก้อีกที่เสมอ) ไม่งั้นหน้าจอบอกว่า "ต้องติดตาม" แต่ไม่มีแจ้งเตือน
+// หรือกลับกัน ผู้ใช้จะไม่รู้ว่าอันไหนถูก
+//
+// 🐛 BUG ที่แก้ 2 อย่าง:
+// 1) เกณฑ์เดิม 3 วัน ไม่ตรงกับที่อื่นในระบบ (หน้า Dashboard ใช้ 7) — รวมเป็น 7 วันทั้งระบบตามที่ผู้ใช้ขอ
+// 2) เดิมนับจาก quotationSentAt อย่างเดียว ไม่สนใจ quotationFollowUps เลย — ช่างโทรตามลูกค้าแล้ว
+//    บันทึกผลไว้เรียบร้อย ระบบก็ยังเด้งเตือนทุกวันเพราะยังนับจากวันที่ส่งครั้งแรกอยู่ดี บันทึกติดตามจึง
+//    ไม่มีผลอะไรเลย — ต้องนับจาก "การติดต่อลูกค้าครั้งล่าสุด" แทน บันทึก 1 ครั้ง = ได้เวลาอีก 7 วัน
+const QUOTATION_WARNING_DAYS = 7;
+
+// ✅ วันที่ติดต่อลูกค้าครั้งล่าสุด — วันที่ส่ง หรือวันที่ติดตามครั้งล่าสุด แล้วแต่อันไหนใหม่กว่า
+function getLastContactAt(event) {
+  let latest = moment(event.quotationSentAt);
+  (event.quotationFollowUps || []).forEach((f) => {
+    if (!f?.contactedAt) return;
+    const t = moment(f.contactedAt);
+    if (t.isValid() && t.isAfter(latest)) latest = t;
+  });
+  return latest;
+}
 
 async function checkAndNotifyStaleQuotations() {
   try {
+    // ⚠️ ต้อง select quotationFollowUps มาด้วย ไม่งั้นคำนวณ "ติดต่อครั้งล่าสุด" ไม่ได้ (เดิมไม่ได้ดึงมา)
     const events = await CalendarEvent.find({ quotationStatus: "sent" })
-      .select("company site title system team time jobGroupId quotationSentAt resPerson userId responsiblePersonId responsiblePerson")
+      .select("company site title system team time jobGroupId quotationSentAt quotationFollowUps resPerson userId responsiblePersonId responsiblePerson")
       .lean();
 
     if (events.length === 0) return;
@@ -153,7 +172,12 @@ async function checkAndNotifyStaleQuotations() {
     bySignature.forEach((sessions) => {
       const head = sessions[0];
       if (!head.quotationSentAt) return;
-      const days = moment().startOf("day").diff(moment(head.quotationSentAt).startOf("day"), "days");
+      // ⚠️ การบันทึกติดตามอาจอยู่ที่ session ไหนก็ได้ในกลุ่ม (ฝั่งจอยิงไปที่ document ตัวแทน) — ต้องหา
+      // "ครั้งล่าสุดของทั้งกลุ่ม" ไม่ใช่ดูแค่ head ไม่งั้นบันทึกไปแล้วแต่ระบบยังเตือนอยู่เหมือนเดิม
+      const lastContact = sessions
+        .map(getLastContactAt)
+        .reduce((a, b) => (b.isAfter(a) ? b : a));
+      const days = moment().startOf("day").diff(lastContact.startOf("day"), "days");
       if (days > QUOTATION_WARNING_DAYS) staleJobs.push({ sessions, jobId: head._id.toString() });
     });
 
@@ -166,7 +190,7 @@ async function checkAndNotifyStaleQuotations() {
 
     await sendPushToRoles(["admin", "manager"], {
       title: "📄 มีใบเสนอราคาที่ต้องติดตาม",
-      body: `มี ${staleJobs.length} ใบเสนอราคาที่ส่งลูกค้าไปแล้วเกิน ${QUOTATION_WARNING_DAYS} วัน ยังไม่ได้บันทึกผล กรุณาติดตาม`,
+      body: `มี ${staleJobs.length} ใบเสนอราคาที่ไม่ได้ติดต่อลูกค้ามาเกิน ${QUOTATION_WARNING_DAYS} วันแล้ว กรุณาติดตามและบันทึกผล`,
       url,
       tag: "quotation-reminder",
       renotify: true,
@@ -190,7 +214,7 @@ async function checkAndNotifyStaleQuotations() {
       const techUrl = jobIds.length === 1 ? `/quotations?jobId=${jobIds[0]}` : "/quotations";
       await sendPushToUsers(techId, {
         title: "📄 มีใบเสนอราคาที่ต้องติดตาม",
-        body: `มี ${jobIds.length} ใบเสนอราคาของงานที่คุณรับผิดชอบ ส่งลูกค้าไปแล้วเกิน ${QUOTATION_WARNING_DAYS} วัน ยังไม่ได้บันทึกผล กรุณาติดตาม`,
+        body: `มี ${jobIds.length} ใบเสนอราคาของงานที่คุณรับผิดชอบ ไม่ได้ติดต่อลูกค้ามาเกิน ${QUOTATION_WARNING_DAYS} วันแล้ว กรุณาติดตามและบันทึกผล`,
         url: techUrl,
         tag: "quotation-reminder",
         renotify: true,
