@@ -10,12 +10,12 @@ const User = require("../models/User");
     await mongoose.connection.asPromise();
     console.log(`🔎 เชื่อมต่อฐานข้อมูล: ${mongoose.connection.host}/${mongoose.connection.name}`);
 
-    const result = await User.updateMany({}, { $inc: { sessionVersion: 1 } });
-    console.log(`✅ บังคับให้ผู้ใช้ ${result.modifiedCount} คน login ใหม่เรียบร้อย (token เก่าทั้งหมดใช้ไม่ได้แล้ว)`);
+    // const result = await User.updateMany({}, { $inc: { sessionVersion: 1 } });
+    // console.log(`✅ บังคับให้ผู้ใช้ ${result.modifiedCount} คน login ใหม่เรียบร้อย (token เก่าทั้งหมดใช้ไม่ได้แล้ว)`);
   } catch (err) {
     console.error("❌ ล้มเหลว:", err.message);
   } finally {
-    await mongoose.connection.close();
-    process.exit(0);
+    // await mongoose.connection.close();
+    // process.exit(0);
   }
 })();
