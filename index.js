@@ -17,6 +17,9 @@ const calendarEventRouter = require("./routes/calendarEvent");
 const pushRouter = require("./routes/push");
 const jobTypeRouter = require("./routes/jobType");
 const systemTypeRouter = require("./routes/systemType");
+// ✅ เลขที่เอกสารแบบเดินหน้าอย่างเดียว (ใบส่งมอบงาน ฯลฯ) — ดูเหตุผลที่ต้องออกเลขฝั่ง server
+// ไม่ใช่ฝั่งเบราว์เซอร์ ที่ models/DocCounter.js
+const docNumberRouter = require("./routes/docNumber");
 const checkInternetConnection = require("./middleware/checkInternetConnection");
 const { checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations, checkAndNotifyOverdueContracts } = require("./services/OverdueReminder");
 
@@ -67,6 +70,7 @@ app.use("/api/events", calendarEventRouter);
 app.use("/api/push", pushRouter);
 app.use("/api/jobtype", jobTypeRouter);
 app.use("/api/systemtype", systemTypeRouter);
+app.use("/api/doc-number", docNumberRouter);
 app.use("/api/holidays", checkInternetConnection, holidayRouter); // ✅ ใช้เฉพาะจุด
 
 app.use("/uploads", express.static(path.join(__dirname, "asset/uploads")));
