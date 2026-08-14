@@ -20,6 +20,7 @@ const systemTypeRouter = require("./routes/systemType");
 // ✅ เลขที่เอกสารแบบเดินหน้าอย่างเดียว (ใบส่งมอบงาน ฯลฯ) — ดูเหตุผลที่ต้องออกเลขฝั่ง server
 // ไม่ใช่ฝั่งเบราว์เซอร์ ที่ models/DocCounter.js
 const docNumberRouter = require("./routes/docNumber");
+const issuedDocumentRouter = require("./routes/issuedDocument");
 const checkInternetConnection = require("./middleware/checkInternetConnection");
 const { checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations, checkAndNotifyOverdueContracts } = require("./services/OverdueReminder");
 
@@ -71,6 +72,7 @@ app.use("/api/push", pushRouter);
 app.use("/api/jobtype", jobTypeRouter);
 app.use("/api/systemtype", systemTypeRouter);
 app.use("/api/doc-number", docNumberRouter);
+app.use("/api/issued-documents", issuedDocumentRouter);
 app.use("/api/holidays", checkInternetConnection, holidayRouter); // ✅ ใช้เฉพาะจุด
 
 app.use("/uploads", express.static(path.join(__dirname, "asset/uploads")));
@@ -83,6 +85,11 @@ app.listen(PORT, () => {
 
 // ✅ เช็คงานค้างเกิน 1 สัปดาห์ แล้วส่ง push แจ้งเตือนช่างที่รับผิดชอบผ่านหน้าจอจริง (ไม่ใช่แค่ badge
 // ในแอป) เป็นระยะๆ — รันครั้งแรกหลังเซิร์ฟเวอร์พร้อม 2 นาที (รอ DB connect) แล้วเช็คซ้ำทุก 24 ชม.
+// ⚠️ setTimeout/setInterval นับจาก "เวลาที่โปรเซสเริ่มทำงาน" — ทุกครั้งที่ deploy/รีสตาร์ท นาฬิกาจะ
+// เริ่มนับใหม่แล้วยิงรอบใหม่ใน 2 นาทีเสมอ วันที่แก้โค้ดหลายรอบผู้ใช้จึงเคยโดนแจ้งเรื่องเดิมซ้ำทั้งวัน
+// ✅ ตอนนี้กันซ้ำที่ "ชั้นส่ง" ด้วย NotifyLog.claimOncePerDay (1 เรื่อง : 1 ผู้รับ : 1 วัน) ซึ่งเก็บไว้ที่
+// ฐานข้อมูล จึงอยู่รอดข้ามการรีสตาร์ท — การรันตอนเริ่มโปรเซสเลยกลายเป็น "ข้อดี" (ถ้าเซิร์ฟเวอร์ดับคร่อม
+// รอบประจำวัน พอกลับมาก็ยังได้แจ้งของวันนั้น) แทนที่จะเป็นต้นเหตุของการแจ้งซ้ำแบบเดิม
 setTimeout(checkAndNotifyOverdueJobs, 2 * 60 * 1000);
 setInterval(checkAndNotifyOverdueJobs, 24 * 60 * 60 * 1000);
 

@@ -454,7 +454,10 @@ router.post("/", verifyToken, async (req, res) => {
       sendPushToRoles(["admin", "manager"], {
         title: `⏳ ${creatorName} ส่งงานใหม่รออนุมัติ`,
         body: jobLabelNew,
-        url: `/operation/${primary._id}`,
+        // ✅ พาไปที่ "แท็บรออนุมัติ" ตรงๆ ไม่ใช่ /operation/<id> แบบเดิม — สิ่งเดียวที่ต้องทำต่อจาก
+        // แจ้งเตือนนี้คือกดอนุมัติ/ไม่อนุมัติ ซึ่งปุ่มอยู่ในแท็บนั้นที่เดียว (การ์ดในแท็บ "รายการงาน"
+        // ไม่มีปุ่มอนุมัติเลย) เดิมกดมาแล้วต้องมาสลับแท็บเองอีกทีทุกครั้ง
+        url: "/operation?tab=approvals",
         tag: notifyTag,
         renotify: true,
       }).catch((err) => console.error("❌ Push notify error (approval-request):", err));
@@ -694,9 +697,10 @@ router.post("/draft", verifyToken, async (req, res) => {
       sendPushToRoles(["admin", "manager"], {
         title: `⏳ ${creatorName} ส่งแผนงานล่วงหน้ารออนุมัติ`,
         body: `${draft.title || "งาน"} · ${draft.company || "-"}${draft.site ? " - " + draft.site : ""}${monthSuffix}`,
-        url: draft.contractGroupId
-          ? "/contracts"
-          : `/event?draft=${draft._id}${resolvedPlannedMonth ? `&month=${resolvedPlannedMonth}` : ""}`,
+        // ✅ แผนงานล่วงหน้าที่รออนุมัติก็อยู่ในแท็บ "รออนุมัติ" เดียวกัน (PendingApprovalsPanel รวมทั้ง
+        // งานที่ลงตารางแล้วและฉบับร่างไว้ที่เดียว) — พาไปที่นั่นให้ตรงกับแจ้งเตือนงานใหม่รออนุมัติ
+        // ⚠️ ยกเว้นฉบับร่างของ "สัญญา" ที่จัดการได้จริงเฉพาะหน้า "ภาพรวมงาน" เท่านั้น ยังคงส่งไปที่นั่น
+        url: draft.contractGroupId ? "/contracts" : "/operation?tab=approvals",
         tag: `approval-draft-${draft._id}`,
         renotify: true,
       }).catch((err) => console.error("❌ Push notify error (approval-request-draft):", err));

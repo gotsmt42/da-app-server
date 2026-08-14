@@ -2,6 +2,7 @@ const moment = require("moment");
 const CalendarEvent = require("../models/Events");
 const User = require("../models/User");
 const { sendPushToUsers, sendPushToRoles } = require("./PushNotify");
+const NotifyLog = require("../models/NotifyLog");
 const { DEFAULT_INTERVAL_MONTHS } = require("../utils/contractVisits");
 
 // ✅ เกณฑ์เดียวกับฝั่ง frontend (Operation/index.js) — เลยกำหนดวันสิ้นสุดงานตามแผนจริงมาแล้ว
@@ -112,6 +113,9 @@ async function checkAndNotifyOverdueJobs() {
       // Operation ไฮไลต์ถูกกลุ่มด้วย) มากกว่า 1 งานถึงค่อยพาไปหน้ารวมเหมือนเดิม
       const url = jobs.length === 1 ? `/operation/${jobs[0].id}?group=overdue` : "/operation";
 
+      // ⚠️ กันแจ้งซ้ำในวันเดียวกัน — ตัวเช็คนี้ถูกยิงใหม่ทุกครั้งที่เซิร์ฟเวอร์รีสตาร์ท/deploy
+      // (ดูเหตุผลเต็มที่ models/NotifyLog.js) ถ้าไม่กันไว้ วัน deploy หลายรอบผู้ใช้จะโดนเรื่องเดิมซ้ำทั้งวัน
+      if (!(await NotifyLog.claimOncePerDay("overdue-jobs", "self", techId))) continue;
       await sendPushToUsers(techId, {
         title: "⚠️ มีงานค้างเกิน 1 สัปดาห์",
         body,
@@ -188,6 +192,8 @@ async function checkAndNotifyStaleQuotations() {
     // รวม (ซึ่ง default อยู่ที่แท็บ "รอลูกค้าตอบ" เรียงใบที่ต้องติดตามด่วนขึ้นก่อนอยู่แล้วเช่นกัน)
     const url = staleJobs.length === 1 ? `/quotations?jobId=${staleJobs[0].jobId}` : "/quotations";
 
+    // ⚠️ กันแจ้งซ้ำในวันเดียวกัน (ดู models/NotifyLog.js) — ผู้รับเป็นกลุ่ม role จึงใช้ชื่อกลุ่มเป็นคีย์
+    if (await NotifyLog.claimOncePerDay("stale-quotations", "broadcast", "admin+manager")) {
     await sendPushToRoles(["admin", "manager"], {
       title: "📄 มีใบเสนอราคาที่ต้องติดตาม",
       body: `มี ${staleJobs.length} ใบเสนอราคาที่ไม่ได้ติดต่อลูกค้ามาเกิน ${QUOTATION_WARNING_DAYS} วันแล้ว กรุณาติดตามและบันทึกผล`,
@@ -195,6 +201,7 @@ async function checkAndNotifyStaleQuotations() {
       tag: "quotation-reminder",
       renotify: true,
     });
+    }
 
     // ✅ แจ้งผู้รับผิดชอบของแต่ละงานเป็นรายคนด้วย (เทียบ pattern เดียวกับ checkAndNotifyOverdueJobs)
     const allUsers = await User.find({}).select("fname role").lean();
@@ -212,6 +219,7 @@ async function checkAndNotifyStaleQuotations() {
 
     for (const [techId, jobIds] of staleByTech.entries()) {
       const techUrl = jobIds.length === 1 ? `/quotations?jobId=${jobIds[0]}` : "/quotations";
+      if (!(await NotifyLog.claimOncePerDay("stale-quotations", "self", techId))) continue;
       await sendPushToUsers(techId, {
         title: "📄 มีใบเสนอราคาที่ต้องติดตาม",
         body: `มี ${jobIds.length} ใบเสนอราคาของงานที่คุณรับผิดชอบ ไม่ได้ติดต่อลูกค้ามาเกิน ${QUOTATION_WARNING_DAYS} วันแล้ว กรุณาติดตามและบันทึกผล`,
@@ -275,6 +283,8 @@ async function checkAndNotifyOverdueContracts() {
 
     // ✅ ?view=overdue — เปิดหน้า "ภาพรวมงาน" มาที่แท็บ "เลยกำหนด/คงค้าง" ให้เลยทันที (ดู viewFilter
     // ใน ContractOverview.js) แทนที่จะเปิดมาแท็บ "งานสัญญา/งานรายปี" เริ่มต้นแล้วต้องกดกรองเอง
+    // ⚠️ กันแจ้งซ้ำในวันเดียวกัน (ดู models/NotifyLog.js)
+    if (await NotifyLog.claimOncePerDay("overdue-contracts", "broadcast", "admin+manager")) {
     await sendPushToRoles(["admin", "manager"], {
       title: "📋 มีสัญญาที่ยังไม่ได้วางแผนรอบถัดไป",
       body: `มี ${overdueContracts.length} สัญญาที่เลยกำหนดรอบถัดไปแล้ว (นานสุด ${Math.max(...overdueContracts.map((c) => c.monthsOverdue))} เดือน) กรุณาตรวจสอบและลงแผนงานครั้งถัดไป`,
@@ -282,6 +292,7 @@ async function checkAndNotifyOverdueContracts() {
       tag: "contract-round-reminder",
       renotify: true,
     });
+    }
 
     // ✅ แจ้งผู้รับผิดชอบของแต่ละสัญญาเป็นรายคนด้วย (เทียบ pattern เดียวกับ checkAndNotifyOverdueJobs)
     const allUsers = await User.find({}).select("fname role").lean();
@@ -297,6 +308,7 @@ async function checkAndNotifyOverdueContracts() {
     });
 
     for (const [techId, count] of overdueByTech.entries()) {
+      if (!(await NotifyLog.claimOncePerDay("overdue-contracts", "self", techId))) continue;
       await sendPushToUsers(techId, {
         title: "📋 มีสัญญาที่ยังไม่ได้วางแผนรอบถัดไป",
         body: `มี ${count} สัญญาที่คุณรับผิดชอบเลยกำหนดรอบถัดไปแล้ว กรุณาตรวจสอบและลงแผนงานครั้งถัดไป`,
