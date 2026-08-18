@@ -53,6 +53,52 @@ const eventSchema = new mongoose.Schema(
     invoiceApplicable: { type: Boolean, default: null },
     completionApplicable: { type: Boolean, default: null },
 
+    // ✅ ระบบติดตามการวางบิล/รับเงิน (billing & AR) — "ครึ่งท้าย" ของสายงานที่เดิมขาดไปทั้งท่อน
+    // เดิมระบบรู้แค่ "มูลค่าสัญญา" (jobValue) กับ "ยอดที่เสนอราคาไป" (quotationAmount) และรู้แค่ว่า
+    // ส่งใบแจ้งหนี้แล้วหรือยัง (documentSentInvoice เป็น boolean เฉยๆ) — ตอบไม่ได้เลยว่าเดือนนี้
+    // วางบิลไปเท่าไร เก็บเงินได้เท่าไร ค้างรับเท่าไร ใครค้างนานสุด
+    //
+    // ⚠️ เก็บที่ระดับ "งานแต่ละครั้ง" (event) ไม่ใช่ระดับสัญญา — ตามที่บริษัทวางบิลจริงคือวางบิลต่อ
+    // ครั้งที่เข้างาน (สัญญา 4 ครั้ง = วางบิล 4 ใบ) ถ้าเก็บที่ระดับสัญญาจะบันทึกแยกครั้งไม่ได้เลย
+    //
+    // ⚠️ ยอดทุกตัวถูก "คำนวณแล้วเก็บค่าไว้" ตอนบันทึก ไม่ได้คำนวณสดตอนอ่าน — เพราะอัตรา VAT/หัก ณ
+    // ที่จ่ายเปลี่ยนได้ในอนาคต ถ้าคำนวณสดจากอัตราปัจจุบัน ใบที่วางบิลไปเมื่อ 2 ปีก่อนจะเปลี่ยนยอดตาม
+    // ไปด้วยเงียบๆ ทั้งที่ยอดจริงที่ออกให้ลูกค้าไปแล้วเปลี่ยนไม่ได้ (ดู computeBillingAmounts ฝั่ง route)
+    billing: {
+      invoiceNo: { type: String, default: "" },
+      invoicedAt: { type: Date, default: null, index: true },
+      // เครดิตเทอม: จำนวนวันที่ให้ลูกค้าชำระนับจากวันวางบิล
+      creditTermDays: { type: Number, default: 30 },
+      // ⚠️ เก็บ dueAt ไว้เลย ไม่คำนวณสดจาก invoicedAt + creditTermDays ทุกครั้ง — เพื่อให้ query
+      // "ใบไหนเลยกำหนดชำระแล้วบ้าง" ทำที่ฐานข้อมูลได้ตรงๆ และมี index ช่วย (ตัวเตือนใช้ทุกวัน)
+      dueAt: { type: Date, default: null, index: true },
+
+      // ยอดก่อนภาษี = ฐานคำนวณของทุกตัวด้านล่าง
+      amountBeforeVat: { type: Number, default: 0 },
+      vatRate: { type: Number, default: 7 },
+      vatAmount: { type: Number, default: 0 },
+      // ภาษีหัก ณ ที่จ่าย — งานบริการนิติบุคคลโดนหัก 3% คิดจาก "ยอดก่อน VAT" เสมอ
+      whtRate: { type: Number, default: 3 },
+      whtAmount: { type: Number, default: 0 },
+      // ยอดที่ลูกค้าต้องโอนจริง = ก่อน VAT + VAT − หัก ณ ที่จ่าย
+      netAmount: { type: Number, default: 0 },
+
+      // ✅ รับเงินแบ่งจ่ายได้ — เก็บเป็นรายการ ไม่ใช่ช่องเดียว เพราะลูกค้าจ่ายมัดจำ/แบ่งงวดได้จริง
+      // ยอดที่รับแล้วทั้งหมด = ผลรวมของรายการนี้ (ไม่เก็บยอดรวมซ้ำอีกช่อง กันตัวเลข 2 ที่ไม่ตรงกัน)
+      payments: [
+        {
+          amount: { type: Number, required: true },
+          paidAt: { type: Date, required: true },
+          method: { type: String, default: "" },
+          note: { type: String, default: "" },
+          recordedBy: { type: String, default: "" },
+          recordedByName: { type: String, default: "" },
+          recordedAt: { type: Date, default: Date.now },
+        },
+      ],
+      note: { type: String, default: "" },
+    },
+
     // ✅ ระบบติดตามใบเสนอราคา (quotation tracking) — แยกจาก quotationApplicable/quotationFiles
     // ด้านบนซึ่งบอกแค่ว่า "มีไฟล์ไหม" เท่านั้น ฟิลด์ชุดนี้ติดตามว่าเกิดอะไรขึ้นหลังจากอัพโหลดแล้ว
     // (ส่งลูกค้าหรือยัง / ลูกค้าอนุมัติ-ปฏิเสธ-ขอแก้ไข / ใครเป็นคนบันทึกผล / มูลค่างาน)
@@ -270,6 +316,10 @@ eventSchema.pre("save", function (next) {
 // ✅ เช็คช่างชนกัน (double-booking) ต้อง query ตาม resPerson + ช่วงวันที่ทุกครั้งที่สร้าง/แก้ไขงาน
 // เดิมไม่มี index รองรับเลย (มีแค่ jobGroupId/unscheduled แยกฟิลด์เดี่ยวๆ) query จะช้าเมื่อข้อมูลเยอะขึ้น
 eventSchema.index({ resPerson: 1, start: 1, end: 1 });
+
+// ✅ ตัวเตือน "ใบที่เลยกำหนดชำระ" รันทุกวันและ query ด้วย billing.dueAt เสมอ — sparse เพราะงาน
+// ส่วนใหญ่ยังไม่ได้วางบิล (dueAt เป็น null) ไม่ต้องกินพื้นที่ index ไปกับ null เป็นแสนแถว
+eventSchema.index({ "billing.dueAt": 1 }, { sparse: true });
 
 const Events = mongoose.model("CalendarEvent", eventSchema);
 

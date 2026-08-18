@@ -22,7 +22,11 @@ const systemTypeRouter = require("./routes/systemType");
 const docNumberRouter = require("./routes/docNumber");
 const issuedDocumentRouter = require("./routes/issuedDocument");
 const checkInternetConnection = require("./middleware/checkInternetConnection");
-const { checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations, checkAndNotifyOverdueContracts } = require("./services/OverdueReminder");
+const {
+  checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations,
+  checkAndNotifyOverdueContracts, checkAndNotifyExpiringContracts,
+  checkAndNotifyOverdueInvoices,
+} = require("./services/OverdueReminder");
 
 
 
@@ -102,6 +106,16 @@ setInterval(checkAndNotifyStaleQuotations, 24 * 60 * 60 * 1000);
 // "ภาพรวมงาน" /contracts) — เทียบ pattern เดียวกับ 2 ตัวด้านบน
 setTimeout(checkAndNotifyOverdueContracts, 2 * 60 * 1000);
 setInterval(checkAndNotifyOverdueContracts, 24 * 60 * 60 * 1000);
+
+// ✅ เช็คสัญญาที่ใกล้หมดอายุ (เหลือ ≤ 60 วัน) และที่หมดอายุไปแล้ว แจ้งเตือนให้ไปต่อสัญญา
+// ⚠️ คนละเรื่องกับตัวด้านบน: ตัวบนคือ "ยังไม่ลงแผนรอบถัดไป" (ยังอยู่ในสัญญา) ส่วนตัวนี้คือ "ตัวสัญญา
+// กำลังจะหมด" ซึ่งถ้าปล่อยผ่านคือเสียรายได้ต่อเนื่องทั้งก้อน — เดิมไม่มีการแจ้งเตือนเรื่องนี้เลย
+setTimeout(checkAndNotifyExpiringContracts, 2 * 60 * 1000);
+setInterval(checkAndNotifyExpiringContracts, 24 * 60 * 60 * 1000);
+
+// ✅ เช็คใบวางบิลที่เลยกำหนดชำระแล้วแต่ยังรับเงินไม่ครบ แจ้งแอดมิน/manager (หน้า /billing)
+setTimeout(checkAndNotifyOverdueInvoices, 2 * 60 * 1000);
+setInterval(checkAndNotifyOverdueInvoices, 24 * 60 * 60 * 1000);
 
 
 

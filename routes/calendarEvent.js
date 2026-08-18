@@ -16,6 +16,7 @@ const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
 const streamifier = require("streamifier");
+const { computeBillingAmounts, computeDueAt } = require("../utils/billing");
 const crypto = require("crypto");
 
 // ✅ จำนวนครั้งสูงสุดต่อสัญญา — ต้องตรงกับ MAX_VISIT_COUNT ฝั่งหน้าจอ (ContractOverview.js) เป๊ะๆ
@@ -47,6 +48,67 @@ async function findDuplicateContractNo(contractNo, excludeContractGroupId) {
   const query = { contractNo: trimmed };
   if (excludeContractGroupId) query.contractGroupId = { $ne: excludeContractGroupId };
   return CalendarEvent.findOne(query).select("contractGroupId contractNo").lean();
+}
+
+// ✅ เทียบข้อมูลสัญญา "ก่อน → หลัง" เพื่อบันทึกลง activityLog (ดู PUT /contract/:contractGroupId)
+// ⚠️ หน้าภาพรวมงานส่งค่าทั้งชุดกลับมาทุกครั้งที่กดบันทึก แม้ผู้ใช้แก้แค่ช่องเดียว จึงต้องเทียบค่าจริง
+// ทีละฟิลด์ ไม่ใช่เชื่อว่า "มีใน req.body = ถูกแก้" ไม่งั้นไทม์ไลน์จะเต็มไปด้วยรายการที่ไม่ได้แก้อะไรเลย
+const CONTRACT_FIELD_LABELS = {
+  contractNo: "เลขที่สัญญา",
+  quotationNo: "เลขที่ใบเสนอราคา",
+  contractStart: "วันเริ่มสัญญา",
+  contractEnd: "วันสิ้นสุดสัญญา",
+  visitCount: "จำนวนครั้งทั้งหมด",
+  intervalMonths: "ระยะห่างระหว่างรอบ (เดือน)",
+  jobValue: "มูลค่างาน",
+  team: "ทีมที่เข้างาน",
+  resPerson: "ผู้ปฏิบัติงาน",
+  responsiblePerson: "ผู้รับผิดชอบ",
+};
+// responsiblePersonId เปลี่ยนคู่กับ responsiblePerson เสมอ — log แค่ชื่อที่คนอ่านออกก็พอ ไม่งั้นได้
+// บรรทัดรหัสยาวๆ ที่ไม่มีความหมายกับผู้อ่านซ้อนมาอีกรายการทุกครั้งที่เปลี่ยนผู้รับผิดชอบ
+
+const DATE_CONTRACT_FIELDS = new Set(["contractStart", "contractEnd"]);
+const NUMBER_CONTRACT_FIELDS = new Set(["visitCount", "intervalMonths", "jobValue"]);
+
+// ทำให้ค่าเทียบกันได้จริง — ค่าที่ "ไม่มี" มาได้ทั้ง undefined / null / "" ต้องถือว่าเท่ากันหมด
+// และวันที่ที่เก็บเป็น Date กับที่ส่งมาเป็นสตริง "YYYY-MM-DD" ต้องเทียบกันได้ด้วย
+function normalizeContractValue(field, v) {
+  if (v === undefined || v === null || v === "") return "";
+  if (DATE_CONTRACT_FIELDS.has(field)) {
+    const m = moment(v);
+    return m.isValid() ? m.format("YYYY-MM-DD") : "";
+  }
+  if (NUMBER_CONTRACT_FIELDS.has(field)) {
+    const n = Number(v);
+    return Number.isFinite(n) ? String(n) : "";
+  }
+  return String(v).trim();
+}
+
+function formatContractValue(field, v) {
+  const norm = normalizeContractValue(field, v);
+  if (norm === "") return "(ว่าง)";
+  if (DATE_CONTRACT_FIELDS.has(field)) return moment(norm, "YYYY-MM-DD").format("DD/MM/YYYY");
+  if (field === "jobValue") return `${Number(norm).toLocaleString("th-TH")} บาท`;
+  return norm;
+}
+
+function diffContractFields(before, update) {
+  const changes = [];
+  for (const [field, label] of Object.entries(CONTRACT_FIELD_LABELS)) {
+    if (!(field in update)) continue;
+    const from = normalizeContractValue(field, before?.[field]);
+    const to = normalizeContractValue(field, update[field]);
+    if (from === to) continue;
+    changes.push({
+      field,
+      label,
+      from: formatContractValue(field, before?.[field]),
+      to: formatContractValue(field, update[field]),
+    });
+  }
+  return changes;
 }
 
 // ✅ "ผู้รับผิดชอบตัวจริง" (effective responsible person) — ใช้กับ "การดำเนินงาน"/"ติดตามใบเสนอราคา"/
@@ -1726,12 +1788,187 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
     if (responsiblePerson !== undefined) update.responsiblePerson = responsiblePerson;
     if (responsiblePersonId !== undefined) update.responsiblePersonId = responsiblePersonId;
 
-    await CalendarEvent.updateMany({ contractGroupId }, { $set: update });
+    // ✅ บันทึกร่องรอยการแก้ไขข้อมูลสัญญา (ใคร แก้อะไร จากค่าอะไรเป็นค่าอะไร เมื่อไหร่)
+    // ⚠️ route นี้ updateMany ทับ "ทุกครั้งในสัญญา" พร้อมกัน และหน้าภาพรวมงานแก้ inline ได้จากตาราง
+    // โดยตรง — คลิกพลาดช่องเดียวก็เปลี่ยนมูลค่างาน/เลขที่สัญญา/วันหมดอายุทั้งสัญญาทันที เดิมไม่มีทาง
+    // ตามกลับได้เลยว่าใครแก้หรือค่าเดิมคืออะไร ต้องเดาจากความจำล้วนๆ
+    // ⚠️ ต้องเทียบค่า "ก่อน" อัปเดตเท่านั้น — อ่านหลัง updateMany จะได้ค่าใหม่ทั้งคู่แล้วเทียบไม่เจอ
+    // อะไรเลย เอกสารตัวแทนใช้ events[0] ได้เพราะทุกครั้งในสัญญาถือค่าฟิลด์สัญญาชุดเดียวกันเสมอ
+    const changes = diffContractFields(events[0], update);
+    const logEntry = changes.length > 0
+      ? {
+        action: "contract_updated",
+        // เก็บเป็นข้อความอ่านออกเลย ไม่ต้องแปลรหัสฟิลด์ตอนแสดงผล และไม่ผูกกับโครงสร้างฝั่งจอ
+        detail: changes.map((c) => `${c.label}: ${c.from} → ${c.to}`).join(" · "),
+        userId: String(req.user?._id || req.userId || ""),
+        userName: req.user?.username || req.user?.name || "ไม่ทราบชื่อ",
+        timestamp: new Date(),
+      }
+      : null;
+
+    // ⚠️ ไม่มีอะไรเปลี่ยนจริงก็ไม่ต้อง log — หน้าภาพรวมงานส่งค่าทั้งชุดกลับมาทุกครั้งที่กดบันทึก
+    // (แม้แก้ช่องเดียว) ถ้า log ทุกครั้งที่เรียก ไทม์ไลน์จะเต็มไปด้วยรายการ "ไม่ได้แก้อะไร" จนใช้ไม่ได้
+    await CalendarEvent.updateMany(
+      { contractGroupId },
+      logEntry ? { $set: update, $push: { activityLog: logEntry } } : { $set: update },
+    );
     const updatedEvents = await CalendarEvent.find({ contractGroupId }).lean();
     res.json({ events: updatedEvents });
   } catch (error) {
     console.error("❌ Error updating contract fields:", error);
     res.status(500).send("Internal Server Error");
+  }
+});
+
+// ── การวางบิล / รับเงิน ────────────────────────────────────────────────────
+// ⚠️ เฉพาะแอดมิน/manager เท่านั้น — เป็นข้อมูลการเงินล้วนๆ ใช้เกณฑ์เดียวกับการแก้ข้อมูลสัญญา
+// ไม่ใช้เกณฑ์ "เจ้าของงาน" เหมือน route อื่นในไฟล์นี้
+const requireFinanceRole = (req, res) => {
+  if (!["admin", "manager"].includes(req.user.role)) {
+    res.status(403).json({ message: "เฉพาะแอดมิน/ผู้จัดการเท่านั้นที่จัดการข้อมูลการวางบิลได้" });
+    return false;
+  }
+  return true;
+};
+
+const financeActor = (req) => ({
+  id: String(req.user?._id || req.userId || ""),
+  name: req.user?.username || req.user?.fname || "ไม่ทราบชื่อ",
+});
+
+/**
+ * บันทึก/แก้ไข "ใบวางบิล" ของงานครั้งนี้
+ * ⚠️ ยอด VAT / หัก ณ ที่จ่าย / ยอดสุทธิ คำนวณฝั่ง server เสมอ ห้ามรับจาก client — ไม่งั้นหน้าจอที่
+ * คำนวณผิด (หรือถูกแก้) จะเขียนยอดผิดลงฐานข้อมูลได้โดยตรง และยอดในระบบจะไม่ตรงกับสูตรเดียวกันทั้งระบบ
+ */
+router.put("/:id/billing", verifyToken, async (req, res) => {
+  try {
+    if (!requireFinanceRole(req, res)) return;
+    const { id } = req.params;
+    const event = await CalendarEvent.findById(id);
+    if (!event) return res.status(404).json({ message: "ไม่พบงานนี้" });
+
+    const { invoiceNo, invoicedAt, creditTermDays, amountBeforeVat, vatRate, whtRate, note } = req.body;
+
+    const base = Number(amountBeforeVat);
+    if (!Number.isFinite(base) || base < 0) {
+      return res.status(400).json({ message: "ยอดก่อนภาษีต้องเป็นตัวเลขที่ไม่ติดลบ" });
+    }
+    const term = creditTermDays === undefined || creditTermDays === "" ? 30 : Number(creditTermDays);
+    if (!Number.isFinite(term) || term < 0 || term > 365) {
+      return res.status(400).json({ message: "เครดิตเทอมต้องอยู่ระหว่าง 0-365 วัน" });
+    }
+    const billedAt = invoicedAt ? new Date(invoicedAt) : new Date();
+    if (Number.isNaN(billedAt.getTime())) {
+      return res.status(400).json({ message: "วันที่วางบิลไม่ถูกต้อง" });
+    }
+
+    const amounts = computeBillingAmounts({ amountBeforeVat: base, vatRate, whtRate });
+    const prev = event.billing || {};
+
+    // ⚠️ ต้องคง payments เดิมไว้เสมอ — route นี้แก้ "ข้อมูลใบวางบิล" อย่างเดียว การเขียนทับ
+    // billing ทั้งก้อนจะลบประวัติการรับเงินที่บันทึกไว้แล้วทิ้งทั้งหมดโดยไม่มีอะไรเตือน
+    event.billing = {
+      ...prev.toObject?.() ?? prev,
+      invoiceNo: invoiceNo === undefined ? (prev.invoiceNo || "") : String(invoiceNo).trim(),
+      invoicedAt: billedAt,
+      creditTermDays: term,
+      dueAt: computeDueAt(billedAt, term),
+      ...amounts,
+      note: note === undefined ? (prev.note || "") : String(note),
+      payments: prev.payments || [],
+    };
+
+    event.activityLog = event.activityLog || [];
+    const actor = financeActor(req);
+    event.activityLog.push({
+      action: "billing_updated",
+      detail: `วางบิล ${amounts.netAmount.toLocaleString("th-TH")} บาท (ก่อน VAT ${amounts.amountBeforeVat.toLocaleString("th-TH")}) ครบกำหนด ${computeDueAt(billedAt, term).toISOString().slice(0, 10)}`,
+      userId: actor.id,
+      userName: actor.name,
+      timestamp: new Date(),
+    });
+
+    await event.save();
+    res.json({ event: event.toObject() });
+  } catch (err) {
+    console.error("❌ Error saving billing:", err);
+    res.status(500).json({ message: "บันทึกข้อมูลการวางบิลไม่สำเร็จ" });
+  }
+});
+
+/** บันทึกการรับเงิน 1 งวด (รับเงินแบ่งจ่ายได้ จึงเป็น push ไม่ใช่ set) */
+router.post("/:id/billing/payment", verifyToken, async (req, res) => {
+  try {
+    if (!requireFinanceRole(req, res)) return;
+    const { id } = req.params;
+    const event = await CalendarEvent.findById(id);
+    if (!event) return res.status(404).json({ message: "ไม่พบงานนี้" });
+    // ⚠️ ห้ามบันทึกรับเงินก่อนวางบิล — ไม่มียอดให้เทียบว่าครบหรือยัง สถานะจะคำนวณไม่ได้
+    if (!event.billing?.invoicedAt) {
+      return res.status(409).json({ message: "ต้องบันทึกการวางบิลก่อนจึงจะบันทึกรับเงินได้" });
+    }
+
+    const amount = Number(req.body.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ message: "ยอดรับเงินต้องมากกว่า 0" });
+    }
+    const paidAt = req.body.paidAt ? new Date(req.body.paidAt) : new Date();
+    if (Number.isNaN(paidAt.getTime())) {
+      return res.status(400).json({ message: "วันที่รับเงินไม่ถูกต้อง" });
+    }
+
+    const actor = financeActor(req);
+    event.billing.payments.push({
+      amount, paidAt,
+      method: String(req.body.method || "").trim(),
+      note: String(req.body.note || "").trim(),
+      recordedBy: actor.id,
+      recordedByName: actor.name,
+      recordedAt: new Date(),
+    });
+    event.activityLog = event.activityLog || [];
+    event.activityLog.push({
+      action: "payment_recorded",
+      detail: `รับเงิน ${amount.toLocaleString("th-TH")} บาท (${paidAt.toISOString().slice(0, 10)})`,
+      userId: actor.id,
+      userName: actor.name,
+      timestamp: new Date(),
+    });
+
+    await event.save();
+    res.json({ event: event.toObject() });
+  } catch (err) {
+    console.error("❌ Error recording payment:", err);
+    res.status(500).json({ message: "บันทึกการรับเงินไม่สำเร็จ" });
+  }
+});
+
+/** ลบรายการรับเงินที่บันทึกผิด */
+router.delete("/:id/billing/payment/:paymentId", verifyToken, async (req, res) => {
+  try {
+    if (!requireFinanceRole(req, res)) return;
+    const event = await CalendarEvent.findById(req.params.id);
+    if (!event) return res.status(404).json({ message: "ไม่พบงานนี้" });
+    const item = event.billing?.payments?.id(req.params.paymentId);
+    if (!item) return res.status(404).json({ message: "ไม่พบรายการรับเงินนี้" });
+
+    const actor = financeActor(req);
+    const removedAmount = Number(item.amount) || 0;
+    item.deleteOne();
+    event.activityLog = event.activityLog || [];
+    event.activityLog.push({
+      action: "payment_removed",
+      detail: `ลบรายการรับเงิน ${removedAmount.toLocaleString("th-TH")} บาท`,
+      userId: actor.id,
+      userName: actor.name,
+      timestamp: new Date(),
+    });
+    await event.save();
+    res.json({ event: event.toObject() });
+  } catch (err) {
+    console.error("❌ Error removing payment:", err);
+    res.status(500).json({ message: "ลบรายการรับเงินไม่สำเร็จ" });
   }
 });
 

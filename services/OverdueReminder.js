@@ -3,6 +3,7 @@ const CalendarEvent = require("../models/Events");
 const User = require("../models/User");
 const { sendPushToUsers, sendPushToRoles } = require("./PushNotify");
 const NotifyLog = require("../models/NotifyLog");
+const { billingStatus } = require("../utils/billing");
 const { DEFAULT_INTERVAL_MONTHS } = require("../utils/contractVisits");
 
 // ✅ เกณฑ์เดียวกับฝั่ง frontend (Operation/index.js) — เลยกำหนดวันสิ้นสุดงานตามแผนจริงมาแล้ว
@@ -322,4 +323,138 @@ async function checkAndNotifyOverdueContracts() {
   }
 }
 
-module.exports = { checkAndNotifyOverdueJobs, checkAndNotifyStaleQuotations, checkAndNotifyOverdueContracts };
+// ✅ เช็คสัญญาที่ "ใกล้หมดอายุ / หมดอายุแล้ว" แล้วแจ้งเตือนล่วงหน้า
+// ⚠️ ต่างจาก checkAndNotifyOverdueContracts ด้านบนคนละเรื่องกันโดยสิ้นเชิง: ตัวนั้นดู "รอบเข้างานถัดไป"
+// (ยังอยู่ในสัญญา แค่ยังไม่ลงแผน) ส่วนตัวนี้ดู "วันสิ้นสุดสัญญา" ซึ่งถ้าปล่อยผ่านคือรายได้ต่อเนื่อง
+// หายไปทั้งก้อน — เดิมเห็นได้ทางเดียวคือเปิดหน้าภาพรวมงานมาดูเองเท่านั้น ระบบไม่เคยส่งเสียงเลย
+//
+// ⚠️ เกณฑ์ต้องตรงกับ contractStatusInfo ใน ContractOverview.js เป๊ะๆ (หมดอายุ = เลยวันสิ้นสุดมาแล้ว,
+// ใกล้หมดอายุ = เหลือ ≤ 60 วัน) ไม่งั้นตัวเลขในแจ้งเตือนกับที่เห็นในตารางจะไม่ตรงกัน
+const EXPIRY_WARN_DAYS = 60;
+
+async function checkAndNotifyExpiringContracts() {
+  try {
+    const events = await CalendarEvent.find({
+      contractGroupId: { $exists: true, $nin: [null, ""] },
+      contractEnd: { $exists: true, $ne: null },
+    })
+      .select("contractGroupId contractNo company site contractEnd resPerson team userId responsiblePersonId responsiblePerson")
+      .lean();
+    if (events.length === 0) return;
+
+    // ⚠️ ต้องยุบเป็น "รายสัญญา" ก่อนเสมอ — ทุกครั้งในสัญญาถือ contractEnd ชุดเดียวกัน ถ้านับจาก
+    // document ดิบ สัญญาที่มี 4 ครั้งจะถูกนับเป็น 4 สัญญาทันที ตัวเลขในแจ้งเตือนจะเกินจริงหลายเท่า
+    const byContract = new Map();
+    events.forEach((e) => {
+      if (!byContract.has(e.contractGroupId)) byContract.set(e.contractGroupId, []);
+      byContract.get(e.contractGroupId).push(e);
+    });
+
+    const today = moment().startOf("day");
+    const expired = [];  // เลยวันสิ้นสุดมาแล้ว
+    const expiring = []; // เหลือ ≤ 60 วัน
+    byContract.forEach((visits) => {
+      const head = visits[0];
+      const end = moment(head.contractEnd).startOf("day");
+      if (!end.isValid()) return;
+      const daysLeft = end.diff(today, "days");
+      if (daysLeft < 0) expired.push({ visits, daysLeft });
+      else if (daysLeft <= EXPIRY_WARN_DAYS) expiring.push({ visits, daysLeft });
+    });
+    if (expired.length === 0 && expiring.length === 0) return;
+
+    // ── แจ้งแอดมิน/manager ภาพรวม ────────────────────────────────────────
+    // ⚠️ รวมเป็นข้อความเดียว ไม่แยกส่ง 2 ก้อน — คนกลุ่มนี้รับแจ้งเตือนจากทุกระบบอยู่แล้ว การยิงเพิ่ม
+    // เป็น 2 เรื่องต่อวันเรื่องเดียวกันคือทางที่ทำให้คนเริ่มปิดแจ้งเตือนทิ้ง
+    if (await NotifyLog.claimOncePerDay("expiring-contracts", "broadcast", "admin+manager")) {
+      const parts = [];
+      if (expired.length > 0) parts.push(`หมดอายุแล้ว ${expired.length} สัญญา`);
+      if (expiring.length > 0) {
+        const soonest = Math.min(...expiring.map((c) => c.daysLeft));
+        parts.push(`ใกล้หมดอายุ ${expiring.length} สัญญา (เร็วสุดอีก ${soonest} วัน)`);
+      }
+      await sendPushToRoles(["admin", "manager"], {
+        title: "📄 มีสัญญาที่ต้องต่ออายุ",
+        body: `${parts.join(" · ")} กรุณาตรวจสอบและติดต่อลูกค้าเพื่อต่อสัญญา`,
+        // ✅ เปิดมาที่แท็บ "สัญญาหมดอายุ" ให้เลย (ดู VIEW_FILTER_VALUES ใน ContractOverview.js)
+        url: "/contracts?view=expired",
+        tag: "contract-expiry-reminder",
+        renotify: true,
+      });
+    }
+
+    // ── แจ้งผู้รับผิดชอบรายคน ────────────────────────────────────────────
+    const allUsers = await User.find({}).select("fname role").lean();
+    const userById = new Map(allUsers.map((u) => [u._id.toString(), u]));
+    const userByFname = new Map(allUsers.map((u) => [u.fname, u]));
+
+    const byTech = new Map(); // techId -> { expired, expiring }
+    [...expired, ...expiring].forEach(({ visits, daysLeft }) => {
+      const user = resolveResponsibleUser(visits, userById, userByFname);
+      if (!user || user.role !== "technician") return;
+      const techId = user._id.toString();
+      const cur = byTech.get(techId) || { expired: 0, expiring: 0 };
+      if (daysLeft < 0) cur.expired += 1; else cur.expiring += 1;
+      byTech.set(techId, cur);
+    });
+
+    for (const [techId, counts] of byTech.entries()) {
+      if (!(await NotifyLog.claimOncePerDay("expiring-contracts", "self", techId))) continue;
+      const parts = [];
+      if (counts.expired > 0) parts.push(`หมดอายุแล้ว ${counts.expired} สัญญา`);
+      if (counts.expiring > 0) parts.push(`ใกล้หมดอายุ ${counts.expiring} สัญญา`);
+      await sendPushToUsers(techId, {
+        title: "📄 มีสัญญาที่ต้องต่ออายุ",
+        body: `สัญญาที่คุณรับผิดชอบ ${parts.join(" · ")} กรุณาแจ้งผู้เกี่ยวข้อง`,
+        url: "/contracts?view=expired",
+        tag: "contract-expiry-reminder",
+        renotify: true,
+      });
+    }
+  } catch (err) {
+    console.error("❌ Contract expiry reminder check error:", err);
+  }
+}
+
+// ✅ เช็คใบวางบิลที่ "เลยกำหนดชำระแล้วแต่ยังรับเงินไม่ครบ" แล้วแจ้งแอดมิน/manager
+// ⚠️ เกณฑ์ต้องใช้ billingStatus ตัวเดียวกับที่หน้าจอใช้ (utils/billing.js) ห้ามเขียนเงื่อนไขซ้ำที่นี่
+// ไม่งั้นตัวเลขในแจ้งเตือนกับที่เห็นบนจอจะไม่ตรงกัน ซึ่งเป็นเรื่องเงิน ผู้ใช้จับได้ทันที
+// ⚠️ query กรองที่ฐานข้อมูลด้วย billing.dueAt ก่อน (มี index รองรับ) แล้วค่อยกรองละเอียดใน memory —
+// งานส่วนใหญ่ยังไม่ได้วางบิลเลย ถ้าดึงทั้งคอลเลกชันมากรองเองจะหนักขึ้นเรื่อยๆ ตามข้อมูลที่โต
+async function checkAndNotifyOverdueInvoices() {
+  try {
+    const now = new Date();
+    const events = await CalendarEvent.find({ "billing.dueAt": { $ne: null, $lt: now } })
+      .select("company site title time billing")
+      .lean();
+    if (events.length === 0) return;
+
+    const overdue = events
+      .map((e) => ({ e, st: billingStatus(e.billing, now) }))
+      .filter(({ st }) => st.state === "overdue");
+    if (overdue.length === 0) return;
+
+    const totalOutstanding = overdue.reduce((sum, { st }) => sum + Math.max(0, st.outstanding), 0);
+    const worst = overdue.reduce((a, b) => (b.st.overdueDays > a.st.overdueDays ? b : a));
+
+    if (await NotifyLog.claimOncePerDay("overdue-invoices", "broadcast", "admin+manager")) {
+      await sendPushToRoles(["admin", "manager"], {
+        title: "💰 มีใบวางบิลเลยกำหนดชำระ",
+        body: `ค้างรับ ${overdue.length} ใบ รวม ${Math.round(totalOutstanding).toLocaleString("th-TH")} บาท (นานสุด ${worst.st.overdueDays} วัน · ${worst.e.company || "ไม่ระบุลูกค้า"})`,
+        url: "/billing?tab=overdue",
+        tag: "invoice-overdue-reminder",
+        renotify: true,
+      });
+    }
+  } catch (err) {
+    console.error("❌ Overdue invoice reminder check error:", err);
+  }
+}
+
+module.exports = {
+  checkAndNotifyOverdueJobs,
+  checkAndNotifyStaleQuotations,
+  checkAndNotifyOverdueContracts,
+  checkAndNotifyExpiringContracts,
+  checkAndNotifyOverdueInvoices,
+};
