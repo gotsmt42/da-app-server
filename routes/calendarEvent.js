@@ -62,6 +62,7 @@ const CONTRACT_FIELD_LABELS = {
   visitCount: "จำนวนครั้งทั้งหมด",
   intervalMonths: "ระยะห่างระหว่างรอบ (เดือน)",
   jobValue: "มูลค่างาน",
+  commission: "ค่าคอมมิชชั่น",
   team: "ทีมที่เข้างาน",
   resPerson: "ผู้ปฏิบัติงาน",
   responsiblePerson: "ผู้รับผิดชอบ",
@@ -70,7 +71,7 @@ const CONTRACT_FIELD_LABELS = {
 // บรรทัดรหัสยาวๆ ที่ไม่มีความหมายกับผู้อ่านซ้อนมาอีกรายการทุกครั้งที่เปลี่ยนผู้รับผิดชอบ
 
 const DATE_CONTRACT_FIELDS = new Set(["contractStart", "contractEnd"]);
-const NUMBER_CONTRACT_FIELDS = new Set(["visitCount", "intervalMonths", "jobValue"]);
+const NUMBER_CONTRACT_FIELDS = new Set(["visitCount", "intervalMonths", "jobValue", "commission"]);
 
 // ทำให้ค่าเทียบกันได้จริง — ค่าที่ "ไม่มี" มาได้ทั้ง undefined / null / "" ต้องถือว่าเท่ากันหมด
 // และวันที่ที่เก็บเป็น Date กับที่ส่งมาเป็นสตริง "YYYY-MM-DD" ต้องเทียบกันได้ด้วย
@@ -91,7 +92,7 @@ function formatContractValue(field, v) {
   const norm = normalizeContractValue(field, v);
   if (norm === "") return "(ว่าง)";
   if (DATE_CONTRACT_FIELDS.has(field)) return moment(norm, "YYYY-MM-DD").format("DD/MM/YYYY");
-  if (field === "jobValue") return `${Number(norm).toLocaleString("th-TH")} บาท`;
+  if (field === "jobValue" || field === "commission") return `${Number(norm).toLocaleString("th-TH")} บาท`;
   return norm;
 }
 
@@ -1722,7 +1723,7 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
     // สัญญาอื่นๆ ด้านล่าง (เดิม route นี้แก้ได้แค่ข้อมูลสัญญา ไม่รวมสองอย่างนี้ ซึ่งจริงๆ ก็ควรผูกกับ
     // สัญญาทั้งก้อนเหมือนกัน ไม่ใช่รายครั้ง — ดูหน้า "ภาพรวมสัญญา" ที่แก้ inline ผ่านตารางได้เลย)
     const {
-      contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue,
+      contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue, commission,
       team, resPerson, responsiblePerson, responsiblePersonId,
     } = req.body;
 
@@ -1784,6 +1785,13 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
       update.visitCount = visitCount;
     }
     if (jobValue !== undefined) update.jobValue = jobValue;
+    // ⚠️ ห้ามติดลบ — ค่าคอมติดลบไม่มีความหมาย และจะไปทำให้ยอดรวมท้ายตารางเพี้ยนแบบหาสาเหตุยาก
+    if (commission !== undefined) {
+      if (commission !== "" && commission !== null && Number(commission) < 0) {
+        return res.status(400).json({ message: "ค่าคอมมิชชั่นต้องไม่ติดลบ" });
+      }
+      update.commission = commission;
+    }
     if (team !== undefined) update.team = team;
     if (resPerson !== undefined) update.resPerson = resPerson;
     if (responsiblePerson !== undefined) update.responsiblePerson = responsiblePerson;
