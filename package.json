@@ -13,6 +13,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.117.1",
     "@vercel/speed-insights": "^1.0.10",
     "archiver": "^8.0.0",
     "axios": "^1.6.8",

@@ -17,6 +17,7 @@ const upload = multer({ storage });
 
 const streamifier = require("streamifier");
 const { computeBillingAmounts, computeDueAt } = require("../utils/billing");
+const InvoiceScan = require("../services/InvoiceScan");
 const crypto = require("crypto");
 
 // ✅ จำนวนครั้งสูงสุดต่อสัญญา — ต้องตรงกับ MAX_VISIT_COUNT ฝั่งหน้าจอ (ContractOverview.js) เป๊ะๆ
@@ -1895,6 +1896,45 @@ router.put("/:id/billing", verifyToken, async (req, res) => {
     console.error("❌ Error saving billing:", err);
     res.status(500).json({ message: "บันทึกข้อมูลการวางบิลไม่สำเร็จ" });
   }
+});
+
+/**
+ * ให้ AI อ่านยอดจากรูปใบวางบิลที่ช่างแนบมา
+ * ⚠️ ไม่บันทึกอะไรลงฐานข้อมูลเลย — คืนค่ากลับไปเติมในฟอร์มให้คนตรวจแล้วกดบันทึกเองเสมอ
+ * (ข้อมูลการเงินที่ผิดแล้วตามแก้ยากมาก ใบกำกับภาษีออกไปแล้ว/แจ้งลูกค้าไปแล้ว)
+ * ⚠️ รับเฉพาะ fileId ของไฟล์ที่แนบอยู่กับงานนี้จริง ไม่ใช่รับ URL อิสระจาก client — ไม่งั้นกลายเป็น
+ * ช่องให้ยิง URL อะไรก็ได้เข้ามาให้เซิร์ฟเวอร์ไปดึง (SSRF) และเผาโควตา API ได้ไม่จำกัด
+ */
+router.post("/:id/billing/scan", verifyToken, async (req, res) => {
+  try {
+    if (!requireFinanceRole(req, res)) return;
+    if (!InvoiceScan.isEnabled()) {
+      return res.status(503).json({ message: "ยังไม่ได้เปิดใช้งานการอ่านใบวางบิลด้วย AI (ไม่พบ ANTHROPIC_API_KEY)" });
+    }
+
+    const event = await CalendarEvent.findById(req.params.id).select("invoiceFiles").lean();
+    if (!event) return res.status(404).json({ message: "ไม่พบงานนี้" });
+
+    const file = (event.invoiceFiles || []).find((f) => String(f._id) === String(req.body.fileId));
+    if (!file) return res.status(404).json({ message: "ไม่พบไฟล์ใบวางบิลนี้ในงานดังกล่าว" });
+
+    const isImage = /^image\//.test(file.fileType || "") || /\.(png|jpe?g|webp|gif)$/i.test(file.fileName || "");
+    if (!isImage) {
+      return res.status(400).json({ message: "อ่านได้เฉพาะไฟล์รูปภาพเท่านั้น (ไฟล์ PDF ให้กรอกยอดเอง)" });
+    }
+
+    const result = await InvoiceScan.scanInvoiceImage(file.fileUrl);
+    res.json({ result });
+  } catch (err) {
+    console.error("❌ Error scanning invoice:", err);
+    // ⚠️ ไม่โยน error ดิบกลับไปหน้าจอ — ข้อความจาก SDK อาจมีรายละเอียดคำขอ/คีย์ปนมาได้
+    res.status(502).json({ message: "อ่านรูปไม่สำเร็จ กรุณาลองใหม่หรือกรอกยอดเอง" });
+  }
+});
+
+/** บอกหน้าจอว่าฟีเจอร์อ่านใบวางบิลด้วย AI เปิดใช้งานอยู่ไหม (ไม่เปิด = ซ่อนปุ่มไปเลย ไม่ต้องให้กดแล้ว error) */
+router.get("/billing/scan-availability", verifyToken, (req, res) => {
+  res.json({ enabled: InvoiceScan.isEnabled(), model: InvoiceScan.MODEL });
 });
 
 /** บันทึกการรับเงิน 1 งวด (รับเงินแบ่งจ่ายได้ จึงเป็น push ไม่ใช่ set) */
