@@ -1,7 +1,11 @@
 const express = require("express");
 const router = express.Router();
 
+const mongoose = require("mongoose");
+
 const DocCounter = require("../models/DocCounter");
+// ✅ ใช้ตรวจว่า "ผู้ขอเลข" เกี่ยวข้องกับงานที่อ้างอิงจริงไหม ตอนคนขอไม่ใช่ admin/manager (ดู POST /next)
+const CalendarEvent = require("../models/Events");
 const verifyToken = require("../middleware/auth");
 
 /**
@@ -27,13 +31,34 @@ const buddhistYear = () => new Date().getFullYear() + 543;
 // POST /api/doc-number/next   body: { docType: "delivery" }
 router.post("/next", verifyToken, async (req, res) => {
   try {
-    // ✅ เอกสารที่ส่งออกไปหาลูกค้าในนามบริษัท (ทุกชนิดใน DOC_TYPES) — จำกัดเฉพาะ admin/manager
-    // เหมือนทุก action ระดับบริหารในระบบนี้
-    // ⚠️ ช่างยังออก "ใบแจ้งเข้าปฏิบัติงาน" ได้เหมือนเดิม เพียงแต่ใช้เลขที่อ้างอิงของงานนั้นแทนเลขเดินหน้า
-    // ของบริษัท (ดู canUseRunningNumber ใน WorkNoticeDialog.js) — เลขเดินหน้าห้ามซ้ำ/ห้ามข้าม จึงต้อง
-    // ออกจากคนที่รับผิดชอบทะเบียนเอกสารเท่านั้น
-    if (!["admin", "manager"].includes(req.user?.role)) {
-      return res.status(403).json({ message: "เฉพาะแอดมิน/ผู้จัดการเท่านั้นที่ออกเลขที่เอกสารได้" });
+    // ✅ ช่างออกใบส่งมอบงาน "ของงานตัวเอง" ได้ด้วย (ตามที่ผู้ใช้ขอ) — แต่ต้องพิสูจน์ก่อนว่าเกี่ยวข้องกับ
+    // งานนั้นจริง โดยส่ง eventId มาให้ตรวจ ไม่ใช่ให้ใครก็ได้ยิงขอเลขเปล่าๆ
+    // ⚠️ ทำไมต้องผูกกับ eventId: เลขที่เอกสารเป็นเลขเดินหน้าของทั้งบริษัท ห้ามซ้ำและ "ห้ามข้าม" —
+    // ทุกครั้งที่ขอคือกินเลขไปจริง คืนไม่ได้ ถ้าเปิดให้ขอลอยๆ ได้ เลขจะโดนกินทิ้งจากการกดพลาด/กดเล่น
+    // แล้วสมุดทะเบียนเอกสารจะมีช่องโหว่ที่อธิบายไม่ได้ตอนตรวจสอบย้อนหลัง
+    // ⚠️ admin/manager ยังขอได้โดยไม่ต้องมี eventId (ออกเอกสารนอกระบบงานได้ตามปกติ)
+    const isAdminOrManager = ["admin", "manager"].includes(req.user?.role);
+    if (!isAdminOrManager) {
+      const eventId = req.body?.eventId;
+      if (!eventId || !mongoose.isValidObjectId(eventId)) {
+        return res.status(403).json({ message: "ออกเลขที่เอกสารได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
+      }
+      const ev = await CalendarEvent.findById(eventId)
+        .select("userId resPerson team responsiblePersonId responsiblePerson teamMembers").lean();
+      if (!ev) return res.status(404).json({ message: "ไม่พบงานที่อ้างอิง" });
+      const uid = String(req.userId);
+      const isRelated =
+        String(ev.userId) === uid ||
+        (ev.resPerson && ev.resPerson === uid) ||
+        (ev.team && ev.team === req.user.fname) ||
+        (ev.responsiblePersonId && ev.responsiblePersonId === uid) ||
+        (ev.responsiblePerson && ev.responsiblePerson === req.user.fname) ||
+        (ev.teamMembers || []).some(
+          (m) => (m?.userId && m.userId === uid) || (m?.name && m.name === req.user.fname)
+        );
+      if (!isRelated) {
+        return res.status(403).json({ message: "ออกเลขที่เอกสารได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
+      }
     }
 
     const docType = String(req.body?.docType || "delivery");

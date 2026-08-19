@@ -120,25 +120,81 @@ function diffContractFields(before, update) {
 // ใครไปตั้งค่านี้ให้ชัดเจน จะกลายเป็นไม่มีใครนอกจากแอดมิน/manager เข้าถึงได้เลยทันที (พังงานที่ทำอยู่
 // ทุกวันนี้ทั้งหมด) — พอแอดมิน/manager มอบหมาย "ผู้รับผิดชอบ" ให้คนละคนกับทีมที่เข้างานเมื่อไหร่
 // (ผ่านหน้า "ภาพรวมงาน") ทีมที่เข้างานเดิมจะหลุดจากสิทธิ์กลุ่มนี้ทันที เหลือแค่ผู้รับผิดชอบคนใหม่เท่านั้น
+// 🐛 BUG ที่แก้ (งานที่ตัวเองไม่ได้รับผิดชอบโผล่ในตาราง/แก้ไขได้): เดิม 2 ช่องระบุตัวตนของ "ผู้รับผิดชอบ"
+// (responsiblePersonId กับ responsiblePerson) fallback ไปหา team/resPerson แยกกันอิสระคนละบรรทัด
+// ผลคืองานที่ "มอบหมายให้คนอื่นไปแล้ว" ยังรั่วออกมาได้ เพราะปกติแอดมินมอบหมายด้วยการเลือกชื่อ ซึ่ง
+// เซ็ต responsiblePerson ไว้ช่องเดียว ส่วน responsiblePersonId ยังว่าง — เงื่อนไข
+//   { responsiblePersonId ว่าง AND resPerson = ฉัน }
+// จึงเป็นจริงทันทีสำหรับช่างที่เป็นคนเข้างาน ทั้งที่ช่อง "ผู้รับผิดชอบ" ระบุชื่อคนอื่นไว้ชัดเจนแล้ว
+// (และรั่วในทางกลับกันได้ด้วยถ้ามีแต่ id ไม่มีชื่อ)
+// ✅ fallback ไปที่ทีมที่เข้างานได้ก็ต่อเมื่อ "ยังไม่มีการมอบหมายผู้รับผิดชอบเลยทั้ง 2 ช่อง" เท่านั้น
+// ⚠️ ยังต้องคง fallback ไว้ — สัญญาส่วนใหญ่ในระบบยังขึ้นว่า "ยังไม่มอบหมาย" ถ้าตัดทิ้งไปเลย ช่างจะ
+// มองไม่เห็นงานที่ตัวเองต้องไปทำทั้งหมดในทันที
 function effectiveResponsibleOrClauses(userId, fname) {
   const emptyOrMissing = (field) => ({ $or: [{ [field]: { $exists: false } }, { [field]: "" }, { [field]: null }] });
+  const noResponsibleAssigned = {
+    $and: [emptyOrMissing("responsiblePersonId"), emptyOrMissing("responsiblePerson")],
+  };
   return [
     { responsiblePersonId: userId },
-    { $and: [emptyOrMissing("responsiblePersonId"), { resPerson: userId }] },
     { responsiblePerson: fname },
-    { $and: [emptyOrMissing("responsiblePerson"), { team: fname }] },
+    { $and: [noResponsibleAssigned, { $or: [{ resPerson: userId }, { team: fname }] }] },
+  ];
+}
+
+/**
+ * ✅ ตัวกรองแบบ "เข้มงวด" — เห็นเฉพาะงานที่ระบุตัวเองเป็น "ผู้รับผิดชอบหลัก" ไว้ตรงๆ เท่านั้น
+ * ไม่อิงทีมที่เข้างาน ไม่อิงลูกทีม และไม่ fallback ให้งานที่ยังไม่มอบหมาย
+ *
+ * ⚠️ ใช้เฉพาะหน้า "ภาพรวมงาน" (ส่ง ?scope=responsible มา) ตามที่ผู้ใช้ระบุ — หน้าอื่นทั้งหมด
+ * (การดำเนินงาน / งานของฉัน / แดชบอร์ด / ปฏิทิน) ยังใช้ effectiveResponsibleOrClauses เหมือนเดิม
+ * เพราะเป็นหน้าที่ช่างใช้ทำงานประจำวัน ถ้าเข้มด้วยจะมองไม่เห็นงานที่ตัวเองต้องไปทำ
+ * ⚠️ เหตุผลที่หน้าภาพรวมงานต้องเข้ม: เป็นหน้า "สรุปภาพรวมความรับผิดชอบ" (มูลค่างาน/คืบหน้า/ยอดรวม)
+ * งานที่ตัวเองแค่ไปช่วยทำแต่ไม่ได้รับผิดชอบ ไม่ควรถูกนับรวมอยู่ในยอดของตัวเอง
+ */
+function strictResponsibleOrClauses(userId, fname) {
+  return [
+    { responsiblePersonId: userId },
+    { responsiblePerson: fname },
   ];
 }
 
 // ✅ เทียบ pattern เดียวกับ effectiveResponsibleOrClauses ด้านบนเป๊ะๆ แต่ใช้เช็ค document เดียวที่โหลด
 // มาแล้ว (ไม่ใช่สร้าง Mongo query) — ใช้กับ route ที่เช็คสิทธิ์ทีละ event เช่น quotation-followup
-function isEffectiveResponsiblePerson(event, userId, fname) {
-  const hasResponsiblePersonId = Boolean(event.responsiblePersonId);
-  const hasResponsiblePerson = Boolean(event.responsiblePerson);
+// ⚠️ ต้องใช้ตรรกะเดียวกับ effectiveResponsibleOrClauses เป๊ะๆ — เดิมมีบั๊กตัวเดียวกัน (fallback แยก
+// กันคนละช่อง ทำให้งานที่มอบหมายให้คนอื่นแล้วยังผ่านได้) ดูคำอธิบายเต็มที่ฟังก์ชันนั้น
+// ⚠️ ถ้าแก้ที่นี่ต้องไปแก้ที่โน่นด้วยเสมอ ไม่งั้น "สิ่งที่มองเห็น" กับ "สิ่งที่แก้ไขได้" จะไม่ตรงกัน
+/**
+ * ✅ "คนที่เกี่ยวข้องกับงานนี้" — ผู้ลงงาน (คนสร้าง) · ผู้รับผิดชอบ · หัวหน้าทีมที่เข้างาน · ลูกทีม
+ * ใช้กับหน้าที่ผู้ใช้ระบุว่า "ใครก็ได้ที่มีชื่อในงาน ต้องเข้าดู/อัปเดตงานตัวเองได้" — หน้า /finance
+ * (ติดตามใบเสนอราคา + วางบิล/รับเงิน) และการติดตามใบเสนอราคา
+ *
+ * ⚠️ ต่างจาก isEffectiveResponsiblePerson โดยสิ้นเชิง อย่าเอามาใช้แทนกัน:
+ *   • ตัวนี้ = "มีชื่ออยู่ในงานนี้ไหม" (กว้าง) — ใช้ตัดสินว่าเข้าถึงงานของตัวเองได้ไหม
+ *   • ตัวนั้น = "เป็นผู้รับผิดชอบตัวจริงไหม" (แคบ) — ใช้กับสิทธิ์ที่ต้องมอบหมายไว้ชัดเจนก่อน
+ *     เช่น หน้าภาพรวมงาน/การแก้ไขครั้งที่ของสัญญา
+ */
+function isJobParticipant(event, userId, fname) {
+  const uid = String(userId);
   return (
-    (hasResponsiblePersonId ? event.responsiblePersonId === userId : event.resPerson === userId) ||
-    (hasResponsiblePerson ? event.responsiblePerson === fname : event.team === fname)
+    String(event.userId) === uid ||
+    (event.resPerson && event.resPerson === uid) ||
+    (event.team && event.team === fname) ||
+    (event.responsiblePersonId && event.responsiblePersonId === uid) ||
+    (event.responsiblePerson && event.responsiblePerson === fname) ||
+    (event.teamMembers || []).some(
+      (m) => (m?.userId && m.userId === uid) || (m?.name && m.name === fname)
+    )
   );
+}
+
+function isEffectiveResponsiblePerson(event, userId, fname) {
+  const hasAssignedResponsible = Boolean(event.responsiblePersonId) || Boolean(event.responsiblePerson);
+  if (hasAssignedResponsible) {
+    return event.responsiblePersonId === userId || event.responsiblePerson === fname;
+  }
+  // ยังไม่เคยมอบหมายผู้รับผิดชอบเลย → ตกมาที่ทีมที่เข้างานจริง
+  return event.resPerson === userId || event.team === fname;
 }
 
 router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) => {
@@ -569,22 +625,36 @@ router.get("/event-op", verifyToken, async (req, res) => {
     // ตัวเองด้วย ทั้งที่ทุกจุดอื่นในไฟล์นี้ให้สิทธิ์ manager เท่า admin — แก้ให้ตรงกัน
     // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรปนกับงานที่ลงตารางแล้ว
     const isAdminOrManagerRole = ["admin", "manager"].includes(userRole);
-    // ✅ "ลูกทีม" ที่มีชื่ออยู่ในงาน ต้องเห็นงานนั้นบนปฏิทินของตัวเองด้วย (ตามที่ผู้ใช้ขอ) — เดิมถูกกรอง
-    // ทิ้งตั้งแต่ชั้นนี้ คนที่ถูกใส่ชื่อเป็นลูกทีมจึงไม่เห็นงานที่ตัวเองต้องไปทำเลยแม้แต่งานเดียว
-    // ⚠️ ตั้งใจเพิ่มเฉพาะที่ query "การมองเห็น" ตรงนี้เท่านั้น ไม่เพิ่มเข้าไปใน effectiveResponsibleOrClauses
-    // เพราะฟังก์ชันนั้นถูกใช้ตัดสิน "สิทธิ์แก้ไข" ในอีกหลาย route ด้วย — ถ้าเพิ่มเข้าไปตรงนั้น ลูกทีมจะ
-    // กลายเป็นแก้ไข/ลบงานได้ทันที ซึ่งขัดกับที่ต้องการ (ดูอย่างเดียวเท่านั้น)
-    const teamMemberViewClauses = [
+    // ✅ "คนที่ต้องไปทำงานนี้" ต้องเห็นงานนี้เสมอ — หัวหน้าทีมที่เข้างาน (team/resPerson) และลูกทีม
+    // (teamMembers) ไม่ว่างานนั้นจะมอบหมาย "ผู้รับผิดชอบ" ไว้เป็นใครก็ตาม
+    // ⚠️ ต้องแยกออกมาเป็น "clause การมองเห็น" ต่างหาก ห้ามไปรวมใน effectiveResponsibleOrClauses —
+    // ฟังก์ชันนั้นมีความหมายว่า "ผู้รับผิดชอบตัวจริง" ซึ่ง fallback ไปที่ทีมได้เฉพาะงานที่ยังไม่มอบหมาย
+    // เท่านั้น ถ้าเอา 2 เรื่องมาปนกันจะกลายเป็นว่าหัวหน้าทีม/ลูกทีมได้สิทธิ์ระดับผู้รับผิดชอบไปด้วย
+    // 🐛 ที่แก้: ก่อนหน้านี้หัวหน้าทีม (team/resPerson) พึ่ง fallback ใน effectiveResponsibleOrClauses
+    // อย่างเดียว พอไปอุดบั๊ก fallback (ให้ทำงานเฉพาะงานที่ยังไม่มอบหมาย) หัวหน้าทีมของงานที่มอบหมาย
+    // ผู้รับผิดชอบเป็นคนอื่นไว้แล้ว เลยหลุดหายไปจากหน้าการดำเนินงานโดยไม่ตั้งใจ
+    const jobParticipantViewClauses = [
+      { team: req.user.fname },
+      { resPerson: userId },
       { "teamMembers.userId": userId },
       { "teamMembers.name": req.user.fname },
     ];
+    // ✅ ?scope=responsible — โหมดเข้มงวดสำหรับหน้า "ภาพรวมงาน" โดยเฉพาะ: เห็นเฉพาะงานที่ระบุตัวเอง
+    // เป็น "ผู้รับผิดชอบหลัก" ไว้ตรงๆ ไม่อิงทีมที่เข้างาน/ลูกทีม และไม่รวมงานที่ยังไม่มอบหมาย
+    // ⚠️ ไม่ใส่ { userId } (คนสร้างงาน) ในโหมดนี้ด้วย — ช่างที่สร้างงานไว้เองแต่ถูกมอบหมายให้คนอื่น
+    // รับผิดชอบ ก็ไม่ควรเห็นงานนั้นในสรุปความรับผิดชอบของตัวเอง
+    // ⚠️ หน้าอื่นที่ใช้ route นี้ (การดำเนินงาน/งานของฉัน/แดชบอร์ด/วางบิล) ไม่ส่ง scope มา จึงได้
+    // ตัวกรองเดิมทุกประการ — ช่างยังเห็นงานที่ตัวเองต้องไปทำครบเหมือนเดิม
+    const strictScope = req.query.scope === "responsible";
     const query = isAdminOrManagerRole
       ? { unscheduled: { $ne: true } }
-      : { unscheduled: { $ne: true }, $or: [
-          { userId: userId },
-          ...effectiveResponsibleOrClauses(userId, req.user.fname),
-          ...teamMemberViewClauses,
-        ] };
+      : strictScope
+        ? { unscheduled: { $ne: true }, $or: strictResponsibleOrClauses(userId, req.user.fname) }
+        : { unscheduled: { $ne: true }, $or: [
+            { userId: userId },                                    // ผู้ลงงาน (คนสร้างงานนี้เอง)
+            ...effectiveResponsibleOrClauses(userId, req.user.fname), // ผู้รับผิดชอบ
+            ...jobParticipantViewClauses,                          // หัวหน้าทีม + ลูกทีม
+          ] };
 
     const userEvents = await CalendarEvent.find(query)
       .sort({ start: -1 })
@@ -785,12 +855,25 @@ router.get("/drafts", verifyToken, async (req, res) => {
 
     // ✅ ป้อนแผงงานล่วงหน้าให้ทั้งหน้า "การดำเนินงาน"/"ภาพรวมงาน" — เทียบ pattern เดียวกับ GET /event-op
     // เป๊ะๆ (ดูคอมเมนต์ละเอียดที่นั่น) สิทธิ์เป็นของ "ผู้รับผิดชอบ" ไม่ใช่ "ทีมที่เข้างาน" อีกต่อไป
+    // ✅ ?scope=responsible — โหมดเข้มงวดเหมือน GET /event-op (ดูคำอธิบายที่นั่น) หน้า "ภาพรวมงาน"
+    // รวมแผนงานล่วงหน้าเข้าไปในตารางเดียวกัน ถ้ากรองคนละกติกากับงานที่ลงตารางแล้ว จะกลายเป็นตาราง
+    // เดียวที่มี 2 มาตรฐานปนกัน (สัญญาที่ยังไม่ลงวันที่โผล่ ทั้งที่สัญญาที่ลงวันที่แล้วของงานเดียวกันไม่โผล่)
+    const strictScope = req.query.scope === "responsible";
     const query = isAdminOrManager
       ? { unscheduled: true }
-      : { unscheduled: true, $or: [
-          { userId: userId },
-          ...effectiveResponsibleOrClauses(userId, req.user.fname),
-        ] };
+      : strictScope
+        ? { unscheduled: true, $or: strictResponsibleOrClauses(userId, req.user.fname) }
+        : { unscheduled: true, $or: [
+            { userId: userId },                                       // ผู้ลงงาน
+            ...effectiveResponsibleOrClauses(userId, req.user.fname), // ผู้รับผิดชอบ
+            // ✅ หัวหน้าทีม + ลูกทีม เห็นแผนงานล่วงหน้าที่ตัวเองมีชื่ออยู่ด้วย — ต้องตรงกับ GET /event-op
+            // (ดูเหตุผลที่ jobParticipantViewClauses ที่นั่น) ไม่งั้นหน้าการดำเนินงานจะเห็นงานที่ลงตาราง
+            // แล้วแต่ไม่เห็นแผนงานล่วงหน้าของงานเดียวกัน
+            { team: req.user.fname },
+            { resPerson: userId },
+            { "teamMembers.userId": userId },
+            { "teamMembers.name": req.user.fname },
+          ] };
 
     const drafts = await CalendarEvent.find(query).sort({ createdAt: -1 }).lean();
     res.json({ drafts });
@@ -1057,11 +1140,12 @@ router.put("/:id/quotation-followup", verifyToken, upload.single("file"), async 
 
     // ⚠️ BUG ที่แก้: เดิมเช็คแค่ req.user.role !== "admin" (ไม่รวม manager เหมือนทุกจุดอื่น) และเดิม
     // เช็คแค่ team/resPerson (ทีมที่เข้างาน) ไม่ใช่ผู้รับผิดชอบ — เปลี่ยนมาเช็คผู้รับผิดชอบแทนตามที่ขอ
+    // ✅ ขยายให้ "หัวหน้าทีมที่เข้างาน" และ "ลูกทีม" บันทึกการติดตามใบเสนอราคาของงานตัวเองได้ด้วย
+    // (ตามที่ผู้ใช้ระบุสำหรับหน้า /finance) — เดิมรับแค่เจ้าของงานกับผู้รับผิดชอบ ทำให้ช่างที่ไปหน้างาน
+    // และคุยกับลูกค้าเองบันทึกความคืบหน้าไม่ได้ ต้องฝากคนอื่นบันทึกให้ทุกครั้ง
     const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
-    const isOwner = existingEvent.userId.toString() === userId.toString();
-    const isResponsible = isEffectiveResponsiblePerson(existingEvent, userId, req.user.fname);
-    if (!isAdminOrManager && !isOwner && !isResponsible) {
-      return res.status(403).json({ message: "คุณไม่มีสิทธิ์บันทึกการติดตามงานนี้" });
+    if (!isAdminOrManager && !isJobParticipant(existingEvent, userId, req.user.fname)) {
+      return res.status(403).json({ message: "บันทึกการติดตามได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
     }
 
     if (!note || !note.trim()) {
@@ -1522,9 +1606,6 @@ router.put("/contract/:contractGroupId/detach", verifyToken, async (req, res) =>
 // เสมอ ห้ามมีทางที่กดผิดแล้วข้อมูลหายถาวรโดยไม่มีอะไรเตือน
 router.put("/contract/:contractGroupId/move-round", verifyToken, async (req, res) => {
   try {
-    if (!["admin", "manager"].includes(req.user.role)) {
-      return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่ย้ายครั้งที่ได้" });
-    }
     const { contractGroupId } = req.params;
     const { fromTime, toTime } = req.body;
     if (fromTime === undefined || fromTime === null || fromTime === "" ||
@@ -1538,6 +1619,30 @@ router.put("/contract/:contractGroupId/move-round", verifyToken, async (req, res
     }
     if (from === to) {
       return res.status(400).json({ message: "ครั้งที่ต้นทางและปลายทางเป็นครั้งเดียวกัน" });
+    }
+
+    // ✅ นอกจาก admin/manager แล้ว "ผู้รับผิดชอบที่ได้รับมอบหมาย" ของสัญญานี้ย้ายครั้งที่เองได้ด้วย
+    // (ตามสโคปที่ผู้ใช้ระบุ: หน้าภาพรวมงาน งานสัญญา → เฉพาะผู้รับผิดชอบที่ได้รับมอบหมายเห็นและแก้
+    // ในส่วนครั้งที่ได้) เดิมเฉพาะ admin/manager ทำให้ช่างที่ดูแลสัญญาอยู่เองแก้กรณีลงครั้งผิดลำดับ
+    // ไม่ได้เลย ต้องรอแอดมินทุกครั้ง ทั้งที่เป็นงานที่ตัวเองรับผิดชอบ
+    // ⚠️ ต้องเป็นผู้รับผิดชอบของ "ทุก document ในสัญญา" ไม่ใช่แค่ครั้งที่กำลังย้าย — การย้ายครั้งจะไป
+    // สลับที่กับครั้งปลายทางด้วย จึงกระทบโครงสร้างทั้งสัญญา
+    // ⚠️ ไม่รับ "ทีมที่เข้างาน" (team/resPerson/teamMembers) โดยตั้งใจ — ต้องถูกมอบหมายเป็น
+    // ผู้รับผิดชอบไว้ชัดเจนก่อนเท่านั้น ตรงกับตัวกรองการมองเห็นของหน้านั้น (strictResponsibleOrClauses)
+    if (!["admin", "manager"].includes(req.user.role)) {
+      const contractDocs = await CalendarEvent.find({ contractGroupId })
+        .select("responsiblePerson responsiblePersonId").lean();
+      if (contractDocs.length === 0) {
+        return res.status(404).json({ message: "ไม่พบสัญญานี้" });
+      }
+      const uid = String(req.userId);
+      const isContractResponsible = contractDocs.every(
+        (d) => (d.responsiblePersonId && d.responsiblePersonId === uid) ||
+               (d.responsiblePerson && d.responsiblePerson === req.user.fname)
+      );
+      if (!isContractResponsible) {
+        return res.status(403).json({ message: "ย้ายครั้งที่ได้เฉพาะแอดมิน/manager หรือผู้รับผิดชอบสัญญานี้เท่านั้น" });
+      }
     }
 
     // ✅ เก็บ _id ไว้ล่วงหน้าทั้งสองฝั่งก่อนเริ่มแก้ไข — สำคัญมาก เพราะหลังอัปเดตขั้นแรก ค่า time จะซ้ำกัน
@@ -1832,12 +1937,20 @@ router.put("/contract/:contractGroupId", verifyToken, async (req, res) => {
 // ── การวางบิล / รับเงิน ────────────────────────────────────────────────────
 // ⚠️ เฉพาะแอดมิน/manager เท่านั้น — เป็นข้อมูลการเงินล้วนๆ ใช้เกณฑ์เดียวกับการแก้ข้อมูลสัญญา
 // ไม่ใช้เกณฑ์ "เจ้าของงาน" เหมือน route อื่นในไฟล์นี้
-const requireFinanceRole = (req, res) => {
-  if (!["admin", "manager"].includes(req.user.role)) {
-    res.status(403).json({ message: "เฉพาะแอดมิน/ผู้จัดการเท่านั้นที่จัดการข้อมูลการวางบิลได้" });
-    return false;
-  }
-  return true;
+/**
+ * ✅ สิทธิ์จัดการข้อมูลการเงินของ "งานหนึ่งงาน" — แอดมิน/manager ทำได้ทุกงาน ส่วนคนอื่นทำได้เฉพาะ
+ * งานที่ตัวเองมีชื่ออยู่ (ผู้ลงงาน/ผู้รับผิดชอบ/หัวหน้าทีม/ลูกทีม) ตามที่ผู้ใช้ระบุ
+ *
+ * 🐛 ที่แก้: เดิมเป็น requireFinanceRole ที่บล็อกทุกคนที่ไม่ใช่แอดมิน/manager แบบเหมารวม ทำให้ช่าง
+ * อัปเดตสถานะวางบิล/บันทึกรับเงินของงานตัวเองไม่ได้เลย ทั้งที่เป็นคนติดตามเรื่องกับลูกค้าเอง
+ * ⚠️ ต้องเช็ค "รายงาน" ไม่ใช่ "รายบทบาท" — จึงต้องโหลด event ก่อนแล้วค่อยเช็ค (ต่างจากเดิมที่เช็ค
+ * ได้ตั้งแต่ยังไม่รู้ว่างานไหน) ทุก route ที่เรียกตัวนี้จึงต้องส่ง event ที่โหลดแล้วเข้ามาด้วย
+ */
+const requireEventFinanceAccess = (req, res, event) => {
+  if (["admin", "manager"].includes(req.user.role)) return true;
+  if (isJobParticipant(event, req.userId, req.user.fname)) return true;
+  res.status(403).json({ message: "จัดการข้อมูลการเงินได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
+  return false;
 };
 
 const financeActor = (req) => ({
@@ -1852,10 +1965,10 @@ const financeActor = (req) => ({
  */
 router.put("/:id/billing", verifyToken, async (req, res) => {
   try {
-    if (!requireFinanceRole(req, res)) return;
     const { id } = req.params;
     const event = await CalendarEvent.findById(id);
     if (!event) return res.status(404).json({ message: "ไม่พบงานนี้" });
+    if (!requireEventFinanceAccess(req, res, event)) return;
 
     const { invoiceNo, invoicedAt, creditTermDays, amountBeforeVat, vatRate, whtRate, note } = req.body;
 
@@ -1915,13 +2028,18 @@ router.put("/:id/billing", verifyToken, async (req, res) => {
  */
 router.post("/:id/billing/scan", verifyToken, async (req, res) => {
   try {
-    if (!requireFinanceRole(req, res)) return;
     if (!InvoiceScan.isEnabled()) {
       return res.status(503).json({ message: "ยังไม่ได้เปิดใช้งานการอ่านใบวางบิลด้วย AI (ไม่พบ ANTHROPIC_API_KEY)" });
     }
 
-    const event = await CalendarEvent.findById(req.params.id).select("invoiceFiles").lean();
+    // ⚠️ ต้อง select ฟิลด์ที่ใช้เช็คสิทธิ์มาด้วย (userId/team/resPerson/responsible*/teamMembers) —
+    // ไม่งั้น isJobParticipant จะได้ undefined ทุกช่องแล้วคืน false เสมอ = ช่างโดน 403 ทุกครั้ง
+    // ทั้งที่เป็นงานตัวเอง (บั๊กแบบเงียบที่หาสาเหตุยากมาก เพราะโค้ดสิทธิ์ดูถูกต้องทุกบรรทัด)
+    const event = await CalendarEvent.findById(req.params.id)
+      .select("invoiceFiles userId team resPerson responsiblePerson responsiblePersonId teamMembers")
+      .lean();
     if (!event) return res.status(404).json({ message: "ไม่พบงานนี้" });
+    if (!requireEventFinanceAccess(req, res, event)) return;
 
     const file = (event.invoiceFiles || []).find((f) => String(f._id) === String(req.body.fileId));
     if (!file) return res.status(404).json({ message: "ไม่พบไฟล์ใบวางบิลนี้ในงานดังกล่าว" });
@@ -1948,10 +2066,10 @@ router.get("/billing/scan-availability", verifyToken, (req, res) => {
 /** บันทึกการรับเงิน 1 งวด (รับเงินแบ่งจ่ายได้ จึงเป็น push ไม่ใช่ set) */
 router.post("/:id/billing/payment", verifyToken, async (req, res) => {
   try {
-    if (!requireFinanceRole(req, res)) return;
     const { id } = req.params;
     const event = await CalendarEvent.findById(id);
     if (!event) return res.status(404).json({ message: "ไม่พบงานนี้" });
+    if (!requireEventFinanceAccess(req, res, event)) return;
     // ⚠️ ห้ามบันทึกรับเงินก่อนวางบิล — ไม่มียอดให้เทียบว่าครบหรือยัง สถานะจะคำนวณไม่ได้
     if (!event.billing?.invoicedAt) {
       return res.status(409).json({ message: "ต้องบันทึกการวางบิลก่อนจึงจะบันทึกรับเงินได้" });
@@ -1995,9 +2113,9 @@ router.post("/:id/billing/payment", verifyToken, async (req, res) => {
 /** ลบรายการรับเงินที่บันทึกผิด */
 router.delete("/:id/billing/payment/:paymentId", verifyToken, async (req, res) => {
   try {
-    if (!requireFinanceRole(req, res)) return;
     const event = await CalendarEvent.findById(req.params.id);
     if (!event) return res.status(404).json({ message: "ไม่พบงานนี้" });
+    if (!requireEventFinanceAccess(req, res, event)) return;
     const item = event.billing?.payments?.id(req.params.paymentId);
     if (!item) return res.status(404).json({ message: "ไม่พบรายการรับเงินนี้" });
 
@@ -2038,15 +2156,23 @@ router.put("/basic-info", verifyToken, async (req, res) => {
     // (ไม่ใช่เฉพาะสัญญาจริงเหมือนเดิม) งานทั่วไป/โปรเจค/ยังไม่จัดกลุ่มไม่มี contractGroupId จริงจึงใช้
     // PUT /contract/:contractGroupId ไม่ได้ ต้องมาทางนี้ (เทียบ pattern เดียวกับ docNo) — ส่วนมูลค่างาน
     // ของสัญญาจริงยังแก้ผ่าน /contract/:contractGroupId เหมือนเดิม (อัปเดตทุกครั้งของสัญญาพร้อมกัน)
-    const { eventIds, company, site, system, title, docNo, team, resPerson, responsiblePerson, responsiblePersonId, jobValue } = req.body;
+    // 🐛 BUG ที่แก้ (แท็บที่ไม่ใช่สัญญาใส่ค่าคอมไม่ได้ ขึ้น "ไม่มีข้อมูลให้แก้ไข"): commission ไม่เคยถูก
+    // รับเข้ามาใน route นี้เลย — แถวงานทั่วไป/งานโปรเจค/ยังไม่จัดกลุ่มไม่มี contractGroupId จริง จึงส่ง
+    // ค่าคอมมาทางนี้ (ดู useBasicInfoEndpoint ใน ContractOverview.js) พอไม่มีใครอ่านค่า update ก็ว่าง
+    // เปล่า แล้วตกไปเข้าเงื่อนไข "ไม่มีข้อมูลให้แก้ไข" ด้านล่างทุกครั้ง — ส่วนแท็บสัญญาไม่เจอปัญหาเพราะ
+    // ไปอีก route (PUT /contract/:contractGroupId) ซึ่งรองรับ commission อยู่แล้ว
+    const { eventIds, company, site, system, title, docNo, team, resPerson, responsiblePerson, responsiblePersonId, jobValue, commission } = req.body;
     if (!Array.isArray(eventIds) || eventIds.length === 0) {
       return res.status(400).json({ message: "ไม่พบรายการที่จะแก้ไข" });
     }
     // ✅ กันค่าติดลบ/ไม่ใช่ตัวเลข (ฝั่งจอเช็คให้แล้วชั้นหนึ่ง — เช็คซ้ำที่นี่เพราะ API เรียกตรงได้เสมอ)
-    if (jobValue !== undefined && jobValue !== null && jobValue !== "") {
-      const n = Number(jobValue);
-      if (Number.isNaN(n) || n < 0) {
-        return res.status(400).json({ message: "มูลค่างานต้องเป็นตัวเลขและต้องไม่ติดลบ" });
+    // ⚠️ ค่าคอมใช้กฎเดียวกับมูลค่างานเป๊ะๆ ทั้งคู่เป็นจำนวนเงิน ติดลบไม่ได้ และล้างค่าด้วย "" ได้
+    for (const [value, label] of [[jobValue, "มูลค่างาน"], [commission, "ค่าคอมมิชชั่น"]]) {
+      if (value !== undefined && value !== null && value !== "") {
+        const n = Number(value);
+        if (Number.isNaN(n) || n < 0) {
+          return res.status(400).json({ message: `${label}ต้องเป็นตัวเลขและต้องไม่ติดลบ` });
+        }
       }
     }
 
@@ -2064,8 +2190,14 @@ router.put("/basic-info", verifyToken, async (req, res) => {
       // ✅ มูลค่างานเป็นข้อมูลการเงิน — ให้แก้ได้เฉพาะแอดมิน/manager เท่านั้นเหมือนกัน (ผู้รับผิดชอบงาน
       // แก้ข้อมูลพื้นฐานของงานตัวเองได้ก็จริง แต่ไม่ควรแก้ตัวเลขมูลค่าเองได้) — ตรงกับฝั่งจอที่เปิดให้
       // แก้ช่องนี้เฉพาะ isAdminOrManager อยู่แล้ว (ดู ContractOverview.js)
+      // ⚠️ ค่าคอมต้องถูกกันด้วยเงื่อนไขเดียวกับมูลค่างาน — เป็นข้อมูลการเงินเหมือนกัน และฝั่งจอก็เปิดให้
+      // แก้เฉพาะ isAdminOrManager อยู่แล้ว (ดู editable ของช่อง commission ใน ContractOverview.js)
+      // ถ้าลืมกันตรงนี้จะกลายเป็นช่องโหว่ที่ยิง API ตรงๆ แล้วผู้รับผิดชอบงานแก้ตัวเลขค่าคอมเองได้
       if (jobValue !== undefined) {
         return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แก้ไขมูลค่างานได้" });
+      }
+      if (commission !== undefined) {
+        return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แก้ไขค่าคอมมิชชั่นได้" });
       }
       // ✅ ต้องเป็น "ผู้รับผิดชอบ" ของทุก event ที่จะแก้ไขจริง (เช็คค่าที่ตั้งไว้ตรงๆ ไม่ fallback ไปที่
       // ทีมเดิมเหมือน isEffectiveResponsiblePerson — สิทธิ์นี้ต้องถูกมอบหมายไว้ชัดเจนก่อนเท่านั้น เทียบ
@@ -2096,6 +2228,7 @@ router.put("/basic-info", verifyToken, async (req, res) => {
     if (responsiblePersonId !== undefined) update.responsiblePersonId = responsiblePersonId;
     // ✅ ล้างค่าได้ด้วยการส่ง "" มา (ให้กลับไปเป็น "ยังไม่ระบุ") ไม่งั้นลบค่าที่เคยใส่ผิดไว้ไม่ได้เลย
     if (jobValue !== undefined) update.jobValue = (jobValue === "" || jobValue === null) ? null : Number(jobValue);
+    if (commission !== undefined) update.commission = (commission === "" || commission === null) ? null : Number(commission);
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ message: "ไม่มีข้อมูลให้แก้ไข" });
     }
@@ -2146,11 +2279,20 @@ router.put("/:id", verifyToken, async (req, res) => {
     // ⚠️ BUG ที่แก้: เดิมไม่เช็ค responsiblePerson เลย ทำให้คนที่ถูกตั้งเป็นผู้รับผิดชอบแต่ไม่ได้อยู่ใน
     // team/resPerson ของครั้งนี้ แก้ไขงานตัวเองไม่ได้เลย (403 ทุกครั้ง)
     const isOwner = existingEvent.userId.toString() === userId.toString();
+    // ✅ นับ "ลูกทีม" (teamMembers) เป็นผู้ได้รับมอบหมายด้วย — ฝั่งจอเปิดให้ลูกทีมแก้สีบนปฏิทิน/
+    // เลขที่อ้างอิงเอกสาร/รายละเอียดงานของงานตัวเองได้แล้ว (ดู canEditJobNotes ใน EditEvent.js)
+    // ถ้าไม่นับตรงนี้ ลูกทีมจะกรอกได้แต่กดบันทึกแล้วเด้ง 403 ทุกครั้ง = ฟีเจอร์ที่ใช้งานจริงไม่ได้เลย
+    // ⚠️ นี่เป็นแค่ด่าน "มีสิทธิ์แตะงานนี้ไหม" — ข้อจำกัดอื่นยังบังคับครบเหมือนเดิมทุกข้อ (งานปิดแล้ว
+    // ห้ามช่างแก้ / งานรออนุมัติห้ามแตะ / ปิดงานเองไม่ได้ ฯลฯ ดูเงื่อนไขถัดจากนี้ไป)
+    const isTeamMemberOfEvent = (existingEvent.teamMembers || []).some(
+      (m) => (m?.userId && m.userId === userId) || (m?.name && m.name === req.user.fname)
+    );
     const isAssigned =
       (existingEvent.resPerson && existingEvent.resPerson === userId) ||
       (existingEvent.team && existingEvent.team === req.user.fname) ||
       (existingEvent.responsiblePersonId && existingEvent.responsiblePersonId === userId) ||
-      (existingEvent.responsiblePerson && existingEvent.responsiblePerson === req.user.fname);
+      (existingEvent.responsiblePerson && existingEvent.responsiblePerson === req.user.fname) ||
+      isTeamMemberOfEvent;
 
     // ⚠️ BUG ที่แก้: เดิมเช็คแค่ req.user.role !== "admin" ตรงนี้ (manager ที่ไม่ใช่เจ้าของ/ไม่ได้รับ
     // มอบหมายจะโดน 403 ทั้งที่ทุก route อื่นในไฟล์นี้ให้สิทธิ์ admin/manager เท่ากันหมด) — แก้ให้ตรง
@@ -2170,9 +2312,23 @@ router.put("/:id", verifyToken, async (req, res) => {
       "quotationStatus", "quotationSentAt", "quotationDecisionAt", "quotationDecisionBy",
       "quotationAmount", "quotationFollowUpNote",
     ];
-    const isNonBlockingUpdate = Object.keys(req.body).every((k) => NON_BLOCKING_FIELDS.includes(k));
-    if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && !isNonBlockingUpdate) {
-      return res.status(403).json({ message: "งานนี้ปิดแล้ว ไม่สามารถแก้ไขได้" });
+    // ✅ งานที่ปิดแล้ว — ช่างที่เกี่ยวข้องยังแก้ได้ 3 อย่าง ตามที่ผู้ใช้ระบุ:
+    //   • เลขที่อ้างอิงเอกสาร (docNo) และรายละเอียดงาน (description) — เรื่องเอกสารมักตามมาทีหลัง
+    //     งานปิดเสมอ (ได้เลขจริงตอนวางบิล / เติมรายละเอียดหน้างานทีหลัง) ถ้าล็อกตายต้องรบกวนแอดมินทุกครั้ง
+    //   • สีบนปฏิทิน (backgroundColor/textColor/fontSize) — เป็นแค่การแสดงผล ไม่กระทบข้อมูลงาน/รายงาน/
+    //     ยอดเงินใดๆ เลย
+    // ⚠️ ตรวจแบบ "ทุกคีย์ที่ส่งมาต้องอยู่ในรายการนี้" ไม่ใช่ค่อยๆ คัดทีหลัง — เป็นด่านที่การันตีว่าวันที่/
+    // ทีม/สถานะ/ครั้งที่ ของงานที่ปิดไปแล้วจะไม่ถูกแก้ได้เลยไม่ว่าฝั่งจอจะส่งอะไรมา (ฝั่งจอตัดให้แล้ว
+    // ชั้นหนึ่ง ดู trimForClosedJob ใน EditEvent.js — แต่ห้ามเชื่อ client เป็นด่านสุดท้าย)
+    const CLOSED_JOB_TECH_FIELDS = [
+      ...NON_BLOCKING_FIELDS,
+      "docNo", "description", "backgroundColor", "textColor", "fontSize",
+    ];
+    const isClosedJobAllowedUpdate = Object.keys(req.body).every((k) => CLOSED_JOB_TECH_FIELDS.includes(k));
+    if (existingEvent.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && !isClosedJobAllowedUpdate) {
+      return res.status(403).json({
+        message: "งานนี้ปิดแล้ว แก้ได้เฉพาะเลขที่อ้างอิงเอกสาร รายละเอียดงาน และสีบนปฏิทิน",
+      });
     }
 
     // ✅ งานที่ยัง "รออนุมัติ" (pending) — ช่าง/ผู้รับผิดชอบเปิดดูได้อย่างเดียว ทำอะไรไม่ได้เลยจนกว่า
