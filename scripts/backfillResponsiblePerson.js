@@ -7,8 +7,8 @@
 // POST /events/draft)
 // วิธีใช้: npm run backfill-responsible-person   (จะเชื่อมต่อ DB ตามค่า APP_DATABASE ใน .env ที่ active อยู่ตอนรัน)
 require("dotenv").config();
-const mongoose = require("../db/");
-const CalendarEvent = require("../models/Events");
+const mongoose = require("../src/db");
+const CalendarEvent = require("../src/models/Events");
 
 (async () => {
   try {

@@ -1,3 +1,10 @@
 node_modules
 
 serviceAccountKey.json
+
+# ⚠️ ห้าม commit .env — มี connection string ฐานข้อมูล + กุญแจเซ็น JWT
+.env
+.env.local
+
+# ผลลัพธ์/ของชั่วคราว
+*.log

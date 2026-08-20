@@ -1,0 +1,17 @@
+# ให้ git เก็บไฟล์ข้อความเป็น LF เสมอ (Windows จะได้ CRLF ตอน checkout เอง)
+# 🐛 ที่แก้: ตอนนี้ไฟล์ในโปรเจกต์ปน CRLF/LF กันมั่ว ทำให้ diff บวมโดยไม่จำเป็นและสคริปต์แก้ไฟล์
+# อัตโนมัติทำงานพลาดบ่อย
+#
+# ⚠️ ควร commit ไฟล์นี้ "แยกก้อน" แล้วรัน `git add --renormalize .` เป็น commit ของตัวเอง
+# ไม่งั้นการแปลง line ending จะไปปนกับ diff อื่นจนตรวจทานไม่ได้
+* text=auto eol=lf
+
+# ไฟล์ไบนารี — ห้ามแตะ
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.pdf binary
+*.ttf binary
+*.woff binary
+*.woff2 binary

@@ -1,0 +1,30 @@
+name: CI
+
+# ตรวจโค้ดอัตโนมัติทุกครั้งที่ push ขึ้น main และทุก pull request
+# เดิมไม่มีอะไรตรวจให้เลย
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # ✅ ใช้ได้เพราะมี .npmrc ตั้ง legacy-peer-deps=true ไว้ (ดูเหตุผลใน README)
+      - run: npm ci
+
+      - name: Lint (ห้ามมี warning แม้แต่ตัวเดียว)
+        run: npm run lint
+
+      # ✅ ตรวจว่าไม่มี route ไหนหายไปหรือถูก route อื่นกลืนจนเรียกไม่ถึง
+      # ไม่ต้องใช้ฐานข้อมูลจริง (สคริปต์สร้าง VAPID ปลอมและใส่ค่า env หลอกให้เอง)
+      - name: ตรวจตาราง route
+        run: npm run check:routes
