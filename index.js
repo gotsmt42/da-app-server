@@ -16,6 +16,11 @@
  */
 require("dotenv").config();
 
+// ✅ ตรวจ env ให้ครบ "ก่อน" require อะไรก็ตามที่อ่าน process.env ตอนโหลดโมดูล
+// (services/PushNotify.js เรียก webpush.setVapidDetails() ทันทีที่ถูก require — ถ้าค่าไม่มา
+// มันจะโยน "No subject set in vapidDetails.subject" ซึ่งอ่านแล้วไม่รู้เลยว่าต้องไปตั้งอะไรที่ไหน)
+require("./src/config/env").assertRequiredEnv();
+
 const app = require("./src/app");
 const { startSchedulers } = require("./src/scheduler");
 

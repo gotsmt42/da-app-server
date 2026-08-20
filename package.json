@@ -1,7 +1,7 @@
 {
   "name": "da-app-server",
-  "version": "1.0.0",
-  "description": "API server ของ DA-APP (ระบบจัดการงานบริการภาคสนาม)",
+  "version": "1.7.4",
+  "description": "API server ของ DA-APP",
   "main": "index.js",
   "private": true,
   "engines": {
