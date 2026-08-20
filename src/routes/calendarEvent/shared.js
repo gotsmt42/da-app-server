@@ -35,6 +35,7 @@ const { sendPushToUsers, sendPushToRoles, sendPushToAllUsers } = require("../../
 // แล้วตามที่ผู้ใช้ขอ — 1 ทีมรับหลายงานในวันเดียวกันได้ตามปกติ เหลือไว้แค่ findMutualOverlaps (เช็คว่า
 // วันที่ที่กรอกมาในคำขอเดียวกันชนกันเองหรือไม่ เช่น หลายวันไม่ติดกันของงานเดียวกันทับกันเอง)
 const { findMutualOverlaps } = require("../../utils/scheduleConflict");
+const { thaiDateNumeric } = require("../../utils/thaiDate");
 
 // ✅ ห้ามมี 2 งานใช้ "ครั้งที่" (time) ซ้ำกันภายในสัญญาเดียวกัน (contractGroupId เดียวกัน) — ไม่ว่าจะเป็น
 // แผนงานล่วงหน้า (unscheduled) หรือลงตารางจริงแล้วก็ตาม เพราะทั้งสองแบบ "จอง" หมายเลขครั้งนั้นไปแล้ว
@@ -98,7 +99,7 @@ function normalizeContractValue(field, v) {
 function formatContractValue(field, v) {
   const norm = normalizeContractValue(field, v);
   if (norm === "") return "(ว่าง)";
-  if (DATE_CONTRACT_FIELDS.has(field)) return moment(norm, "YYYY-MM-DD").format("DD/MM/YYYY");
+  if (DATE_CONTRACT_FIELDS.has(field)) return thaiDateNumeric(moment(norm, "YYYY-MM-DD"));
   if (field === "jobValue" || field === "commission") return `${Number(norm).toLocaleString("th-TH")} บาท`;
   return norm;
 }

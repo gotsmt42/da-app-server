@@ -5,7 +5,6 @@
  * ⚠️ ลำดับการประกาศ route ภายในไฟล์นี้ = ลำดับเดิม ห้ามสลับ (ดูเหตุผลที่ index.js)
  */
 const {
-  moment,
   CalendarEvent,
   User,
   verifyToken,
@@ -16,6 +15,7 @@ const {
   findMutualOverlaps,
   findDuplicateContractRound,
 } = require("./shared");
+const { thaiDate } = require("../../utils/thaiDate");
 
 module.exports = (router) => {
   router.post("/", verifyToken, async (req, res) => {
@@ -122,7 +122,7 @@ module.exports = (router) => {
         if (mutualConflicts.length > 0) {
           const [a, b] = mutualConflicts[0];
           return res.status(409).json({
-            message: `วันที่ที่กรอกทับกันเอง (${moment(a.start).locale("th").format("D MMM YYYY")} กับ ${moment(b.start).locale("th").format("D MMM YYYY")}) กรุณาตรวจสอบวันที่แต่ละครั้งอีกครั้ง`,
+            message: `วันที่ที่กรอกทับกันเอง (${thaiDate(a.start)} กับ ${thaiDate(b.start)}) กรุณาตรวจสอบวันที่แต่ละครั้งอีกครั้ง`,
           });
         }
       }
@@ -207,7 +207,7 @@ module.exports = (router) => {
       const daysSuffix = events.length > 1 ? ` (${events.length} วัน)` : "";
       // ✅ เดิมแจ้งแค่ชื่องาน/บริษัท/ไซต์ ไม่มีวันเวลาเลย ต้องเปิดแอพเข้าไปดูเองถึงจะรู้ว่างานนัดไว้เมื่อไหร่
       // — ใส่วันที่ + ช่วงเวลาไว้ในเนื้อหาแจ้งเตือนเลย ให้เห็นครบตั้งแต่หน้าจอแจ้งเตือนจริง
-      const dateLabel = moment(primary.start || primary.date).locale("th").format("D MMM YYYY");
+      const dateLabel = thaiDate(primary.start || primary.date);
       const timeLabel = (primary.startTime || primary.endTime)
         ? `${primary.startTime || "-"}-${primary.endTime || "-"}`
         : "ทั้งวัน";
@@ -674,7 +674,7 @@ module.exports = (router) => {
       if (resPerson && resPerson !== existingEvent.resPerson && resPerson !== userId) {
         // ✅ ใส่วันที่/เวลาให้เหมือนแจ้งเตือน "งานใหม่" ตอนเพิ่ม event — คนที่เพิ่งถูกมอบหมายงานควรรู้
         // ตั้งแต่แจ้งเตือนแรกเลยว่างานนัดไว้เมื่อไหร่ ไม่ต้องเปิดแอพเข้าไปดูเอง
-        const reassignDateLabel = moment(updatedEvent.start || updatedEvent.date).locale("th").format("D MMM YYYY");
+        const reassignDateLabel = thaiDate(updatedEvent.start || updatedEvent.date);
         const reassignTimeLabel = (updatedEvent.startTime || updatedEvent.endTime)
           ? `${updatedEvent.startTime || "-"}-${updatedEvent.endTime || "-"}`
           : "ทั้งวัน";

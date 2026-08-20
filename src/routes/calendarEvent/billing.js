@@ -12,6 +12,7 @@ const {
   InvoiceScan,
   isJobParticipant,
 } = require("./shared");
+const { thaiDate } = require("../../utils/thaiDate");
 
 module.exports = (router) => {
   // ── การวางบิล / รับเงิน ────────────────────────────────────────────────────
@@ -85,7 +86,7 @@ module.exports = (router) => {
       const actor = financeActor(req);
       event.activityLog.push({
         action: "billing_updated",
-        detail: `วางบิล ${amounts.netAmount.toLocaleString("th-TH")} บาท (ก่อน VAT ${amounts.amountBeforeVat.toLocaleString("th-TH")}) ครบกำหนด ${computeDueAt(billedAt, term).toISOString().slice(0, 10)}`,
+        detail: `วางบิล ${amounts.netAmount.toLocaleString("th-TH")} บาท (ก่อน VAT ${amounts.amountBeforeVat.toLocaleString("th-TH")}) ครบกำหนด ${thaiDate(computeDueAt(billedAt, term))}`,
         userId: actor.id,
         userName: actor.name,
         timestamp: new Date(),
@@ -176,7 +177,7 @@ module.exports = (router) => {
       event.activityLog = event.activityLog || [];
       event.activityLog.push({
         action: "payment_recorded",
-        detail: `รับเงิน ${amount.toLocaleString("th-TH")} บาท (${paidAt.toISOString().slice(0, 10)})`,
+        detail: `รับเงิน ${amount.toLocaleString("th-TH")} บาท (${thaiDate(paidAt)})`,
         userId: actor.id,
         userName: actor.name,
         timestamp: new Date(),

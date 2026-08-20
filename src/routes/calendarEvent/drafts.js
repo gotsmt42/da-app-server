@@ -16,6 +16,7 @@ const {
   effectiveResponsibleOrClauses,
   strictResponsibleOrClauses,
 } = require("./shared");
+const { thaiDate } = require("../../utils/thaiDate");
 
 module.exports = (router) => {
   // ✅ งาน "วางแผนล่วงหน้า" (unscheduled) — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ ในเดือนไหน แต่ยังไม่รู้วันที่
@@ -252,7 +253,7 @@ module.exports = (router) => {
         if (mutualConflicts.length > 0) {
           const [a, b] = mutualConflicts[0];
           return res.status(409).json({
-            message: `วันที่ที่กรอกทับกันเอง (${moment(a.start).locale("th").format("D MMM YYYY")} กับ ${moment(b.start).locale("th").format("D MMM YYYY")}) กรุณาตรวจสอบวันที่แต่ละครั้งอีกครั้ง`,
+            message: `วันที่ที่กรอกทับกันเอง (${thaiDate(a.start)} กับ ${thaiDate(b.start)}) กรุณาตรวจสอบวันที่แต่ละครั้งอีกครั้ง`,
           });
         }
       }
