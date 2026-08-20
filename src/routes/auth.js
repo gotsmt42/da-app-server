@@ -9,7 +9,8 @@ const verifyToken = require("../middleware/auth");
 const multer = require("multer");
 
 const { storage } = require("../config/cloudinary");
-const upload = multer({ storage });
+const { fileFilter, limits } = require("../config/upload");
+const upload = multer({ storage, fileFilter, limits });
 
 const checkFile = require("../middleware/checkFile");
 

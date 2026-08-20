@@ -27,9 +27,9 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 78;
+const EXPECTED_TOTAL = 79;
 const EXPECTED_PER_PREFIX = {
-  "/api/events": 29,
+  "/api/events": 30,
   "/api/auth": 8,
   "/api/files": 7,
   "/api/customer": 5,

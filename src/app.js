@@ -6,6 +6,7 @@ const helmet = require("helmet");
 
 const apiRouter = require("./routes");
 const { notFoundHandler, errorHandler } = require("./middleware/errorHandler");
+const { uploadErrorHandler } = require("./config/upload");
 const {
   UPLOADS_DIR,
   UPLOAD_FILES_DIR,
@@ -80,6 +81,10 @@ app.use("/api/asset/image", express.static(IMAGE_DIR));
 // ── ตัวรับ error ตัวสุดท้าย ─────────────────────────────────────────────────
 // ⚠️ ต้องอยู่ "ท้ายสุด" หลัง route และ static ทั้งหมด — Express ไล่ middleware ตามลำดับ
 // ถ้าเอาขึ้นไปไว้ก่อน route ทุก request จะจบที่ 404 ทันที
+// ⚠️ ต้องมาก่อน notFound/errorHandler — multer โยน error ที่มี .code เฉพาะตัว (LIMIT_FILE_SIZE ฯลฯ)
+// ถ้าปล่อยให้ตกไปที่ errorHandler ทั่วไปจะกลายเป็น 500 "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์" ซึ่งผู้ใช้
+// ไม่มีทางรู้ว่าอัปไม่ผ่านเพราะไฟล์ใหญ่เกินหรือชนิดไม่รองรับ
+app.use(uploadErrorHandler);
 app.use(notFoundHandler);
 app.use(errorHandler);
 

@@ -8,7 +8,8 @@ const User = require("../models/User");
 const multer = require("multer");
 const { UPLOAD_IMAGES_DIR } = require("../config/paths");
 
-const upload = multer({ dest: UPLOAD_IMAGES_DIR });
+const { fileFilter, limits } = require("../config/upload");
+const upload = multer({ dest: UPLOAD_IMAGES_DIR, fileFilter, limits });
 
 const verifyToken = require("../middleware/auth");
 const checkFile = require("../middleware/checkFile");

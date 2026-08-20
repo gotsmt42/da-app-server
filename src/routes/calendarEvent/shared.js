@@ -20,7 +20,8 @@ const multer = require("multer");
 const { cloudinary } = require("../../config/cloudinary");
 
 const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const { fileFilter, limits } = require("../../config/upload");
+const upload = multer({ storage, fileFilter, limits });
 
 const streamifier = require("streamifier");
 const { computeBillingAmounts, computeDueAt } = require("../../utils/billing");

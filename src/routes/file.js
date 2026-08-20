@@ -26,7 +26,9 @@ const storage = multer.diskStorage({
   },
 });
 
-const upload = multer({ storage }).array("files");
+const { fileFilter, limits, MAX_UPLOAD_MB } = require("../config/upload");
+// ⚠️ จำกัดจำนวนไฟล์ต่อครั้งด้วย — ไม่งั้นเลือก 500 ไฟล์รวดเดียวก็ผ่าน
+const upload = multer({ storage, fileFilter, limits: { ...limits, files: 20 } }).array("files");
 
 if (!fs.existsSync(UPLOAD_FILES_DIR)) {
   fs.mkdirSync(UPLOAD_FILES_DIR, { recursive: true });
@@ -35,7 +37,17 @@ if (!fs.existsSync(UPLOAD_FILES_DIR)) {
 // Upload files
 router.post("/", verifyToken, (req, res) => {
   upload(req, res, async (err) => {
-    if (err) return res.status(500).send("Error uploading files.");
+    // ⚠️ เดิมกลืน error ของ multer เป็น 500 "Error uploading files." เหมือนกันหมด — ผู้ใช้ไม่มีทางรู้
+    // ว่าอัปไม่ผ่านเพราะไฟล์ใหญ่เกิน, ชนิดไม่รองรับ, หรือเลือกมาเกินจำนวน ต้องบอกให้ตรงเหตุ
+    if (err) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({ message: `ไฟล์ใหญ่เกินไป — จำกัดที่ ${MAX_UPLOAD_MB} MB ต่อไฟล์` });
+      }
+      if (err.code === "LIMIT_FILE_COUNT") {
+        return res.status(400).json({ message: "เลือกไฟล์ได้สูงสุด 20 ไฟล์ต่อครั้ง" });
+      }
+      return res.status(415).json({ message: err.message || "อัปโหลดไฟล์ไม่สำเร็จ" });
+    }
 
     const files = req.files;
     if (!files || files.length === 0) {

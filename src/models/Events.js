@@ -95,6 +95,15 @@ const eventSchema = new mongoose.Schema(
           paidAt: { type: Date, required: true },
           method: { type: String, default: "" },
           note: { type: String, default: "" },
+          // ✅ เลขที่ใบเสร็จ/ใบกำกับที่ออกให้ลูกค้าสำหรับการรับเงินครั้งนี้ — ผูกกับ "รายการรับเงิน"
+          // ไม่ใช่กับใบวางบิล เพราะบิลใบเดียวอาจแบ่งรับหลายงวด แต่ละงวดออกใบเสร็จคนละใบ
+          receiptNo: { type: String, default: "" },
+          // ✅ หลักฐานการโอน/ใบเสร็จที่แนบไว้ (1 ใบต่อ 1 รายการรับเงิน)
+          // ⚠️ เก็บเป็นฟิลด์แบนๆ ให้เข้าชุดกับ quotationFollowUps ที่ใช้ evidenceFileName/Url/Type
+          // อยู่แล้ว ไม่ได้ทำเป็น object ซ้อนหรือ array — 1 การรับเงินมีหลักฐานใบเดียวก็พอ
+          slipFileName: { type: String, default: "" },
+          slipFileUrl: { type: String, default: "" },
+          slipFileType: { type: String, default: "" },
           recordedBy: { type: String, default: "" },
           recordedByName: { type: String, default: "" },
           recordedAt: { type: Date, default: Date.now },

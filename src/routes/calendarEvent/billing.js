@@ -11,6 +11,10 @@ const {
   computeDueAt,
   InvoiceScan,
   isJobParticipant,
+  // ✅ สำหรับแนบสลิป/ใบเสร็จตอนบันทึกรับเงิน
+  upload,
+  cloudinary,
+  streamifier,
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
 
@@ -145,7 +149,10 @@ module.exports = (router) => {
   });
 
   /** บันทึกการรับเงิน 1 งวด (รับเงินแบ่งจ่ายได้ จึงเป็น push ไม่ใช่ set) */
-  router.post("/:id/billing/payment", verifyToken, async (req, res) => {
+  // ⚠️ upload.single("slip") ต้องมีเสมอแม้ไม่ได้แนบไฟล์ — multer เป็นตัวที่ parse multipart/form-data
+  // ให้ req.body ด้วย ถ้าไม่ใส่ req.body จะว่างเปล่าทั้งก้อนเมื่อฝั่งจอส่งมาเป็น FormData
+  // (ฝั่งจอส่ง FormData เสมอ ไม่ว่าจะแนบไฟล์หรือไม่ — เทียบ pattern เดียวกับ /:id/quotation-followup)
+  router.post("/:id/billing/payment", verifyToken, upload.single("slip"), async (req, res) => {
     try {
       const { id } = req.params;
       const event = await CalendarEvent.findById(id);
@@ -183,14 +190,44 @@ module.exports = (router) => {
       }
 
       const actor = financeActor(req);
-      event.billing.payments.push({
+      const payment = {
         amount, paidAt,
         method: String(req.body.method || "").trim(),
         note: String(req.body.note || "").trim(),
+        receiptNo: String(req.body.receiptNo || "").trim(),
         recordedBy: actor.id,
         recordedByName: actor.name,
         recordedAt: new Date(),
-      });
+      };
+
+      // ✅ แนบสลิป/ใบเสร็จ (ถ้ามี) — ขึ้น Cloudinary เหมือนไฟล์อื่นในระบบ
+      // ⚠️ รูปใช้ resource_type "image" ไม่ใช่ "raw" เพราะ "raw" ใช้ URL transformation ไม่ได้เลย
+      // ตอนเปิดพรีวิวจะต้องโหลดไฟล์เต็มความละเอียดจากมือถือ (หลาย MB) ทุกครั้ง — เหตุผลเต็มที่ files.js
+      if (req.file) {
+        const originalName = Buffer.from(req.file.originalname, "latin1").toString("utf8");
+        const sanitizedName = originalName.replace(/[^\w\-.]/g, "_");
+        const isImage = ["image/jpeg", "image/png", "image/webp"].includes(req.file.mimetype);
+        const result = await new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            {
+              resource_type: isImage ? "image" : "raw",
+              folder: `events/${id}/payments`,
+              // resource_type "image" เติมนามสกุลให้เองจากเนื้อไฟล์ ต้องตัดออกก่อนไม่งั้นได้ ".jpg.jpg"
+              public_id: `${Date.now()}_${isImage ? sanitizedName.replace(/\.[^.]+$/, "") : sanitizedName}`,
+              use_filename: false,
+              unique_filename: false,
+              overwrite: true,
+            },
+            (error, uploaded) => (error ? reject(error) : resolve(uploaded)),
+          );
+          streamifier.createReadStream(req.file.buffer).pipe(stream);
+        });
+        payment.slipFileName = originalName;
+        payment.slipFileUrl = result.secure_url;
+        payment.slipFileType = req.file.mimetype;
+      }
+
+      event.billing.payments.push(payment);
       event.activityLog = event.activityLog || [];
       event.activityLog.push({
         action: "payment_recorded",
@@ -209,6 +246,72 @@ module.exports = (router) => {
   });
 
   /** ลบรายการรับเงินที่บันทึกผิด */
+  /**
+   * แก้เลขที่ใบเสร็จ / แนบสลิปให้ "รายการรับเงินที่บันทึกไว้แล้ว"
+   *
+   * 🐛 ทำไมต้องมี: ตอนบันทึกรับเงินแนบไฟล์ได้อยู่แล้ว แต่ของจริงสลิปกับใบเสร็จมักมาทีหลัง —
+   * เงินเข้าวันนี้ ใบเสร็จออกพรุ่งนี้ พอบิลนั้นรับครบแล้วจะบันทึกรายการใหม่ไม่ได้อีก (ติดกฎห้ามรับเกิน)
+   * เท่ากับแนบหลักฐานย้อนหลังไม่ได้เลย ต้องแก้ที่รายการเดิมแทน
+   *
+   * ⚠️ แก้ได้แค่ "เลขที่ใบเสร็จ" กับ "ไฟล์แนบ" เท่านั้น — ยอดเงิน/วันที่รับ แก้ไม่ได้โดยตั้งใจ
+   * เพราะเป็นตัวเลขที่กระทบยอดรวมและสถานะการชำระ ถ้าจะแก้ต้องลบรายการแล้วบันทึกใหม่ให้เห็นร่องรอย
+   */
+  router.patch("/:id/billing/payment/:paymentId", verifyToken, upload.single("slip"), async (req, res) => {
+    try {
+      const { id, paymentId } = req.params;
+      const event = await CalendarEvent.findById(id);
+      if (!event) return res.status(404).json({ message: "ไม่พบงานนี้" });
+      if (!requireEventFinanceAccess(req, res, event)) return;
+
+      const item = event.billing?.payments?.id(paymentId);
+      if (!item) return res.status(404).json({ message: "ไม่พบรายการรับเงินนี้" });
+
+      if (req.body.receiptNo !== undefined) {
+        item.receiptNo = String(req.body.receiptNo || "").trim();
+      }
+
+      if (req.file) {
+        const originalName = Buffer.from(req.file.originalname, "latin1").toString("utf8");
+        const sanitizedName = originalName.replace(/[^\w\-.]/g, "_");
+        const isImage = ["image/jpeg", "image/png", "image/webp"].includes(req.file.mimetype);
+        const result = await new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            {
+              resource_type: isImage ? "image" : "raw",
+              folder: `events/${id}/payments`,
+              public_id: `${Date.now()}_${isImage ? sanitizedName.replace(/\.[^.]+$/, "") : sanitizedName}`,
+              use_filename: false,
+              unique_filename: false,
+              overwrite: true,
+            },
+            (error, uploaded) => (error ? reject(error) : resolve(uploaded)),
+          );
+          streamifier.createReadStream(req.file.buffer).pipe(stream);
+        });
+        item.slipFileName = originalName;
+        item.slipFileUrl = result.secure_url;
+        item.slipFileType = req.file.mimetype;
+      }
+
+      const actor = financeActor(req);
+      event.activityLog = event.activityLog || [];
+      event.activityLog.push({
+        action: "payment_updated",
+        detail: `แก้ไขหลักฐานการรับเงิน ${Number(item.amount).toLocaleString("th-TH")} บาท` +
+          `${item.receiptNo ? ` (ใบเสร็จ ${item.receiptNo})` : ""}${req.file ? " · แนบไฟล์" : ""}`,
+        userId: actor.id,
+        userName: actor.name,
+        timestamp: new Date(),
+      });
+
+      await event.save();
+      res.json({ event: event.toObject() });
+    } catch (err) {
+      console.error("❌ Error updating payment:", err);
+      res.status(500).json({ message: "แก้ไขรายการรับเงินไม่สำเร็จ" });
+    }
+  });
+
   router.delete("/:id/billing/payment/:paymentId", verifyToken, async (req, res) => {
     try {
       const event = await CalendarEvent.findById(req.params.id);
