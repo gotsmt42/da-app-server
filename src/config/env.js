@@ -55,6 +55,26 @@ function assertRequiredEnv() {
     process.exit(1);
   }
 
+  // 🐛 ดักเคสที่เคยเกิดจริง: อัปไฟล์ .env ของเครื่อง dev ขึ้น production ทั้งไฟล์ โดยลืมสลับ
+  // คอมเมนต์บรรทัด APP_DATABASE — ค่าที่ active อยู่เลยเป็น mongodb://127.0.0.1:27017/...
+  // ซึ่งบนเซิร์ฟเวอร์คือ "ตัวมันเอง" ที่ไม่มี MongoDB อยู่
+  //
+  // อาการที่ได้คือหลอกมาก: เซิร์ฟเวอร์บูตขึ้นปกติ ทุก endpoint ที่ไม่แตะ DB ตอบ 200 ล็อกอินค้างอยู่ได้
+  // แต่ทุก API ที่อ่านข้อมูลตอบ 500 หมด (mongoose รอ buffer 10 วิ แล้วโยน error) — ไล่หาสาเหตุนาน
+  // เพราะดูเผินๆ เหมือนโค้ดพัง ทั้งที่จริงคือชี้ฐานข้อมูลผิดที่
+  const isProd = process.env.NODE_ENV === "production";
+  const db = process.env.APP_DATABASE || "";
+  if (isProd && /(localhost|127\.0\.0\.1|::1)/.test(db)) {
+    console.error("");
+    console.error("❌ APP_DATABASE ชี้ไปที่เครื่องตัวเอง (localhost) ทั้งที่รันบน production");
+    console.error(`   ค่าที่ตั้งอยู่: ${db.replace(/\/\/[^@]*@/, "//***:***@")}`);
+    console.error("");
+    console.error("   มักเกิดจากอัปไฟล์ .env ของเครื่อง dev ขึ้นไปทั้งไฟล์ แล้วลืมสลับคอมเมนต์");
+    console.error("   บรรทัด APP_DATABASE ให้เป็นตัวของ production (mongodb+srv://...)");
+    console.error("");
+    process.exit(1);
+  }
+
   const missingOptional = Object.keys(OPTIONAL).filter((k) => !process.env[k]);
   missingOptional.forEach((k) => console.warn(`⚠️  ไม่ได้ตั้ง ${k} — ${OPTIONAL[k]}`));
 }
