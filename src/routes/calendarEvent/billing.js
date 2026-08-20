@@ -160,6 +160,23 @@ module.exports = (router) => {
       if (!Number.isFinite(amount) || amount <= 0) {
         return res.status(400).json({ message: "ยอดรับเงินต้องมากกว่า 0" });
       }
+
+      // ✅ ห้ามรับเงินเกินยอดที่ค้างอยู่ — เดิมเช็คแค่ว่า > 0 พิมพ์ตกหล่นศูนย์เกินมาหนึ่งตัว
+      // (104,000 → 1,040,000) ก็บันทึกเข้าไปเลย ทำให้ยอดรับรวมเกินยอดบิล สถานะกลายเป็น "ชำระครบ"
+      // ทั้งที่ตัวเลขผิด แล้วรายงานการเงินทั้งระบบเพี้ยนตาม
+      // ⚠️ กันที่นี่ด้วยเสมอ ไม่ใช่แค่ที่หน้าจอ — หน้าจอไม่ใช่ขอบเขตความปลอดภัย
+      // ⚠️ เผื่อ 0.005 เพราะ netAmount ผ่านการปัดทศนิยมมาแล้ว ถ้าเทียบตรงๆ การจ่ายเต็มจำนวน
+      // อาจถูกปฏิเสธเพราะความคลาดเคลื่อนของเลขทศนิยม
+      const netAmount = Number(event.billing.netAmount) || 0;
+      const paidSoFar = (event.billing.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      const outstanding = netAmount - paidSoFar;
+      if (amount - outstanding > 0.005) {
+        return res.status(409).json({
+          message:
+            `รับเงินเกินยอดที่ค้างอยู่ไม่ได้ — ยอดบิล ${netAmount.toLocaleString("th-TH")} บาท ` +
+            `รับมาแล้ว ${paidSoFar.toLocaleString("th-TH")} บาท คงเหลือ ${outstanding.toLocaleString("th-TH")} บาท`,
+        });
+      }
       const paidAt = req.body.paidAt ? new Date(req.body.paidAt) : new Date();
       if (Number.isNaN(paidAt.getTime())) {
         return res.status(400).json({ message: "วันที่รับเงินไม่ถูกต้อง" });
