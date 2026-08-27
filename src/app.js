@@ -11,8 +11,6 @@ const {
   UPLOADS_DIR,
   UPLOAD_FILES_DIR,
   IMAGE_DIR,
-  WORKORDER_BEFORE_DIR,
-  WORKORDER_AFTER_DIR,
 } = require("./config/paths");
 
 /**
@@ -72,8 +70,6 @@ app.use("/api", apiRouter);
 // ── ไฟล์นิ่ง (รูป/ไฟล์แนบที่เก็บบนดิสก์) ──────────────────────────────────────
 // ⚠️ ใช้พาธจาก config/paths.js เสมอ อย่านับ ../ เอง — ตอนย้ายซอร์สเข้า src/ พาธพวกนี้เพี้ยนไป
 // ทั้งชุดเพราะความลึกเปลี่ยน และเป็นความผิดพลาดที่ syntax check/ESLint จับไม่ได้
-app.use("/api/workorder/images/before", express.static(WORKORDER_BEFORE_DIR));
-app.use("/api/workorder/images/after", express.static(WORKORDER_AFTER_DIR));
 app.use("/uploads", express.static(UPLOADS_DIR));
 app.use("/api/asset/uploads/files", express.static(UPLOAD_FILES_DIR));
 app.use("/api/asset/image", express.static(IMAGE_DIR));

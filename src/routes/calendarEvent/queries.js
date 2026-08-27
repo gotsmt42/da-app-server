@@ -8,15 +8,16 @@ const {
   CalendarEvent,
   User,
   verifyToken,
+  can,
   effectiveResponsibleOrClauses,
   strictResponsibleOrClauses,
+  withDepartmentScope,
 } = require("./shared");
 
 module.exports = (router) => {
   router.get("/event-op", verifyToken, async (req, res) => {
     try {
       const userId = req.userId; // ดึง userId จาก Token
-      const userRole = req.user.role; // ดึง role ของ User
 
       // ✅ ป้อนข้อมูลให้ทั้งหน้า "การดำเนินงาน" และ "ภาพรวมงาน" — ผู้ใช้ต้องการให้สองหน้านี้เป็นสิทธิ์ของ
       // "ผู้รับผิดชอบ" (responsiblePerson) โดยเฉพาะ ไม่ใช่ "ทีมที่เข้างาน" (team) เหมือนเดิมอีกต่อไป —
@@ -26,7 +27,7 @@ module.exports = (router) => {
       // ⚠️ BUG ที่แก้: เดิมเช็คแค่ userRole === "admin" (ไม่รวม manager) ทำให้ manager ถูกกรองเหลือแค่งาน
       // ตัวเองด้วย ทั้งที่ทุกจุดอื่นในไฟล์นี้ให้สิทธิ์ manager เท่า admin — แก้ให้ตรงกัน
       // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรปนกับงานที่ลงตารางแล้ว
-      const isAdminOrManagerRole = ["admin", "manager"].includes(userRole);
+      const isAdminOrManagerRole = can(req.user, "viewAllJobs");
       // ✅ "คนที่ต้องไปทำงานนี้" ต้องเห็นงานนี้เสมอ — หัวหน้าทีมที่เข้างาน (team/resPerson) และลูกทีม
       // (teamMembers) ไม่ว่างานนั้นจะมอบหมาย "ผู้รับผิดชอบ" ไว้เป็นใครก็ตาม
       // ⚠️ ต้องแยกออกมาเป็น "clause การมองเห็น" ต่างหาก ห้ามไปรวมใน effectiveResponsibleOrClauses —
@@ -58,7 +59,8 @@ module.exports = (router) => {
               ...jobParticipantViewClauses,                          // หัวหน้าทีม + ลูกทีม
             ] };
 
-      const userEvents = await CalendarEvent.find(query)
+      // ✅ กรองตามแผนกก่อนเสมอ — เซลเห็นเฉพาะแผนงานฝ่ายขาย ช่างเห็นเฉพาะงานบริการ
+      const userEvents = await CalendarEvent.find(withDepartmentScope(query, req))
         .sort({ start: -1 })
         .lean();
 
@@ -81,9 +83,11 @@ module.exports = (router) => {
         return event;
       });
 
-      if (!userEvents.length) {
-        return res.status(404).json({ message: "ไม่พบข้อมูลปฏิทิน" });
-      }
+      // 🐛 ที่แก้: เดิมตอบ 404 เมื่อผู้ใช้ยังไม่มีงานเลย — "ไม่มีข้อมูล" ไม่ใช่ "ไม่พบเส้นทาง"
+      // ผลคือผู้ใช้ใหม่ทุกคน (และเซลทุกคน ซึ่งไม่มีงานช่างอยู่แล้วโดยธรรมชาติ) จะเจอ error ใน
+      // console ทุกครั้งที่เปิด Dashboard/Header และจุดที่เรียก route นี้ต้องดัก .catch() ไว้เอง
+      // ทุกที่ (ซึ่งหลายที่ทำอยู่แล้วด้วยการแปลงกลับเป็น { userEvents: [] } — ตรงกับที่คืนตรงนี้เลย)
+      // ✅ รายการว่างคือคำตอบที่ถูกต้อง ตอบ 200 พร้อม array ว่าง
 
       res.json({ userEvents: updatedUserEvents });
     } catch (err) {
@@ -98,9 +102,8 @@ module.exports = (router) => {
   router.get("/documents", verifyToken, async (req, res) => {
     try {
       const userId = req.userId;
-      const userRole = req.user.role;
 
-      const isAdminOrManager = ["admin", "manager"].includes(userRole);
+      const isAdminOrManager = can(req.user, "viewAllJobs");
       const query = isAdminOrManager
         ? { unscheduled: { $ne: true } }
         : { unscheduled: { $ne: true }, $or: [
@@ -195,7 +198,7 @@ module.exports = (router) => {
         }
       }
 
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "editContracts");
       if (!isAdminOrManager) {
         // ✅ ผู้รับผิดชอบงานแก้ไข "ทีมที่เข้างาน" (team/resPerson) ของแต่ละครั้งได้อยู่แล้ว (ดู
         // beginRoundTeamEdit ใน ContractOverview.js) — ตอนนี้เพิ่มให้แก้ไขข้อมูลพื้นฐาน (บริษัท/โครงการ/

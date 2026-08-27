@@ -5,7 +5,7 @@
  *   • อัปไฟล์ใหญ่แค่ไหนก็ได้ ไม่มีเพดาน
  *   • route ที่ใช้ memoryStorage (calendarEvent) โหลดไฟล์ทั้งก้อนเข้า RAM ก่อนส่งต่อ Cloudinary
  *     → อัปไฟล์ 500 MB ครั้งเดียวก็กิน RAM 500 MB ทันที ซึ่งบน Render แผนเล็กคือ process ตาย
- *   • ไม่มี fileFilter (ยกเว้น uploadWorkOrderImage) = อัป .exe / .svg / .html ขึ้นไปเก็บได้
+ *   • ไม่มี fileFilter = อัป .exe / .svg / .html ขึ้นไปเก็บได้
  *
  * ⚠️ MAX_UPLOAD_BYTES ต้องตรงกับ MAX_UPLOAD_MB ฝั่งหน้าเว็บ (src/shared/utils/fileUpload.js)
  * ถ้าสองฝั่งไม่ตรงกัน ผู้ใช้จะเจอ "อัปได้ที่หน้าจอแต่ server ปฏิเสธ" ซึ่งงงกว่าการห้ามตั้งแต่แรก

@@ -8,12 +8,18 @@ const {
   CalendarEvent,
   User,
   verifyToken,
+  can,
+  isAdminOrManager: isSupervisorRole,
+  SUPERVISOR_ROLES,
   crypto,
   sendPushToUsers,
   sendPushToRoles,
   sendPushToAllUsers,
   findMutualOverlaps,
   findDuplicateContractRound,
+  departmentOf,
+  DEPARTMENT,
+  withDepartmentScope,
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
 
@@ -39,6 +45,10 @@ module.exports = (router) => {
         "status_two",
         "status_three",
         "isAutoUpdated",
+        // ⚠️ ต้องรับตอนสร้างด้วย ไม่ใช่เฉพาะตอนแก้ไข — ฟอร์มนัดหมายของฝ่ายขายส่ง manualStatus:true
+        // มาเพื่อกันตัวไล่สถานะอัตโนมัติของงานช่างมาเปลี่ยนสถานะนัด (ดู useEffect ใน CalendarBoard)
+        // 🐛 เดิมตกหล่นจากลิสต์นี้ ค่าที่ส่งมาจึงถูกทิ้งเงียบๆ แล้วกลับไปใช้ default ของ schema
+        "manualStatus",
         "subject",
         "description",
         "startTime",
@@ -79,7 +89,7 @@ module.exports = (router) => {
       const { dates, isContractBatch, resPerson } = req.body;
       // ✅ ใช้ตัดสินว่างานนี้ต้องรอการอนุมัติหรือไม่ (ดู buildEventData ด้านล่าง) และเลือกว่าจะแจ้งเตือน
       // แบบไหน (ดูท้ายฟังก์ชัน) — เทียบ pattern เดียวกับทุก route ที่กันสิทธิ์ไว้เฉพาะแอดมิน/manager
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "approveJobs");
       // ✅ ใช้ทั้งใน approvalRequestedBy (ด้านล่าง) และหัวข้อแจ้งเตือน — ย้ายมาคำนวณตรงนี้แทนที่จะรอ
       // คำนวณทีหลังตอนจะแจ้งเตือนเหมือนเดิม เพราะ buildEventData ต้องใช้ค่านี้ตั้งแต่ตอนสร้าง record ด้วย
       const creatorName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
@@ -176,10 +186,28 @@ module.exports = (router) => {
         // ✅ สืบทอดหมวดหมู่งานจากพี่น้องในกลุ่มเดิม (ดูเหตุผลเต็มที่ inheritedJobClassification ด้านบน)
         if (inheritedJobClassification) eventData.jobClassification = inheritedJobClassification;
         eventData.userId = req.userId || req.body.userId;
-        // ✅ งานที่สร้างโดยคนที่ไม่ใช่แอดมิน/manager (ช่าง/เซล) ต้องรอการอนุมัติก่อนถึงจะถือว่ายืนยันแล้ว
-        // จริง — ห้ามรับ approvalStatus จาก client ตรงๆ (ไม่อยู่ใน allowedFields ด้านบนเลย) คำนวณเองจาก
-        // role ของผู้เรียกเท่านั้น กันแก้ไข request เองแล้วข้ามการอนุมัติ
-        if (isAdminOrManager) {
+        // ✅ ประทับแผนกจาก role ของผู้สร้าง — ห้ามรับจาก client (ไม่อยู่ใน allowedFields)
+        // ไม่งั้นแก้ request เองแล้วยัดแผนงานข้ามสายงานได้ ซึ่งทำลายการแยกทั้งหมดที่ทำมา
+        // ⚠️ แอดมิน/ผู้จัดการไม่สังกัดแผนก — งานที่เขาสร้างถือเป็นงานบริการตามพฤติกรรมเดิมของระบบ
+        // ✅ แอดมิน/ผู้จัดการไม่สังกัดแผนก จึงระบุแผนกปลายทางเองได้ — ใช้ตอนเปิดเมนู
+        //    "ตารางงานเซล" (?dept=sales) แล้วลงนัดหมายให้ฝ่ายขาย
+        // 🐛 ที่แก้: เดิม department มาจาก role ของผู้สร้างอย่างเดียว นัดที่แอดมินลงในปฏิทินเซล
+        //    จึงถูกบันทึกเป็นงานฝ่ายบริการ แล้วไปโผล่ในปฏิทิน/การดำเนินงานของช่างแทน
+        // ⚠️ role อื่นยัด department มาเองไม่ได้ — ถูกเขียนทับด้วยแผนกจริงของตัวเองเสมอ
+        const requestedDept = String(req.body.department || "");
+        eventData.department =
+          isAdminOrManager && Object.values(DEPARTMENT).includes(requestedDept)
+            ? requestedDept
+            : departmentOf(req.user) || DEPARTMENT.SERVICE;
+        // ✅ งานที่ช่างสร้างเองต้องรอการอนุมัติก่อนถึงจะถือว่ายืนยันแล้วจริง — ห้ามรับ approvalStatus
+        // จาก client ตรงๆ (ไม่อยู่ใน allowedFields ด้านบนเลย) คำนวณเองจาก role ของผู้เรียกเท่านั้น
+        //
+        // ⚠️ ฝ่ายขาย "ไม่" ต้องรออนุมัติ — นัดของเซลเป็นตารางนัดของตัวเอง (เข้าพบลูกค้า/สำรวจ
+        // หน้างาน) ไม่ได้กินคิวช่างและไม่ชนกับใคร ด่านอนุมัติจึงไม่ได้ป้องกันอะไรเลย มีแต่ทำให้นัด
+        // ขึ้นเป็นแถบลาย "รออนุมัติ" ค้างในปฏิทินตัวเอง
+        // ⚠️ งานที่เซลอยากให้ช่างไปทำไม่ได้ลงผ่านทางนี้ — ต้องผ่านฟอร์ม "แจ้งงานให้ช่าง" ซึ่งมี
+        // ขั้นตอนตรวจสอบของตัวเองอยู่แล้ว (routes/dispatch.js) การอนุมัติยังอยู่ครบตรงที่ต้องมีจริง
+        if (isAdminOrManager || departmentOf(req.user) === DEPARTMENT.SALES) {
           eventData.approvalStatus = "approved";
         } else {
           eventData.approvalStatus = "pending";
@@ -222,14 +250,22 @@ module.exports = (router) => {
       // — ถ้ายังรออนุมัติ ให้แจ้งเฉพาะแอดมิน/manager ว่ามีงานรออนุมัติแทน ส่วนแจ้งเตือน "มอบหมายงาน" ให้
       // เลื่อนไปแจ้งตอนอนุมัติแล้วจริงๆ (ดู PUT /:id/approval) — งานที่ admin/manager สร้างเอง (ไม่ต้องรอ
       // อนุมัติ) ยังคงพฤติกรรมเดิมทุกประการ
-      if (primary.approvalStatus === "pending") {
-        sendPushToRoles(["admin", "manager"], {
+      // ⚠️ นัดของฝ่ายขายไม่แจ้งใครเลย — เป็นตารางนัดส่วนตัวของเซล (เข้าพบลูกค้า/สำรวจหน้างาน)
+      // ไม่ได้มอบหมายให้ใคร ไม่กินคิวใคร และไม่ต้องรออนุมัติ
+      // 🐛 ที่แก้: เดิมตกไปเข้า sendPushToAllUsers ด้านล่าง = เซลลงนัดหนึ่งครั้ง ช่างทั้งบริษัท
+      // ได้แจ้งเตือน "เพิ่มงานใหม่เข้าระบบ" พร้อมลิงก์ไปหน้าการดำเนินงานที่ไม่มีงานนั้นอยู่จริง
+      const isSalesPlan = primary.department === DEPARTMENT.SALES;
+      if (isSalesPlan) {
+        // ไม่ต้องแจ้งเตือนอะไร
+      } else if (primary.approvalStatus === "pending") {
+        sendPushToRoles(SUPERVISOR_ROLES, {
           title: `⏳ ${creatorName} ส่งงานใหม่รออนุมัติ`,
           body: jobLabelNew,
           // ✅ พาไปที่ "แท็บรออนุมัติ" ตรงๆ ไม่ใช่ /operation/<id> แบบเดิม — สิ่งเดียวที่ต้องทำต่อจาก
           // แจ้งเตือนนี้คือกดอนุมัติ/ไม่อนุมัติ ซึ่งปุ่มอยู่ในแท็บนั้นที่เดียว (การ์ดในแท็บ "รายการงาน"
           // ไม่มีปุ่มอนุมัติเลย) เดิมกดมาแล้วต้องมาสลับแท็บเองอีกทีทุกครั้ง
-          url: "/operation?tab=approvals",
+          // 🧹 แท็บ "รออนุมัติ" ย้ายออกจากหน้าการดำเนินงานไปเป็นเมนู "คำขอลงงาน" แล้ว
+          url: "/dispatch?tab=approvals",
           tag: notifyTag,
           renotify: true,
         }).catch((err) => console.error("❌ Push notify error (approval-request):", err));
@@ -301,7 +337,10 @@ module.exports = (router) => {
       // });
 
       // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรโผล่ในปฏิทิน
-      const userEvents = await CalendarEvent.find({ unscheduled: { $ne: true } }).lean();
+      // ✅ ปฏิทินรวม — กรองตามแผนกเช่นกัน ไม่งั้นเซลจะเห็นงานช่างเต็มปฏิทินทั้งที่ไม่เกี่ยวกัน
+      const userEvents = await CalendarEvent.find(
+        withDepartmentScope({ unscheduled: { $ne: true } }, req)
+      ).lean();
 
       // 🐛 BUG ที่แก้ (ปฏิทินพังทั้งหน้าถ้ามี event สักตัวที่ไม่มี userId): userId ใน schema ไม่ได้เป็น
       // required — งานที่หลุดมาโดยไม่มี userId (ข้อมูลเก่า/นำเข้า/สร้างผ่านทางอื่น) จะทำให้
@@ -392,7 +431,7 @@ module.exports = (router) => {
       // ⚠️ BUG ที่แก้: เดิมเช็คแค่ req.user.role !== "admin" ตรงนี้ (manager ที่ไม่ใช่เจ้าของ/ไม่ได้รับ
       // มอบหมายจะโดน 403 ทั้งที่ทุก route อื่นในไฟล์นี้ให้สิทธิ์ admin/manager เท่ากันหมด) — แก้ให้ตรง
       // กับทุกจุดอื่น เทียบ pattern เดียวกับ isAdminOrManager ด้านล่าง (ย้ายมาคำนวณก่อนใช้ตรงนี้เลย)
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "editAnyJob");
       if (!isAdminOrManager && !isOwner && !isAssigned) {
         return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไข Event นี้" });
       }
@@ -656,7 +695,7 @@ module.exports = (router) => {
       const jobLabel = `${updatedEvent.company || "-"}${updatedEvent.site ? " - " + updatedEvent.site : ""}`;
 
       if (shouldResubmit) {
-        sendPushToRoles(["admin", "manager"], {
+        sendPushToRoles(SUPERVISOR_ROLES, {
           title: `🔄 ${resubmitterName} แก้ไขงานที่ถูกตีกลับ ส่งขออนุมัติใหม่`,
           body: `${updatedEvent.title || "งาน"} · ${jobLabel}`,
           url: `/operation/${updatedEvent._id}`,
@@ -690,7 +729,7 @@ module.exports = (router) => {
       }
 
       if (closeRequested === true && !existingEvent.closeRequested) {
-        sendPushToRoles(["admin", "manager"], {
+        sendPushToRoles(SUPERVISOR_ROLES, {
           title: "⏳ มีคำขอปิดงานใหม่",
           body: `${closeRequestedBy || "ช่าง"} ขอปิดงาน: ${jobLabel}`,
           url: `/operation/${updatedEvent._id}`,
@@ -736,7 +775,7 @@ module.exports = (router) => {
       if (Array.isArray(comments) && comments.length > (existingEvent.comments || []).length) {
         const lastComment = comments[comments.length - 1];
         if (lastComment) {
-          const isFromAdmin = ["admin", "manager"].includes(lastComment.role);
+          const isFromAdmin = isSupervisorRole(lastComment);
           const notifyPromise = isFromAdmin
             ? sendPushToUsers([closeRequesterId, updatedEvent.resPerson, updatedEvent.userId], {
                 title: `💬 ${lastComment.userName || "แอดมิน"} ตอบกลับ`,
@@ -745,7 +784,7 @@ module.exports = (router) => {
                 tag: notifyTag,
                 renotify: true,
               })
-            : sendPushToRoles(["admin", "manager"], {
+            : sendPushToRoles(SUPERVISOR_ROLES, {
                 title: `💬 ${lastComment.userName || "ช่าง"} คอมเมนต์ใหม่`,
                 body: `${jobLabel}: ${lastComment.message}`,
                 url: `/operation/${updatedEvent._id}`,
@@ -775,7 +814,7 @@ module.exports = (router) => {
       // ✅ เงื่อนไข: admin/manager ลบได้ทุก event, user คนอื่นลบได้เฉพาะของตัวเอง — เดิมเช็คแค่ "admin"
       // เท่านั้น (manager ลบของคนอื่นไม่ได้เลย) ทั้งที่ทุก route ที่เกี่ยวกับสัญญาในไฟล์นี้ให้สิทธิ์
       // admin/manager เท่ากันหมด และหน้า "ภาพรวมสัญญา" ที่เรียก route นี้ก็เปิดให้แค่ admin/manager อยู่แล้ว
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "editAnyJob");
       if (
         !isAdminOrManager &&
         existingEvent.userId.toString() !== userId.toString()

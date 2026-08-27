@@ -3,11 +3,12 @@ const router = express.Router();
 
 const IssuedDocument = require("../models/IssuedDocument");
 const verifyToken = require("../middleware/auth");
+const { can } = require("../config/roles");
 
 const DOC_STATUSES = ["issued", "sent", "acknowledged", "cancelled"];
 const DOC_TYPES = ["notice", "delivery"];
 
-const isAdminOrManager = (req) => ["admin", "manager"].includes(req.user?.role);
+const isAdminOrManager = (req) => can(req.user, "editDocuments");
 
 /**
  * ทะเบียนเอกสารที่ออกจริง — ดู models/IssuedDocument.js สำหรับเหตุผลว่าทำไมต้องมีตารางนี้

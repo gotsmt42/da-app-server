@@ -7,6 +7,7 @@
 const {
   CalendarEvent,
   verifyToken,
+  can,
   upload,
   cloudinary,
   streamifier,
@@ -36,7 +37,7 @@ module.exports = (router) => {
       // ✅ ขยายให้ "หัวหน้าทีมที่เข้างาน" และ "ลูกทีม" บันทึกการติดตามใบเสนอราคาของงานตัวเองได้ด้วย
       // (ตามที่ผู้ใช้ระบุสำหรับหน้า /finance) — เดิมรับแค่เจ้าของงานกับผู้รับผิดชอบ ทำให้ช่างที่ไปหน้างาน
       // และคุยกับลูกค้าเองบันทึกความคืบหน้าไม่ได้ ต้องฝากคนอื่นบันทึกให้ทุกครั้ง
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "editFinance");
       if (!isAdminOrManager && !isJobParticipant(existingEvent, userId, req.user.fname)) {
         return res.status(403).json({ message: "บันทึกการติดตามได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
       }
@@ -108,7 +109,7 @@ module.exports = (router) => {
   // 3 หมวดหมู่แทน ตอนนี้ยังไม่มีใครเรียก path เดิมนอกจากหน้านี้ จึงเปลี่ยน path ตรงๆ ได้เลยไม่ต้องเก็บของเก่าไว้คู่กัน)
   router.put("/:id/classify", verifyToken, async (req, res) => {
     try {
-      if (!["admin", "manager"].includes(req.user.role)) {
+      if (!can(req.user, "editAnyJob")) {
         return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่จัดหมวดหมู่งานได้" });
       }
       const { id } = req.params;
@@ -151,7 +152,7 @@ module.exports = (router) => {
   // เฉพาะเจาะจงกว่ามาก่อนเสมอ)
   router.put("/:id/approval", verifyToken, async (req, res) => {
     try {
-      if (!["admin", "manager"].includes(req.user.role)) {
+      if (!can(req.user, "approveJobs")) {
         return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่อนุมัติงานได้" });
       }
       const { id } = req.params;

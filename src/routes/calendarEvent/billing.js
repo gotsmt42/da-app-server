@@ -11,6 +11,7 @@ const {
   computeDueAt,
   InvoiceScan,
   isJobParticipant,
+  can,
   // ✅ สำหรับแนบสลิป/ใบเสร็จตอนบันทึกรับเงิน
   upload,
   cloudinary,
@@ -32,7 +33,7 @@ module.exports = (router) => {
    * ได้ตั้งแต่ยังไม่รู้ว่างานไหน) ทุก route ที่เรียกตัวนี้จึงต้องส่ง event ที่โหลดแล้วเข้ามาด้วย
    */
   const requireEventFinanceAccess = (req, res, event) => {
-    if (["admin", "manager"].includes(req.user.role)) return true;
+    if (can(req.user, "editFinance")) return true;
     if (isJobParticipant(event, req.userId, req.user.fname)) return true;
     res.status(403).json({ message: "จัดการข้อมูลการเงินได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
     return false;

@@ -4,6 +4,18 @@ const moment = require("moment");
 
 const eventSchema = new mongoose.Schema(
   {
+    /**
+     * แผนกเจ้าของแผนงาน — ตัวแยก "แผนงานของเซล" ออกจาก "แผนงานของช่าง" ทั้งหมด
+     *
+     * ✅ เซลลงแผนงานด้วยฟอร์ม/ปฏิทินชุดเดียวกับช่างเป๊ะ (ไม่ต้องเรียนรู้หน้าจอใหม่) แต่มองไม่เห็น
+     * ของกันและกันเลย — กรองที่ query ฝั่ง server ทุกเส้นทาง ไม่ได้พึ่งการซ่อนบนหน้าจอ
+     *
+     * ⚠️ default = service โดยตั้งใจ: แผนงานเดิมทั้งหมดในระบบเป็นงานช่าง ถ้า default เป็น null
+     * แล้วกรองด้วย { department: "service" } งานเก่าทุกใบจะหายไปจากหน้าจอช่างทันที
+     * ⚠️ แอดมิน/ผู้จัดการเห็นทั้งสองแผนก (คุมภาพรวม) — ดู departmentScope ใน routes/calendarEvent/shared.js
+     */
+    department: { type: String, enum: ["service", "sales"], default: "service", index: true },
+
     docNo: { type: String },
     company: { type: String },
     site: { type: String, required: true },
@@ -328,6 +340,15 @@ eventSchema.pre("save", function (next) {
   }
   if (this.end && typeof this.end === "string") {
     this.end = moment(this.end).toDate();
+  }
+
+  // ⚠️ end ของงาน allDay เป็นแบบ exclusive (ธรรมเนียมของ FullCalendar ที่ใช้ทั้งแอป) — งานวันเดียว
+  // ต้องเก็บ end = start + 1 วัน ฝั่งแสดงผลถึงลบ 1 วันคืนได้ตรงวัน
+  // 🐛 ถ้าเส้นทางไหนเผลอเก็บ end = วันสุดท้ายจริง (หรือเท่ากับ start) การ์ดจะโชว์วันที่กลับหัว
+  // เช่น "24 – 23 ส.ค. 2569" — ผู้ใช้เจอกับตามาแล้วในหน้างานของช่าง
+  // ✅ ปิดตายที่โมเดล ครอบทุก route ที่สร้าง/แก้งาน ไม่ต้องไล่แก้ทีละที่แล้วตกหล่นอีก
+  if (this.allDay && this.start && this.end && this.end <= this.start) {
+    this.end = moment(this.start).add(1, "day").toDate();
   }
   next();
 });

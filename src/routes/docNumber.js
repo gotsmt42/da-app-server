@@ -7,6 +7,7 @@ const DocCounter = require("../models/DocCounter");
 // ✅ ใช้ตรวจว่า "ผู้ขอเลข" เกี่ยวข้องกับงานที่อ้างอิงจริงไหม ตอนคนขอไม่ใช่ admin/manager (ดู POST /next)
 const CalendarEvent = require("../models/Events");
 const verifyToken = require("../middleware/auth");
+const { can } = require("../config/roles");
 
 /**
  * เลขที่เอกสารแบบเดินหน้าอย่างเดียว (running number) — ใช้กับ "ใบส่งมอบงาน" เป็นตัวแรก
@@ -37,7 +38,7 @@ router.post("/next", verifyToken, async (req, res) => {
     // ทุกครั้งที่ขอคือกินเลขไปจริง คืนไม่ได้ ถ้าเปิดให้ขอลอยๆ ได้ เลขจะโดนกินทิ้งจากการกดพลาด/กดเล่น
     // แล้วสมุดทะเบียนเอกสารจะมีช่องโหว่ที่อธิบายไม่ได้ตอนตรวจสอบย้อนหลัง
     // ⚠️ admin/manager ยังขอได้โดยไม่ต้องมี eventId (ออกเอกสารนอกระบบงานได้ตามปกติ)
-    const isAdminOrManager = ["admin", "manager"].includes(req.user?.role);
+    const isAdminOrManager = can(req.user, "editDocuments");
     if (!isAdminOrManager) {
       const eventId = req.body?.eventId;
       if (!eventId || !mongoose.isValidObjectId(eventId)) {

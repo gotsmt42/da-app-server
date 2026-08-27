@@ -7,6 +7,7 @@
 const {
   CalendarEvent,
   verifyToken,
+  can,
   upload,
   cloudinary,
   streamifier,
@@ -31,7 +32,7 @@ module.exports = (router) => {
       if (!eventForLock) {
         return res.status(404).send("ไม่พบแผนงาน");
       }
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "editAnyJob");
       if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && type !== "quotation") {
         return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถแก้ไขไฟล์ได้");
       }
@@ -153,7 +154,7 @@ module.exports = (router) => {
       if (!eventForLock) {
         return res.status(404).send("ไม่พบแผนงาน");
       }
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "editAnyJob");
       if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && type !== "quotation") {
         return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถลบไฟล์ได้");
       }

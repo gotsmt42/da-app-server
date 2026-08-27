@@ -24,7 +24,5 @@ module.exports = {
   UPLOADS_DIR,
   UPLOAD_FILES_DIR: path.join(UPLOADS_DIR, "files"),
   UPLOAD_IMAGES_DIR: path.join(UPLOADS_DIR, "images"),
-  WORKORDER_BEFORE_DIR: path.join(UPLOADS_DIR, "workorders", "before"),
-  WORKORDER_AFTER_DIR: path.join(UPLOADS_DIR, "workorders", "after"),
   IMAGE_DIR: path.join(ASSET_DIR, "image"),
 };

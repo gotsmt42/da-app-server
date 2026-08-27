@@ -16,7 +16,10 @@ const systemTypeRouter = require("./systemType");
 // ไม่ใช่ฝั่งเบราว์เซอร์ ที่ src/models/DocCounter.js
 const docNumberRouter = require("./docNumber");
 const issuedDocumentRouter = require("./issuedDocument");
-const workOrderRouter = require("./workOrder");
+// ✅ ฝ่ายขาย (ท่อขาย + ปฏิทินนัดหมาย) — คอลเลกชันของตัวเอง ไม่แตะ CalendarEvent เลย
+// ✅ ใบมอบหมายงานข้ามแผนก — แทน workOrder เดิมที่ไม่เคยถูกใช้จริง (0 document) และโครงไม่ตรงโจทย์
+// (บังคับ eventId · ผู้รับคนเดียว · ไม่มีแผนก · ความคืบหน้าเป็นก้อนเดียวแยกรายคนไม่ได้)
+const dispatchRouter = require("./dispatch");
 
 /**
  * รวมการ mount router ของ API ทั้งหมดไว้ที่เดียว — เดิมกระจายอยู่ใน index.js ปนกับการตั้งค่า
@@ -38,7 +41,7 @@ router.use("/jobtype", jobTypeRouter);
 router.use("/systemtype", systemTypeRouter);
 router.use("/doc-number", docNumberRouter);
 router.use("/issued-documents", issuedDocumentRouter);
-router.use("/workorder", workOrderRouter);
+router.use("/dispatch", dispatchRouter);
 // ✅ เช็คอินเทอร์เน็ตเฉพาะเส้นทางนี้เส้นเดียว (ตัวเดียวที่ต้องยิงออกไปข้างนอก) ไม่ใช่ทั้งแอป
 router.use("/holidays", checkInternetConnection, holidayRouter);
 

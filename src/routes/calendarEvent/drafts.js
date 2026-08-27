@@ -8,6 +8,8 @@ const {
   moment,
   CalendarEvent,
   verifyToken,
+  can,
+  SUPERVISOR_ROLES,
   crypto,
   sendPushToRoles,
   findMutualOverlaps,
@@ -15,6 +17,9 @@ const {
   findDuplicateContractNo,
   effectiveResponsibleOrClauses,
   strictResponsibleOrClauses,
+  departmentOf,
+  DEPARTMENT,
+  withDepartmentScope,
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
 
@@ -71,7 +76,7 @@ module.exports = (router) => {
 
       // ✅ แผนงานที่สร้างโดยคนที่ไม่ใช่แอดมิน/manager (ช่าง/เซล) ต้องรอการอนุมัติก่อน เทียบ pattern
       // เดียวกับ POST / (สร้างงานแบบมีวันที่ทันที) เป๊ะๆ — ดูเหตุผลที่คอมเมนต์ตรงนั้น
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "approveJobs");
       const creatorName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
 
       // ⚠️ BUG ที่แก้: เดิมสัญญาฉบับร่างที่ไม่ได้ส่ง plannedMonth มา (ฟอร์ม "เพิ่มสัญญาใหม่" ในหน้า
@@ -107,6 +112,8 @@ module.exports = (router) => {
       }
 
       const draft = await new CalendarEvent({
+        // ✅ แผนกมาจาก role ของผู้สร้างเสมอ (เหตุผลเดียวกับ core.js)
+        department: departmentOf(req.user) || DEPARTMENT.SERVICE,
         company,
         site,
         title,
@@ -138,7 +145,8 @@ module.exports = (router) => {
         } : (jobClassification ? { jobClassification } : {})),
         // ✅ ห้ามรับ approvalStatus จาก client ตรงๆ (ไม่อยู่ใน destructure ด้านบนเลย) คำนวณเองจาก role
         // ของผู้เรียกเท่านั้น — เทียบ pattern เดียวกับ POST / (buildEventData) เป๊ะๆ
-        ...(isAdminOrManager
+        // ⚠️ รวมถึงข้อยกเว้นของฝ่ายขายด้วย (ดูเหตุผลเต็มที่ core.js) ต้องตรงกันทั้งสองที่เสมอ
+        ...(isAdminOrManager || departmentOf(req.user) === DEPARTMENT.SALES
           ? { approvalStatus: "approved" }
           : {
               approvalStatus: "pending",
@@ -157,13 +165,14 @@ module.exports = (router) => {
       // ท้ายข้อความ/URL ถ้าไม่มีค่า กัน "เดือน undefined" โผล่ในแจ้งเตือน
       if (draft.approvalStatus === "pending") {
         const monthSuffix = resolvedPlannedMonth ? ` · เดือน ${resolvedPlannedMonth}` : "";
-        sendPushToRoles(["admin", "manager"], {
+        sendPushToRoles(SUPERVISOR_ROLES, {
           title: `⏳ ${creatorName} ส่งแผนงานล่วงหน้ารออนุมัติ`,
           body: `${draft.title || "งาน"} · ${draft.company || "-"}${draft.site ? " - " + draft.site : ""}${monthSuffix}`,
           // ✅ แผนงานล่วงหน้าที่รออนุมัติก็อยู่ในแท็บ "รออนุมัติ" เดียวกัน (PendingApprovalsPanel รวมทั้ง
           // งานที่ลงตารางแล้วและฉบับร่างไว้ที่เดียว) — พาไปที่นั่นให้ตรงกับแจ้งเตือนงานใหม่รออนุมัติ
           // ⚠️ ยกเว้นฉบับร่างของ "สัญญา" ที่จัดการได้จริงเฉพาะหน้า "ภาพรวมงาน" เท่านั้น ยังคงส่งไปที่นั่น
-          url: draft.contractGroupId ? "/contracts" : "/operation?tab=approvals",
+          // 🧹 แท็บ "รออนุมัติ" ย้ายไปเมนู "คำขอลงงาน" แล้ว (ดู pages/JobRequestQueue.js)
+          url: draft.contractGroupId ? "/contracts" : "/dispatch?tab=approvals",
           tag: `approval-draft-${draft._id}`,
           renotify: true,
         }).catch((err) => console.error("❌ Push notify error (approval-request-draft):", err));
@@ -179,8 +188,7 @@ module.exports = (router) => {
   router.get("/drafts", verifyToken, async (req, res) => {
     try {
       const userId = req.userId;
-      const userRole = req.user.role;
-      const isAdminOrManager = ["admin", "manager"].includes(userRole);
+      const isAdminOrManager = can(req.user, "viewAllJobs");
 
       // ✅ ป้อนแผงงานล่วงหน้าให้ทั้งหน้า "การดำเนินงาน"/"ภาพรวมงาน" — เทียบ pattern เดียวกับ GET /event-op
       // เป๊ะๆ (ดูคอมเมนต์ละเอียดที่นั่น) สิทธิ์เป็นของ "ผู้รับผิดชอบ" ไม่ใช่ "ทีมที่เข้างาน" อีกต่อไป
@@ -204,7 +212,9 @@ module.exports = (router) => {
               { "teamMembers.name": req.user.fname },
             ] };
 
-      const drafts = await CalendarEvent.find(query).sort({ createdAt: -1 }).lean();
+      // ✅ งานวางแผนล่วงหน้าก็แยกแผนกเหมือนกัน
+      const drafts = await CalendarEvent.find(withDepartmentScope(query, req))
+        .sort({ createdAt: -1 }).lean();
       res.json({ drafts });
     } catch (error) {
       console.error("❌ Error fetching draft events:", error);
@@ -233,7 +243,7 @@ module.exports = (router) => {
         return res.status(400).json({ message: "งานนี้ถูกลงตารางไปแล้ว" });
       }
 
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "editAnyJob");
       const isOwner = existingEvent.userId.toString() === req.userId.toString();
       if (!isAdminOrManager && !isOwner) {
         return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });
@@ -338,7 +348,7 @@ module.exports = (router) => {
         return res.status(400).json({ message: "งานนี้ถูกลงตารางไปแล้ว ให้แก้ไขผ่านหน้าปฏิทินปกติ" });
       }
 
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "editAnyJob");
       const isOwner = existingEvent.userId.toString() === req.userId.toString();
       if (!isAdminOrManager && !isOwner) {
         return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });
@@ -379,7 +389,7 @@ module.exports = (router) => {
       await existingEvent.save();
 
       if (resubmitted) {
-        sendPushToRoles(["admin", "manager"], {
+        sendPushToRoles(SUPERVISOR_ROLES, {
           title: `🔄 ${existingEvent.approvalRequestedBy} แก้ไขแผนงานที่ถูกตีกลับ ส่งขออนุมัติใหม่`,
           body: `${existingEvent.title || "งาน"} · ${existingEvent.company || "-"}${existingEvent.site ? " - " + existingEvent.site : ""}`,
           // ⚠️ เหมือน POST /draft: ฉบับร่างของ "สัญญา" ไม่โผล่ในแผงงานล่วงหน้าของปฏิทินแล้ว (ดู
@@ -412,7 +422,7 @@ module.exports = (router) => {
         return res.status(400).json({ message: "งานนี้เป็นงานวางแผนล่วงหน้าอยู่แล้ว" });
       }
 
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "editAnyJob");
       const isOwner = existingEvent.userId.toString() === req.userId.toString();
       if (!isAdminOrManager && !isOwner) {
         return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });

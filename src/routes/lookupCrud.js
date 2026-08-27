@@ -3,6 +3,7 @@
 // copy/paste โค้ด CRUD ซ้ำสองรอบ
 const express = require("express");
 const verifyToken = require("../middleware/auth");
+const { can } = require("../config/roles");
 
 // label ใช้แค่ทำข้อความ error ให้อ่านง่าย เช่น "ประเภทงาน"/"ระบบ"
 const createLookupRouter = (Model, label) => {
@@ -21,7 +22,7 @@ const createLookupRouter = (Model, label) => {
 
   // ✅ เพิ่ม/แก้ไข/ลบ จำกัดเฉพาะ admin — เป็นรายการกลางของทั้งระบบ ไม่ใช่ของใครคนใดคนหนึ่ง
   router.post("/", verifyToken, async (req, res) => {
-    if (req.user.role !== "admin") {
+    if (!can(req.user, "manageAll")) {
       return res.status(403).send(`Unauthorized to add ${label}.`);
     }
     try {
@@ -40,7 +41,7 @@ const createLookupRouter = (Model, label) => {
   });
 
   router.put("/:id", verifyToken, async (req, res) => {
-    if (req.user.role !== "admin") {
+    if (!can(req.user, "manageAll")) {
       return res.status(403).send(`Unauthorized to edit ${label}.`);
     }
     try {
@@ -64,7 +65,7 @@ const createLookupRouter = (Model, label) => {
   });
 
   router.delete("/:id", verifyToken, async (req, res) => {
-    if (req.user.role !== "admin") {
+    if (!can(req.user, "manageAll")) {
       return res.status(403).send(`Unauthorized to delete ${label}.`);
     }
     try {

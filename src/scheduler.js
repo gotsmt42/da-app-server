@@ -5,6 +5,7 @@ const {
   checkAndNotifyExpiringContracts,
   checkAndNotifyOverdueInvoices,
 } = require("./services/OverdueReminder");
+const { checkAndNotifyUnassignedDispatch } = require("./services/DispatchReminder");
 const { scheduleDaily } = require("./services/DailySchedule");
 
 // ── แจ้งเตือนประจำวัน ────────────────────────────────────────────────────────
@@ -27,6 +28,7 @@ const DAILY_TASKS = [
   { name: "สัญญาเลยกำหนดรอบ", task: checkAndNotifyOverdueContracts },
   { name: "สัญญาใกล้หมดอายุ", task: checkAndNotifyExpiringContracts },
   { name: "ใบวางบิลเลยกำหนด", task: checkAndNotifyOverdueInvoices },
+  { name: "คำขอแจ้งงานค้าง", task: checkAndNotifyUnassignedDispatch },
 ];
 
 function startSchedulers() {

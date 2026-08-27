@@ -12,6 +12,7 @@ const { fileFilter, limits } = require("../config/upload");
 const upload = multer({ dest: UPLOAD_IMAGES_DIR, fileFilter, limits });
 
 const verifyToken = require("../middleware/auth");
+const { can } = require("../config/roles");
 const checkFile = require("../middleware/checkFile");
 
 // Route to get all products
@@ -23,16 +24,21 @@ router.get("/", verifyToken, async (req, res) => {
     const userCustomers = await Customer.find({});
 
     // ดึง userId ทั้งหมดจาก userFiles
-    const userIds = userCustomers.map((customer) => customer.userId);
+    // ⚠️ ต้องกรอง null/undefined ออกก่อนเสมอ — ลูกค้าที่ไม่มีเจ้าของเกิดได้ปกติ
+    // (นำเข้าข้อมูล / สร้างอัตโนมัติตอนอนุมัติใบแจ้งงาน / เจ้าของถูกลบไปแล้ว)
+    const userIds = userCustomers.map((customer) => customer.userId).filter(Boolean);
 
     // ค้นหาข้อมูลผู้ใช้จาก model User โดยใช้ userIds
     const users = await User.find({ _id: { $in: userIds } });
 
     // แปลงค่า userId ใน userFiles เป็น role จากข้อมูลใน users
     const updatedUserCustomers = userCustomers.map((customer) => {
-      const user = users.find(
-        (user) => user._id.toString() === customer.userId.toString()
-      );
+      // 🐛 BUG ที่แก้ (ทั้ง GET /api/customer ตอบ 500 → ช่างเพิ่ม/แก้ไขแผนงานไม่ได้เลย):
+      // เดิมเรียก customer.userId.toString() ตรงๆ — ลูกค้าแถวเดียวที่ไม่มี userId ทำให้
+      // ทั้ง endpoint ล่ม และพังเป็นวงกว้างเพราะฟอร์มแผนงานเรียกเส้นทางนี้ตอนเปิดทุกครั้ง
+      const user = customer.userId
+        ? users.find((u) => u._id.toString() === customer.userId.toString())
+        : null;
       if (user) {
         // คัดลอกค่าทั้งหมดของผู้ใช้ยกเว้น _id
         const { _id, ...userDataWithoutId } = user.toObject();
@@ -124,7 +130,7 @@ router.put(
 
       // ✅ ตอนนี้ทุก role เห็นลูกค้า/โครงการของทุกคนแล้ว (จาก GET /) จึงต้องเช็คสิทธิ์แก้ไขตรงนี้เพิ่ม
       // ไม่งั้นใครก็แก้ไขข้อมูลของคนอื่นได้หมดแค่รู้ id (เดิมไม่มีการเช็คเลย)
-      if (existingCustomer.userId !== req.userId && req.user.role !== "admin") {
+      if (existingCustomer.userId !== req.userId && !can(req.user, "manageAll")) {
         return res.status(403).send("Unauthorized to edit this customer.");
       }
 
@@ -169,7 +175,7 @@ router.delete("/:id", verifyToken, async (req, res) => {
     }
 
     // Check if the authenticated user is the owner of the file or an admin
-    if (customerToDelete.userId !== req.userId && req.user.role !== "admin") {
+    if (customerToDelete.userId !== req.userId && !can(req.user, "manageAll")) {
       return res.status(403).send("Unauthorized to delete this file.");
     }
 

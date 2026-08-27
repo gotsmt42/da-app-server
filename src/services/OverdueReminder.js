@@ -2,6 +2,7 @@ const moment = require("moment");
 const CalendarEvent = require("../models/Events");
 const User = require("../models/User");
 const { sendPushToUsers, sendPushToRoles } = require("./PushNotify");
+const { SUPERVISOR_ROLES, DEPARTMENT } = require("../config/roles");
 const NotifyLog = require("../models/NotifyLog");
 const { billingStatus } = require("../utils/billing");
 const { DEFAULT_INTERVAL_MONTHS } = require("../utils/contractVisits");
@@ -53,6 +54,11 @@ async function checkAndNotifyOverdueJobs() {
     const events = await CalendarEvent.find({
       status: { $ne: "ดำเนินการเสร็จสิ้น" },
       closeRequested: { $ne: true },
+      // ⚠️ นับเฉพาะงานฝ่ายบริการ
+      // 🐛 ที่แก้: นัดของเซลมีสถานะ "กำลังรอยืนยัน" เหมือนงานช่าง และไม่มีวันถูกกด "ปิดงาน"
+      // (ไม่มีขั้นตอนนั้นในสายขาย) จึงถูกนับเป็น "งานค้าง" ตลอดกาลแล้วยิงเตือนหัวหน้าทุกวัน
+      // ⚠️ ต้องรวม null/ไม่มีฟิลด์ด้วย — แผนงานเดิมทั้งระบบสร้างก่อนมีฟิลด์นี้
+      department: { $in: [DEPARTMENT.SERVICE, null] },
     })
       .select("company site title system team time jobGroupId resPerson userId end start allDay responsiblePersonId responsiblePerson")
       .lean();
@@ -195,7 +201,7 @@ async function checkAndNotifyStaleQuotations() {
 
     // ⚠️ กันแจ้งซ้ำในวันเดียวกัน (ดู models/NotifyLog.js) — ผู้รับเป็นกลุ่ม role จึงใช้ชื่อกลุ่มเป็นคีย์
     if (await NotifyLog.claimOncePerDay("stale-quotations", "broadcast", "admin+manager")) {
-    await sendPushToRoles(["admin", "manager"], {
+    await sendPushToRoles(SUPERVISOR_ROLES, {
       title: "📄 มีใบเสนอราคาที่ต้องติดตาม",
       body: `มี ${staleJobs.length} ใบเสนอราคาที่ไม่ได้ติดต่อลูกค้ามาเกิน ${QUOTATION_WARNING_DAYS} วันแล้ว กรุณาติดตามและบันทึกผล`,
       url,
@@ -286,7 +292,7 @@ async function checkAndNotifyOverdueContracts() {
     // ใน ContractOverview.js) แทนที่จะเปิดมาแท็บ "งานสัญญา/งานรายปี" เริ่มต้นแล้วต้องกดกรองเอง
     // ⚠️ กันแจ้งซ้ำในวันเดียวกัน (ดู models/NotifyLog.js)
     if (await NotifyLog.claimOncePerDay("overdue-contracts", "broadcast", "admin+manager")) {
-    await sendPushToRoles(["admin", "manager"], {
+    await sendPushToRoles(SUPERVISOR_ROLES, {
       title: "📋 มีสัญญาที่ยังไม่ได้วางแผนรอบถัดไป",
       body: `มี ${overdueContracts.length} สัญญาที่เลยกำหนดรอบถัดไปแล้ว (นานสุด ${Math.max(...overdueContracts.map((c) => c.monthsOverdue))} เดือน) กรุณาตรวจสอบและลงแผนงานครั้งถัดไป`,
       url: "/contracts?view=overdue",
@@ -373,7 +379,7 @@ async function checkAndNotifyExpiringContracts() {
         const soonest = Math.min(...expiring.map((c) => c.daysLeft));
         parts.push(`ใกล้หมดอายุ ${expiring.length} สัญญา (เร็วสุดอีก ${soonest} วัน)`);
       }
-      await sendPushToRoles(["admin", "manager"], {
+      await sendPushToRoles(SUPERVISOR_ROLES, {
         title: "📄 มีสัญญาที่ต้องต่ออายุ",
         body: `${parts.join(" · ")} กรุณาตรวจสอบและติดต่อลูกค้าเพื่อต่อสัญญา`,
         // ✅ เปิดมาที่แท็บ "สัญญาหมดอายุ" ให้เลย (ดู VIEW_FILTER_VALUES ใน ContractOverview.js)
@@ -438,7 +444,7 @@ async function checkAndNotifyOverdueInvoices() {
     const worst = overdue.reduce((a, b) => (b.st.overdueDays > a.st.overdueDays ? b : a));
 
     if (await NotifyLog.claimOncePerDay("overdue-invoices", "broadcast", "admin+manager")) {
-      await sendPushToRoles(["admin", "manager"], {
+      await sendPushToRoles(SUPERVISOR_ROLES, {
         title: "💰 มีใบวางบิลเลยกำหนดชำระ",
         body: `ค้างรับ ${overdue.length} ใบ รวม ${Math.round(totalOutstanding).toLocaleString("th-TH")} บาท (นานสุด ${worst.st.overdueDays} วัน · ${worst.e.company || "ไม่ระบุลูกค้า"})`,
         url: "/billing?tab=overdue",

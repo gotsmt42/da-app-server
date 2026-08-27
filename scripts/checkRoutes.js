@@ -27,16 +27,18 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 79;
+const EXPECTED_TOTAL = 89;
 const EXPECTED_PER_PREFIX = {
   "/api/events": 30,
+  // ✅ ฝ่ายขาย: ท่อขาย 10 + ปฏิทินนัดหมาย 5
+  // ✅ ใบมอบหมายงานข้ามแผนก — แทน /api/workorder เดิมที่ไม่เคยถูกใช้จริงเลย (0 document)
+  "/api/dispatch": 14,
   "/api/auth": 8,
   "/api/files": 7,
   "/api/customer": 5,
   "/api/product": 5,
   "/api/jobtype": 4,
   "/api/systemtype": 4,
-  "/api/workorder": 4,
   "/api/issued-documents": 3,
   "/api/push": 3,
   "/api/stockproduct": 3,

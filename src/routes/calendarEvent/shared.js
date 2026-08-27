@@ -12,6 +12,8 @@ const CalendarEvent = require("../../models/Events");
 const User = require("../../models/User");
 
 const verifyToken = require("../../middleware/auth");
+const { can, isAdminOrManager, SUPERVISOR_ROLES, departmentOf, DEPARTMENT,
+} = require("../../config/roles");
 
 const multer = require("multer");
 // ⚠️ เดิมไฟล์นี้ require "../config/cloudinaryConfig" ส่วน routes/auth.js require "../utils/cloudinary"
@@ -198,8 +200,65 @@ function isJobParticipant(event, userId, fname) {
   );
 }
 
+/**
+ * ตัวกรอง "เห็นแผนงานของแผนกไหนได้บ้าง" — หัวใจของการแยกสายงานขาย/บริการออกจากกัน
+ *
+ * ✅ เซลลงแผนงานด้วยฟอร์ม/ปฏิทินชุดเดียวกับช่าง แต่ต้องมองไม่เห็นของกันและกันเลย
+ * ⚠️ กรองที่ query ฝั่ง server ทุกเส้นทาง ไม่ใช่ซ่อนบนหน้าจอ — หน้าจอไม่ใช่ขอบเขตความปลอดภัย
+ * ⚠️ แอดมิน/ผู้จัดการคุมภาพรวมทั้งบริษัท จึงเห็นทั้งสองแผนก (คืน null = ไม่ต้องกรอง)
+ * ⚠️ งานเก่าที่ยังไม่มีฟิลด์นี้ต้องนับเป็นงานช่าง ไม่งั้นแผนงานเดิมทั้งระบบจะหายไปจากหน้าจอช่าง
+ *   ทันทีที่ deploy — จึงต้องเทียบแบบ $in [service, null, ไม่มีฟิลด์] ไม่ใช่ { department: 'service' }
+ */
+/**
+ * @param {object} user
+ * @param {string} [wanted] แผนกที่ "ขอดู" มาจาก query (?dept=sales)
+ *   ✅ ใช้กับเมนู "ตารางงานเซล" ของแอดมิน — คนคุมภาพรวมต้องเปิดดูปฏิทินของอีกแผนกได้
+ *   ⚠️ เฉพาะแอดมิน/ผู้จัดการเท่านั้นที่ข้ามแผนกได้ — role อื่นส่ง ?dept= มาก็ไม่มีผล
+ *   ไม่งั้นเซลเติม query เองแล้วเห็นงานช่างทั้งบริษัท ซึ่งพังการแยกแผนกทั้งหมดที่ทำมา
+ */
+const departmentScope = (user, wanted) => {
+  if (isAdminOrManager(user) && wanted === DEPARTMENT.SALES) {
+    return { department: DEPARTMENT.SALES };
+  }
+  // ⚠️ ฝ่ายขายเห็นเฉพาะนัดของฝ่ายขาย
+  if (departmentOf(user) === DEPARTMENT.SALES) return { department: DEPARTMENT.SALES };
+
+  // ⚠️ ที่เหลือทั้งหมด (รวมแอดมิน/ผู้จัดการ) เห็นเฉพาะงานฝ่ายบริการ
+  //
+  // 🐛 ที่แก้ (ผู้ใช้แจ้งว่า "มาเด้งใน event ช่างด้วย ไม่ให้เกี่ยวกัน"): เดิมแอดมินได้ null คือ
+  // ไม่กรองอะไรเลย ทำให้นัดของเซล (เข้าพบลูกค้า/สำรวจหน้างาน) โผล่ปนอยู่ในปฏิทินงานช่างและใน
+  // หน้าการดำเนินงานของแอดมิน — ซึ่งเป็นหน้าจอที่สร้างมารอบงานช่างล้วนๆ (เอกสาร 4 ชนิด/
+  // เช็คอิน/คำขอปิดงาน) นัดของเซลไปโผล่ที่นั่นแล้วกดทำอะไรก็ไม่ได้ มีแต่ทำให้ตัวเลขสรุปเพี้ยน
+  //
+  // ⚠️ แอดมินไม่ได้เสียการมองเห็นงานข้ามแผนก — งานที่เซลอยากให้ช่างทำมาทางใบแจ้งงาน (/dispatch)
+  // ซึ่งเป็นที่ที่ตั้งใจให้ดูข้ามแผนกอยู่แล้ว ส่วนนัดส่วนตัวของเซลไม่ใช่สิ่งที่แอดมินต้องจัดการ
+  //
+  // ⚠️ ต้องรวม null/ไม่มีฟิลด์ด้วยเสมอ — แผนงานเดิมทั้งระบบสร้างก่อนมีฟิลด์นี้ ถ้าเทียบ
+  // { department: 'service' } ตรงๆ งานเก่าทุกใบจะหายจากหน้าจอทันทีที่ deploy
+  return { department: { $in: [DEPARTMENT.SERVICE, null] } };
+};
+
+/**
+ * รวมตัวกรองแผนกเข้ากับ query ที่มีอยู่ โดยไม่ไปทับ $or/$and เดิม
+ * ⚠️ รับ req (ไม่ใช่ user) เพื่ออ่าน ?dept= ได้ด้วย — ตัวเรียกทุกที่ส่ง req มาอยู่แล้ว
+ */
+const withDepartmentScope = (query, req) => {
+  const user = req?.user || req;
+  const scope = departmentScope(user, req?.query?.dept);
+  return scope ? { ...query, ...scope } : query;
+};
+
 module.exports = {
   moment,
+  departmentOf,
+  departmentScope,
+  withDepartmentScope,
+  DEPARTMENT,
+  // ✅ ตัวเช็คสิทธิ์กลาง — ทุกไฟล์ในโฟลเดอร์นี้ดึงผ่าน shared.js ตามแบบแผนเดิม
+  // ห้ามเช็ค role ด้วยลิสต์สตริงเขียนสดอีก (ดูเหตุผลเต็มที่ src/config/roles.js)
+  can,
+  isAdminOrManager,
+  SUPERVISOR_ROLES,
   CalendarEvent,
   User,
   verifyToken,

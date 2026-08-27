@@ -3,6 +3,7 @@ const router = express.Router();
 
 const StockProduct = require("../models/StockProduct");
 const verifyToken = require("../middleware/auth");
+const { can } = require("../config/roles");
 const User = require("../models/User");
 const Product = require("../models/Product");
 
@@ -12,7 +13,7 @@ router.get("/", verifyToken, async (req, res) => {
 
     let userStock;
 
-    if (req.user.role === "admin") {
+    if (can(req.user, "manageAll")) {
       userStock = await StockProduct.find({});
     } else {
       userStock = await StockProduct.find({ userId: userId });
@@ -124,7 +125,7 @@ router.delete("/:id", verifyToken, async (req, res) => {
     // Check if the authenticated user is the owner of the stock product or an admin
     if (
       productToDelete.userId.toString() !== req.userId.toString() &&
-      req.user.role !== "admin"
+      !can(req.user, "manageAll")
     ) {
       return res.status(403).send("Unauthorized to delete.");
     }

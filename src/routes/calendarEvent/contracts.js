@@ -7,6 +7,7 @@
 const {
   CalendarEvent,
   verifyToken,
+  can,
   crypto,
   MAX_VISIT_COUNT,
   findDuplicateContractNo,
@@ -24,7 +25,7 @@ module.exports = (router) => {
   // เป็นค่า :contractGroupId ไปแทน route นี้จะไม่มีทางถูกเรียกถึงเลย
   router.put("/contract/merge", verifyToken, async (req, res) => {
     try {
-      if (!["admin", "manager"].includes(req.user.role)) {
+      if (!can(req.user, "editContracts")) {
         return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่จัดกลุ่มสัญญาได้" });
       }
 
@@ -116,7 +117,7 @@ module.exports = (router) => {
   // (path มี "attach" คั่นเป็น segment ที่ 3 จึงไม่ชนกับ PUT /contract/:contractGroupId 2 segment ด้านล่าง)
   router.put("/contract/:contractGroupId/attach", verifyToken, async (req, res) => {
     try {
-      if (!["admin", "manager"].includes(req.user.role)) {
+      if (!can(req.user, "editContracts")) {
         return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่ย้ายงานเข้าสัญญาได้" });
       }
       const { contractGroupId } = req.params;
@@ -215,7 +216,7 @@ module.exports = (router) => {
   // ต่อ 1 ครั้ง — jobGroupId (ตัวผูกวันที่ไม่ต่อเนื่องของงานเดียวกัน) ไม่ถูกแตะ ยังกลุ่มเดียวกันเหมือนเดิม
   router.put("/contract/:contractGroupId/detach", verifyToken, async (req, res) => {
     try {
-      if (!["admin", "manager"].includes(req.user.role)) {
+      if (!can(req.user, "editContracts")) {
         return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แยกงานออกจากสัญญาได้" });
       }
       const { contractGroupId } = req.params;
@@ -279,7 +280,7 @@ module.exports = (router) => {
       // สลับที่กับครั้งปลายทางด้วย จึงกระทบโครงสร้างทั้งสัญญา
       // ⚠️ ไม่รับ "ทีมที่เข้างาน" (team/resPerson/teamMembers) โดยตั้งใจ — ต้องถูกมอบหมายเป็น
       // ผู้รับผิดชอบไว้ชัดเจนก่อนเท่านั้น ตรงกับตัวกรองการมองเห็นของหน้านั้น (strictResponsibleOrClauses)
-      if (!["admin", "manager"].includes(req.user.role)) {
+      if (!can(req.user, "editContracts")) {
         const contractDocs = await CalendarEvent.find({ contractGroupId })
           .select("responsiblePerson responsiblePersonId").lean();
         if (contractDocs.length === 0) {
@@ -342,7 +343,7 @@ module.exports = (router) => {
       // ไฟล์นี้ เพราะที่นี่แก้ "ทั้งสัญญา" พร้อมกันทุกครั้ง (updateMany ด้านล่าง) ผิดพลาดแล้วกระทบทุกครั้ง
       // ที่ผูกสัญญาเดียวกันทันที ต่างจากแก้ไขงานรายครั้งปกติที่กระทบแค่ record เดียว (ดู EditEvent.js
       // ที่ตอนนี้แสดงข้อมูลสัญญาแบบดูอย่างเดียว/disabled ให้ช่างแล้วเช่นกัน)
-      const isAdminOrManager = ["admin", "manager"].includes(req.user.role);
+      const isAdminOrManager = can(req.user, "editContracts");
       if (!isAdminOrManager) {
         return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขข้อมูลสัญญานี้" });
       }
@@ -464,7 +465,7 @@ module.exports = (router) => {
   // ก่อน/หลัง (ไม่เหมือนกรณี PUT /contract/merge vs PUT /contract/:contractGroupId ที่ต้องระวังลำดับ)
   router.delete("/contract/:contractGroupId", verifyToken, async (req, res) => {
     try {
-      if (!["admin", "manager"].includes(req.user.role)) {
+      if (!can(req.user, "editContracts")) {
         return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่ลบสัญญาได้" });
       }
       const { contractGroupId } = req.params;
