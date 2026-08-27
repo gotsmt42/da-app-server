@@ -4,9 +4,9 @@
   "description": "API server ของ DA-APP",
   "main": "index.js",
   "private": true,
-  "engines": {
-    "node": ">=20"
-  },
+ "engines": {
+  "node": ">=20.0.0 <22.0.0"
+},
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
