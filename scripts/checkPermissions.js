@@ -42,6 +42,8 @@ const EXPECTED = {
   requestDispatch: ["admin", "manager", "sale"],
   assignDispatch: ["admin", "manager"],
   receiveDispatch: ["technician"],
+  // ✅ เซลเปิดดู "ตารางงานช่าง" ได้ (?dept=service) — อ่านอย่างเดียว ไม่มีสิทธิ์เขียนตามมา
+  viewServiceCalendar: ["admin", "manager", "sale"],
 };
 
 const FRONTEND_ROLES_FILE = path.resolve(

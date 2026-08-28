@@ -216,9 +216,29 @@ function isJobParticipant(event, userId, fname) {
  *   ⚠️ เฉพาะแอดมิน/ผู้จัดการเท่านั้นที่ข้ามแผนกได้ — role อื่นส่ง ?dept= มาก็ไม่มีผล
  *   ไม่งั้นเซลเติม query เองแล้วเห็นงานช่างทั้งบริษัท ซึ่งพังการแยกแผนกทั้งหมดที่ทำมา
  */
+/**
+ * "คนนอกแผนกบริการที่ขอเข้ามาดูตารางช่าง" — เซลที่เติม ?dept=service มา
+ *
+ * ⚠️ ต้องครบทั้ง 3 เงื่อนไข: ขอมาจริง + มีสิทธิ์ + ตัวเองไม่ได้อยู่แผนกบริการอยู่แล้ว
+ * ตัวสุดท้ายสำคัญ — ไม่งั้นช่าง/แอดมินที่เติม ?dept=service มาเองจะเดินเข้าเส้นทางนี้แทนเส้นทางปกติ
+ * ซึ่งจะข้ามตัวกรอง "งานของฉัน" ไปโดยไม่ตั้งใจ (ดู queries.js ที่ใช้ตัวเดียวกันนี้ตัดสิน)
+ */
+const isServiceObserver = (user, wanted) =>
+  wanted === DEPARTMENT.SERVICE &&
+  can(user, "viewServiceCalendar") &&
+  departmentOf(user) !== DEPARTMENT.SERVICE;
+
 const departmentScope = (user, wanted) => {
   if (isAdminOrManager(user) && wanted === DEPARTMENT.SALES) {
     return { department: DEPARTMENT.SALES };
+  }
+  // ✅ เซลเปิดดู "ตารางงานช่าง" ได้ (?dept=service) — อ่านอย่างเดียว ตามที่ผู้ใช้สั่ง
+  // เหตุผล: เซลต้องรู้ว่าช่างว่างวันไหนก่อนไปรับปากลูกค้าเรื่องวันเข้างาน
+  // ⚠️ เป็นการ "ขอดูข้ามแผนก" ที่ต้องเติม ?dept=service มาเองเท่านั้น — ถ้าไม่เติม เซลยังเห็นเฉพาะ
+  // นัดของฝ่ายขายเหมือนเดิมทุกประการ (บรรทัดถัดไป) ปฏิทินงานขายจึงไม่มีงานช่างมาปนโดยไม่ตั้งใจ
+  // ⚠️ สิทธิ์นี้ไม่เปิดทางเขียนใดๆ — PUT/DELETE ยังต้องผ่าน editAnyJob/เจ้าของงาน/ผู้ถูกมอบหมาย
+  if (isServiceObserver(user, wanted)) {
+    return { department: { $in: [DEPARTMENT.SERVICE, null] } };
   }
   // ⚠️ ฝ่ายขายเห็นเฉพาะนัดของฝ่ายขาย
   if (departmentOf(user) === DEPARTMENT.SALES) return { department: DEPARTMENT.SALES };
@@ -252,6 +272,7 @@ module.exports = {
   moment,
   departmentOf,
   departmentScope,
+  isServiceObserver,
   withDepartmentScope,
   DEPARTMENT,
   // ✅ ตัวเช็คสิทธิ์กลาง — ทุกไฟล์ในโฟลเดอร์นี้ดึงผ่าน shared.js ตามแบบแผนเดิม

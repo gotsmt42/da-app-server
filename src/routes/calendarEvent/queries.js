@@ -12,6 +12,7 @@ const {
   effectiveResponsibleOrClauses,
   strictResponsibleOrClauses,
   withDepartmentScope,
+  isServiceObserver,
 } = require("./shared");
 
 module.exports = (router) => {
@@ -28,6 +29,11 @@ module.exports = (router) => {
       // ตัวเองด้วย ทั้งที่ทุกจุดอื่นในไฟล์นี้ให้สิทธิ์ manager เท่า admin — แก้ให้ตรงกัน
       // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรปนกับงานที่ลงตารางแล้ว
       const isAdminOrManagerRole = can(req.user, "viewAllJobs");
+      // ✅ เซลที่เปิดดู "ตารางงานช่าง" (?dept=service) ต้องเห็นงานของช่างทั้งแผนก — อ่านอย่างเดียว
+      // ⚠️ ต้องข้ามตัวกรอง "งานของฉัน" ด้วย ไม่งั้นจะเห็นศูนย์รายการเสมอ — เซลไม่มีทางมีชื่ออยู่ในงานช่างอยู่แล้ว
+      // ⚠️ การขยายนี้เป็น "สิทธิ์อ่าน" ล้วนๆ — ด่านกันเขียน (PUT/DELETE) ไม่ได้ถูกแตะเลย
+      const serviceObserver = isServiceObserver(req.user, req.query.dept);
+      const seesAllJobs = isAdminOrManagerRole || serviceObserver;
       // ✅ "คนที่ต้องไปทำงานนี้" ต้องเห็นงานนี้เสมอ — หัวหน้าทีมที่เข้างาน (team/resPerson) และลูกทีม
       // (teamMembers) ไม่ว่างานนั้นจะมอบหมาย "ผู้รับผิดชอบ" ไว้เป็นใครก็ตาม
       // ⚠️ ต้องแยกออกมาเป็น "clause การมองเห็น" ต่างหาก ห้ามไปรวมใน effectiveResponsibleOrClauses —
@@ -49,7 +55,7 @@ module.exports = (router) => {
       // ⚠️ หน้าอื่นที่ใช้ route นี้ (การดำเนินงาน/งานของฉัน/แดชบอร์ด/วางบิล) ไม่ส่ง scope มา จึงได้
       // ตัวกรองเดิมทุกประการ — ช่างยังเห็นงานที่ตัวเองต้องไปทำครบเหมือนเดิม
       const strictScope = req.query.scope === "responsible";
-      const query = isAdminOrManagerRole
+      const query = seesAllJobs
         ? { unscheduled: { $ne: true } }
         : strictScope
           ? { unscheduled: { $ne: true }, $or: strictResponsibleOrClauses(userId, req.user.fname) }
