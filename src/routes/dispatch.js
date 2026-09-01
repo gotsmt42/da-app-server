@@ -295,6 +295,36 @@ router.post("/", verifyToken, upload.array("files", 10), async (req, res) => {
     if (!site) return res.status(400).json({ message: "กรุณาระบุโครงการ / สาขา" });
     const company = String(req.body.company || "").trim();
 
+    /**
+     * ── งานตามสัญญา (ไม่บังคับ) ────────────────────────────────────────
+     * ✅ เซลเลือก "ครั้งถัดไปของสัญญาที่มีอยู่แล้ว" ได้ แบบเดียวกับฟอร์มของช่าง
+     * ⚠️ ต้องตรวจกับของจริงในฐานข้อมูลเสมอ ห้ามเชื่อค่าที่ส่งมา — ไม่งั้นจะเกิดใบที่ชี้ไปยังสัญญาที่
+     * ไม่มีอยู่ (หรือที่ครบจำนวนครั้งไปแล้ว) ซึ่งจะไปพังตอน *อนุมัติ* แทน คือหลังจากที่เซลส่งใบไปแล้ว
+     * และแอดมินเสียเวลาตรวจไปแล้ว — ปฏิเสธตั้งแต่ตอนแจ้งตรงนี้ชัดเจนกว่ามาก
+     */
+    let contractSnapshot = null;
+    const contractGroupId = String(req.body.contractGroupId || "").trim();
+    if (contractGroupId) {
+      const visits = await CalendarEvent.find({ contractGroupId })
+        .select("visitCount contractNo time company site system title")
+        .lean();
+      if (!visits.length) {
+        return res.status(400).json({ message: "ไม่พบสัญญาที่เลือก — อาจถูกลบไปแล้ว กรุณาเลือกใหม่" });
+      }
+      const head = visits.find((v) => v.visitCount) || visits[0];
+      const visitCount = head.visitCount || 0;
+      // นับ "ครั้งที่ไม่ซ้ำกัน" ให้ตรงกับที่ฝั่งหน้าจอ/endpoint รายชื่อสัญญาใช้ (countUsedRounds)
+      const usedRounds = new Set(
+        visits
+          .filter((v) => v.time !== undefined && v.time !== null && v.time !== "")
+          .map((v) => String(v.time))
+      );
+      if (visitCount > 0 && usedRounds.size >= visitCount) {
+        return res.status(409).json({ message: "สัญญานี้ครบจำนวนครั้งแล้ว เลือกสัญญาอื่นหรือแจ้งเป็นงานทั่วไป" });
+      }
+      contractSnapshot = { groupId: contractGroupId, no: head.contractNo || "", visitCount };
+    }
+
     const me = actor(req);
 
     const dispatch = new Dispatch({
@@ -304,6 +334,8 @@ router.post("/", verifyToken, upload.array("files", 10), async (req, res) => {
       requestedBy: me,
       requestedAt: new Date(),
       eventId: req.body.eventId || undefined,
+      // ผูกกับสัญญาเฉพาะเมื่อเลือกมาจริงและผ่านการตรวจแล้ว (ดู contractSnapshot ด้านบน)
+      ...(contractSnapshot ? { contract: contractSnapshot } : {}),
       customer: {
         // ⚠️ เก็บ company ให้มีค่าเสมอเช่นกัน (สลับทิศจากเดิม) — ใบที่ไม่มีชื่อบริษัทเลยยังต้องมี
         // ค่าอะไรสักอย่างให้การ์ด/ตารางแสดงผล ไม่งั้นจะโชว์ช่องว่างเปล่าๆ
@@ -623,6 +655,56 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
     const me = actor(req);
     const c = dispatch.customer || {};
 
+    /**
+     * ── ถ้าใบนี้ผูกกับสัญญา ให้ลงเป็น "ครั้งถัดไปของสัญญา" ไม่ใช่งานทั่วไป ──────────────
+     * ⚠️ ต้องคำนวณ "ครั้งที่" ตอนอนุมัติ ไม่ใช่ตอนที่เซลแจ้ง — ระหว่างที่ใบรอตรวจอยู่ ช่างอาจเพิ่ม
+     * ครั้งนั้นเข้าสัญญาไปแล้วเอง ถ้าจองไว้ล่วงหน้าจะได้ครั้งที่ซ้ำกันสองงาน
+     * ⚠️ ถ้าสัญญาเต็มไปแล้วต้องปฏิเสธ ไม่ใช่เงียบๆ ลงเป็นงานทั่วไปแทน — คนอนุมัติจะไม่มีทางรู้เลย
+     * ว่างานหลุดออกจากสัญญาไป และจำนวนครั้งในหน้า "ภาพรวมงาน" จะเพี้ยนโดยไม่มีใครสังเกต
+     */
+    let contractFields = {};
+    const linkedGroupId = dispatch.contract?.groupId || "";
+    if (linkedGroupId) {
+      const visits = await CalendarEvent.find({ contractGroupId: linkedGroupId })
+        .select("visitCount contractNo quotationNo contractStart contractEnd intervalMonths jobValue time")
+        .lean();
+      if (!visits.length) {
+        return res.status(409).json({ message: "สัญญาที่ผูกกับใบนี้ถูกลบไปแล้ว — ตีกลับให้ผู้แจ้งเลือกใหม่" });
+      }
+      const head = visits.find((v) => v.visitCount) || visits[0];
+      const visitCount = head.visitCount || 0;
+      const used = new Set(
+        visits
+          .filter((v) => v.time !== undefined && v.time !== null && v.time !== "")
+          .map((v) => String(v.time))
+      );
+      let nextRound = null;
+      for (let i = 1; i <= visitCount; i += 1) {
+        if (!used.has(String(i))) { nextRound = i; break; }
+      }
+      if (!nextRound) {
+        return res.status(409).json({ message: "สัญญานี้ครบจำนวนครั้งแล้วระหว่างที่ใบรอตรวจ — ตีกลับให้ผู้แจ้งเลือกใหม่" });
+      }
+      contractFields = {
+        contractGroupId: linkedGroupId,
+        contractNo: head.contractNo || dispatch.contract?.no || "",
+        quotationNo: head.quotationNo || "",
+        contractStart: head.contractStart || undefined,
+        contractEnd: head.contractEnd || undefined,
+        intervalMonths: head.intervalMonths,
+        jobValue: head.jobValue,
+        visitCount,
+        time: nextRound,
+        // 🐛 ที่แก้ (ทดสอบจับได้): เดิมใส่ jobClassification: "contract" ซึ่ง **ไม่มีใน enum**
+        // (models/Events.js รับแค่ "" | "general" | "project") ทำให้ Mongoose ตีตก ValidationError
+        // แล้วการอนุมัติล้มทั้งรายการ — งานตามสัญญาถูกระบุด้วย contractGroupId ต่างหาก ไม่ใช่ฟิลด์นี้
+        // (ดู classifyJob ฝั่งหน้าจอที่เช็ค contractGroupId ก่อนเป็นอันดับแรก) จึงต้องเป็นค่าว่าง
+        jobClassification: "",
+        // ล้างธงงานทั่วไปให้ตรงความหมาย — ไม่งั้นงานสัญญาจะถูกนับเป็น "งานทั่วไปที่ยืนยันแล้ว"
+        isConfirmedGeneral: false,
+      };
+    }
+
     // ⚠️ department = service เสมอ — ใบนี้ถูกส่งมาให้ฝ่ายช่างทำ ไม่ใช่แผนงานของฝ่ายขาย
     // ถ้าประทับตาม role ของคนกดอนุมัติ งานจะไปโผล่ผิดฝั่งทันทีที่เซลได้สิทธิ์อนุมัติในอนาคต
     const event = await new CalendarEvent({
@@ -668,6 +750,9 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
       // (classifyJob) คืนค่าว่าง แล้วการ์ดขึ้นเป็น "ไม่ระบุ" ทั้งที่รู้อยู่แล้วว่าเป็นงานทั่วไป
       jobClassification: "general",
       isConfirmedGeneral: true,
+      // ⚠️ ต้องกระจายท้ายสุด — งานตามสัญญาต้องทับ jobClassification/visitCount ของงานทั่วไปด้านบน
+      // (ว่างเปล่าเมื่อใบนี้ไม่ได้ผูกสัญญา จึงไม่กระทบเส้นทางเดิมเลย)
+      ...contractFields,
     }).save();
 
     // ✅ ค่าที่แจ้งมากลายเป็นตัวเลือกให้ครั้งถัดไป (เหมือนที่ฟอร์มของช่างทำตอนสร้างแผนงาน)

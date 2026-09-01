@@ -15,22 +15,20 @@ const userSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // ✅ เข้ารหัสรหัสผ่านก่อนบันทึก
+// 🔒 ที่แก้: เดิม console.log รหัสผ่าน **ก่อนเข้ารหัส** ออกมาตรงนี้ = รหัสผ่านจริงของผู้ใช้ทุกคน
+// ถูกเขียนลง log ของเซิร์ฟเวอร์เป็นข้อความล้วน (บน Render log ถูกเก็บไว้และเปิดดูย้อนหลังได้)
+// ⚠️ ห้าม log ค่าของ this.password ไม่ว่ากรณีใด — ทั้งก่อนและหลังเข้ารหัส
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
-  console.log("🟢 กำลังเข้ารหัสรหัสผ่านก่อนบันทึก:", this.password);
   this.password = await bcrypt.hash(this.password, 10);
   next();
 });
 
 // ✅ เปรียบเทียบรหัสผ่าน
+// 🔒 ที่แก้: เดิม log ทั้งรหัสผ่านที่ผู้ใช้ป้อน (ข้อความล้วน) และ hash ในฐานข้อมูล —
+// ตัวแรกคือรหัสผ่านจริง ส่วนตัวหลังเป็น hash ที่เอาไปทดลองถอดแบบออฟไลน์ได้ ห้าม log ทั้งคู่
 userSchema.methods.comparePassword = async function (candidatePassword) {
-  console.log("🟢 รหัสผ่านที่ผู้ใช้ป้อน:", candidatePassword);
-  console.log("🟢 รหัสผ่านที่เข้ารหัสในฐานข้อมูล:", this.password);
-
-  const isMatch = await bcrypt.compare(candidatePassword, this.password);
-
-  console.log("🟢 ผลลัพธ์จาก bcrypt.compare():", isMatch);
-  return isMatch;
+  return bcrypt.compare(candidatePassword, this.password);
 };
 
 

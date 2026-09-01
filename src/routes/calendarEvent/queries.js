@@ -268,4 +268,81 @@ module.exports = (router) => {
       res.status(500).send("Internal Server Error");
     }
   });
+  /**
+   * GET /api/events/contracts — รายชื่อ "สัญญาที่ยังเพิ่มครั้งได้" สำหรับเอาไปให้เลือกในฟอร์ม
+   *
+   * ✅ ทำไมต้องมี endpoint นี้ ทั้งที่หน้า "ภาพรวมงาน"/ฟอร์มของช่างจัดกลุ่มเองได้จาก events ที่โหลดมาแล้ว:
+   * ฟอร์มแจ้งงานของเซลไม่ได้โหลด events ทั้งแผนกไว้อยู่แล้ว การจะให้เลือกสัญญาได้ต้องดึงงานฝ่ายช่าง
+   * ทั้งหมดมาแค่เพื่อสร้าง dropdown ตัวเดียว ซึ่งเปลืองทั้งเน็ตและเวลาเปิดกล่องโดยไม่จำเป็น —
+   * ตรงนี้ยุบให้เหลือเฉพาะข้อมูลระดับ "สัญญา" ที่ต้องใช้จริง
+   *
+   * ⚠️ ใช้ withDepartmentScope ตัวเดียวกับทุก route ในไฟล์นี้ — เซลอ่านสัญญาฝ่ายช่างได้เมื่อส่ง
+   * ?dept=service เท่านั้น (สิทธิ์ viewServiceCalendar) ไม่ได้เปิดช่องทางอ่านใหม่ที่ไหนเพิ่ม
+   * ⚠️ อ่านอย่างเดียวล้วน ไม่มีทางเขียนใดๆ ผ่านเส้นทางนี้
+   */
+  router.get("/contracts", verifyToken, async (req, res) => {
+    try {
+      const query = withDepartmentScope(
+        { contractGroupId: { $exists: true, $nin: [null, ""] } },
+        req
+      );
+      const rows = await CalendarEvent.find(query)
+        .select("contractGroupId company site system title contractNo quotationNo contractStart contractEnd visitCount intervalMonths jobValue responsiblePerson responsiblePersonId team resPerson userId time")
+        .lean();
+
+      // จัดกลุ่มตาม contractGroupId — เทียบตรรกะเดียวกับ contractMap ใน AddEvent.js/ContractOverview.js
+      const map = new Map();
+      for (const e of rows) {
+        const key = String(e.contractGroupId);
+        if (!map.has(key)) {
+          map.set(key, {
+            key,
+            company: e.company || "",
+            site: e.site || "",
+            system: e.system || "",
+            title: e.title || "",
+            contractNo: e.contractNo || "",
+            quotationNo: e.quotationNo || "",
+            contractStart: e.contractStart || "",
+            contractEnd: e.contractEnd || "",
+            visitCount: e.visitCount || 0,
+            intervalMonths: e.intervalMonths,
+            jobValue: e.jobValue,
+            responsiblePerson: e.responsiblePerson || e.team || "",
+            responsiblePersonId: e.responsiblePersonId || e.resPerson || "",
+            usedRounds: new Set(),
+          });
+        }
+        const c = map.get(key);
+        // ⚠️ นับ "ครั้งที่ไม่ซ้ำกัน" ไม่ใช่จำนวน document — งานครั้งเดียวที่เข้าหลายวันมีหลาย document
+        // นับตรงๆ จะเกินจริงแล้วสัญญาจะดูเหมือนเต็มทั้งที่ยังว่าง (ตรงกับ countUsedRounds ฝั่งหน้าจอ)
+        if (e.time !== undefined && e.time !== null && e.time !== "") c.usedRounds.add(String(e.time));
+      }
+
+      const contracts = [...map.values()]
+        .map((c) => {
+          const used = [...c.usedRounds];
+          const usedVisits = used.length;
+          // ครั้งถัดไปที่ยังว่าง — เลขแรกใน 1..visitCount ที่ยังไม่ถูกใช้
+          let nextRound = null;
+          for (let i = 1; i <= (c.visitCount || 0); i += 1) {
+            if (!c.usedRounds.has(String(i))) { nextRound = i; break; }
+          }
+          const { usedRounds, ...rest } = c;
+          return { ...rest, usedVisits, usedRounds: used, nextRound };
+        })
+        // เอาเฉพาะสัญญาที่ยังเพิ่มครั้งได้จริง — ที่ครบแล้วโชว์ไปก็เลือกไม่ได้ (backend บล็อกอยู่แล้ว)
+        .filter((c) => c.visitCount > 0 && c.usedVisits < c.visitCount)
+        .sort(
+          (a, b) =>
+            (a.company || "").localeCompare(b.company || "", "th") ||
+            (a.site || "").localeCompare(b.site || "", "th")
+        );
+
+      res.json({ contracts });
+    } catch (err) {
+      console.error("❌ ดึงรายชื่อสัญญาไม่สำเร็จ:", err);
+      res.status(500).json({ message: "ดึงรายชื่อสัญญาไม่สำเร็จ" });
+    }
+  });
 };

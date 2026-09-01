@@ -14,6 +14,9 @@ const upload = multer({ storage, fileFilter, limits });
 
 const checkFile = require("../middleware/checkFile");
 
+// 🔒 ตารางสิทธิ์กลางของระบบ — ใช้ requireCap แทนการเช็ค role เขียนสดตามที่ config/roles.js กำหนดไว้
+const { requireCap, ALL_ROLES, can, normalizeRole } = require("../config/roles");
+
 router.post("/validate-password", verifyToken, async (req, res) => {
   try {
     const { password } = req.body;
@@ -99,12 +102,31 @@ router.get("/user", verifyToken, async (req, res) => {
 
 const bcrypt = require("bcryptjs");
 
-router.post("/signup", async (req, res) => {
+/**
+ * สร้างผู้ใช้ใหม่ — **แอดมินเท่านั้น**
+ *
+ * 🔒 ที่แก้ (ช่องโหว่ร้ายแรง: ยกระดับสิทธิ์โดยไม่ต้องล็อกอิน)
+ * เดิม route นี้ไม่มี verifyToken เลย และรับ role จาก req.body มาใส่ตรงๆ ขณะที่ models/User.js
+ * ประกาศ role เป็น String เปล่าๆ ไม่มี enum — ผลคือ **ใครก็ตามบนอินเทอร์เน็ต** ยิง POST มาที่
+ * /api/auth/signup พร้อม { role: "admin" } แล้วได้บัญชีแอดมินทันที จากนั้น login รับ JWT อายุ 30 วัน
+ * แล้วเข้าถึงข้อมูลทั้งระบบได้ทั้งหมด
+ *
+ * ✅ ตอนนี้: ต้องล็อกอิน + มีสิทธิ์ manageAll (แอดมิน) ตรงกับหน้า "ทะเบียนพนักงาน" ที่เป็นทางเดียว
+ * ที่เรียก route นี้จริง (StaffHub.js กันด้วย manageAll เหมือนกัน) — ไม่กระทบการใช้งานปกติเลย
+ * ⚠️ role ต้องอยู่ใน ALL_ROLES เท่านั้น — กันสร้าง role มั่วที่ไม่มีในตารางสิทธิ์ ซึ่งจะกลายเป็นบัญชี
+ * ที่ระบบไม่รู้จักแล้วถูกปฏิเสธเงียบๆ ทุกหน้า (บั๊กแบบที่ config/roles.js ตั้งใจกำจัด)
+ */
+router.post("/signup", verifyToken, requireCap("manageAll"), async (req, res) => {
   try {
     const { username, password, email, fname, lname, tel, role, rank } =
       req.body;
 
-    console.log("🟢 รหัสผ่านที่ได้รับก่อนเข้ารหัส:", password);
+    const wantedRole = normalizeRole(role);
+    if (!ALL_ROLES.includes(wantedRole)) {
+      return res.status(400).json({
+        err: `role ไม่ถูกต้อง — ต้องเป็นหนึ่งใน: ${ALL_ROLES.join(", ")}`,
+      });
+    }
 
     const user = new User({
       username,
@@ -113,7 +135,7 @@ router.post("/signup", async (req, res) => {
       fname,
       lname,
       tel,
-      role,
+      role: wantedRole,
       rank,
     });
 
@@ -131,8 +153,6 @@ router.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    console.log("🟢 ค่าที่ได้รับจากผู้ใช้:", password);
-
     const user = await User.findOne({
       $or: [{ username }, { email: username }],
     });
@@ -141,13 +161,12 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ err: "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง" });
     }
 
-    console.log("🟢 รหัสผ่านที่เข้ารหัสในฐานข้อมูล:", user.password);
-
+    // 🔒 ที่แก้: เดิมมี console.log 4 บรรทัดตรงนี้ที่พ่นรหัสผ่านข้อความล้วนของผู้ใช้ + hash ใน
+    // ฐานข้อมูล ออกมาทุกครั้งที่มีคนล็อกอิน — log ของ Render เก็บย้อนหลังและเปิดดูได้
+    // ⚠️ ถ้าต้องดีบักการล็อกอินในอนาคต ให้ log แค่ username กับผลลัพธ์ true/false เท่านั้น
+    // ห้ามแตะตัวรหัสผ่านหรือ hash เด็ดขาด
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
-    console.log("🟢 password ที่ได้รับจากผู้ใช้:", password);
-    console.log("🟢 password ที่เข้ารหัสในฐานข้อมูล:", user.password);
-    console.log("🟢 bcrypt.compare() ผลลัพธ์:", isPasswordValid);
     if (!isPasswordValid) {
       return res.status(401).json({ err: "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง" });
     }
@@ -176,7 +195,20 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// Update route
+/**
+ * แก้ไขข้อมูลผู้ใช้
+ *
+ * 🔒 ที่แก้ (ช่องโหว่ร้ายแรง: ยกระดับสิทธิ์ + แก้ข้อมูลคนอื่น)
+ * เดิมมีแค่ verifyToken — ไม่เช็คเลยว่า "คนที่ยิงมาเป็นเจ้าของบัญชีนี้ไหม" หรือ "มีสิทธิ์แก้คนอื่นไหม"
+ * ผลคือผู้ใช้ที่ล็อกอินอยู่คนใดก็ได้ (ช่าง/เซล/user ทั่วไป) ยิง PUT /api/auth/user/<id ของตัวเอง>
+ * พร้อม { role: "admin" } แล้วกลายเป็นแอดมินทันที หรือแก้ชื่อ/เบอร์ของคนอื่นทั้งระบบก็ได้
+ *
+ * ✅ กติกาใหม่:
+ *   • แก้ของตัวเองได้ (ชื่อ/นามสกุล/เบอร์/รูป) — เป็นการใช้งานปกติของหน้า "บัญชีของฉัน"
+ *   • แก้ของคนอื่นได้เฉพาะแอดมิน (manageAll) — ตรงกับหน้า "ทะเบียนพนักงาน" ที่กันด้วยสิทธิ์เดียวกัน
+ *   • **เปลี่ยน role ได้เฉพาะแอดมิน และเปลี่ยนของตัวเองไม่ได้** — กันทั้งการยกระดับตัวเอง และกัน
+ *     แอดมินคนสุดท้ายเผลอถอดสิทธิ์ตัวเองจนไม่มีใครเข้าไปแก้ได้อีก
+ */
 router.put(
   "/user/:id",
   verifyToken,
@@ -187,16 +219,32 @@ router.put(
       const userId = req.params.id;
       const { fname, lname, tel, role } = req.body;
 
-      console.log(req.body);
+      const isSelf = String(req.userId) === String(userId);
+      const isAdmin = can(req.user, "manageAll");
+      if (!isSelf && !isAdmin) {
+        return res.status(403).json({ message: "แก้ไขได้เฉพาะข้อมูลของตัวเองเท่านั้น" });
+      }
 
-      // const imageUrl = req.imageUrl;
+      // ⚠️ สร้าง object แบบใส่เฉพาะช่องที่ส่งมาจริง — เดิมยัด { fname, lname, tel, role } ทั้งก้อน
+      // ทำให้ช่องที่ผู้ใช้ไม่ได้ส่งมาถูกเขียนทับเป็น undefined โดยไม่ตั้งใจ
+      const newUser = {};
+      if (fname !== undefined) newUser.fname = fname;
+      if (lname !== undefined) newUser.lname = lname;
+      if (tel !== undefined) newUser.tel = tel;
 
-      const newUser = {
-        fname,
-        lname,
-        tel,
-        role,
-      };
+      if (role !== undefined) {
+        const wantedRole = normalizeRole(role);
+        if (!isAdmin) {
+          return res.status(403).json({ message: "เปลี่ยนสิทธิ์ผู้ใช้ได้เฉพาะแอดมินเท่านั้น" });
+        }
+        if (isSelf) {
+          return res.status(403).json({ message: "เปลี่ยนสิทธิ์ของตัวเองไม่ได้ — ให้แอดมินคนอื่นเป็นคนเปลี่ยนให้" });
+        }
+        if (!ALL_ROLES.includes(wantedRole)) {
+          return res.status(400).json({ message: `role ไม่ถูกต้อง — ต้องเป็นหนึ่งใน: ${ALL_ROLES.join(", ")}` });
+        }
+        newUser.role = wantedRole;
+      }
 
       if (req.file && req.file.path) {
         newUser.imageUrl = req.file.path;
@@ -213,7 +261,8 @@ router.put(
       // ✅ เปลี่ยน role เมื่อไหร่ ให้เพิ่ม sessionVersion เพื่อบังคับ token เก่าให้หมดอายุทันที
       // (ผู้ใช้จะถูกเตะออกจากระบบในการเรียก API ครั้งถัดไป และต้อง login ใหม่เพื่อรับสิทธิ์ล่าสุด)
       const update = { $set: newUser };
-      if (role !== undefined && role !== existingUser.role) {
+      // เปลี่ยน role เมื่อไหร่ ให้เพิ่ม sessionVersion เพื่อบังคับ token เก่าหมดอายุทันที
+      if (newUser.role !== undefined && newUser.role !== existingUser.role) {
         update.$inc = { sessionVersion: 1 };
       }
 
@@ -234,9 +283,18 @@ router.put(
   },
 );
 
-router.delete("/user/:id", verifyToken, async (req, res) => {
+/**
+ * ลบผู้ใช้ — **แอดมินเท่านั้น**
+ * 🔒 ที่แก้: เดิมมีแค่ verifyToken — ผู้ใช้ที่ล็อกอินอยู่คนใดก็ได้ลบบัญชีใครก็ได้ รวมถึงลบแอดมินทิ้ง
+ * ⚠️ ลบตัวเองไม่ได้ — กันแอดมินคนสุดท้ายลบตัวเองจนไม่เหลือใครจัดการระบบ
+ */
+router.delete("/user/:id", verifyToken, requireCap("manageAll"), async (req, res) => {
   try {
     const userId = req.params.id;
+
+    if (String(req.userId) === String(userId)) {
+      return res.status(400).json({ message: "ลบบัญชีของตัวเองไม่ได้" });
+    }
 
     const deletedUser = await User.findByIdAndDelete(userId);
 

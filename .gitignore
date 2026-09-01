@@ -6,3 +6,8 @@ serviceAccountKey.json
 
 # ผลลัพธ์/ของชั่วคราว
 *.log
+
+# 🔒 ไฟล์ความลับ — ห้าม commit เด็ดขาด (เคยถูก track มาก่อน ดูบันทึกในรายงานความปลอดภัย)
+.env
+.env.*
+!.env.example

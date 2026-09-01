@@ -27,9 +27,9 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 89;
+const EXPECTED_TOTAL = 90;
 const EXPECTED_PER_PREFIX = {
-  "/api/events": 30,
+  "/api/events": 31,
   // ✅ ฝ่ายขาย: ท่อขาย 10 + ปฏิทินนัดหมาย 5
   // ✅ ใบมอบหมายงานข้ามแผนก — แทน /api/workorder เดิมที่ไม่เคยถูกใช้จริงเลย (0 document)
   "/api/dispatch": 14,
