@@ -37,6 +37,23 @@ const actor = (req) => ({
   role: String(req.user?.role || ""),
 });
 
+/**
+ * ชื่อที่ใช้ "อ้างถึงคน" ทั้งระบบ = ชื่อต้นเท่านั้น
+ *
+ * 🐛 ที่แก้ (ผู้ใช้แจ้งว่า "หน้านี้มีนามสกุล หน้าอื่นๆไม่มี"): เดิมฝั่งใบแจ้งงานประกอบชื่อเป็น
+ * "fname lname" แล้วเขียนลงฟิลด์ team / responsiblePerson ของ CalendarEvent — แต่ทั้งระบบที่เหลือ
+ * ใช้ **ชื่อต้นอย่างเดียว** เป็นคีย์จับคู่คน (ฟอร์มของช่างใส่ e.fname · GET /event-op กรองด้วย
+ * { team: req.user.fname } · TeamWorkload ทำ Map ด้วย u.fname · ปุ่มดูงานของช่างส่ง ?team=<fname>)
+ *
+ * ผลจริงที่ตรวจพบในฐานข้อมูล: คนเดียวกันกลายเป็นสองค่า — "Santisuk" (11 งาน จากฟอร์มช่าง) กับ
+ * "Santisuk Srimanta" (5 งาน จากใบแจ้งงาน) ทำให้กดดูงานของช่างคนนั้นจากหน้าภาระงานแล้ว
+ * **งานที่มาจากใบแจ้งงานหายไปเงียบๆ** เพราะตัวกรองเทียบสตริงแบบตรงตัว
+ *
+ * ⚠️ ห้ามเปลี่ยนไปใช้ชื่อเต็มทั้งระบบแทน — จะต้องไล่แก้จุดจับคู่ทุกจุดพร้อมกันและข้อมูลเก่าทั้งหมด
+ * ให้ฝั่งใบแจ้งงานทำตามแบบแผนเดิมของระบบง่ายกว่าและเสี่ยงน้อยกว่ามาก
+ */
+const personName = (u) => String(u?.fname || "").trim() || u?.username || "ไม่ทราบชื่อ";
+
 const buddhistYear = () => new Date().getFullYear() + 543;
 
 const nextDispatchNo = async () => {
@@ -138,7 +155,7 @@ const safeMapUrl = (raw) => {
  * ⚠️ ห้ามให้พังทั้งการอนุมัติถ้า upsert ไม่สำเร็จ — เป็นผลพลอยได้ ไม่ใช่สาระของการอนุมัติ
  * (ชนกับ unique index เป็นเรื่องปกติเมื่อมีคนกดพร้อมกัน)
  */
-async function upsertLookups({ title, system, company, site, ownerId }) {
+async function upsertLookups({ title, system, company, site, ownerId, mapUrl }) {
   const jobs = [];
   if (title) jobs.push(JobType.updateOne({ name: title }, { $setOnInsert: { name: title } }, { upsert: true }));
   if (system) jobs.push(SystemType.updateOne({ name: system }, { $setOnInsert: { name: system } }, { upsert: true }));
@@ -146,9 +163,14 @@ async function upsertLookups({ title, system, company, site, ownerId }) {
   if (company && site) {
     // ⚠️ ต้องใส่ userId ให้แถวใหม่เสมอ — หน้าทะเบียนลูกค้าและ GET /api/customer อ่านฟิลด์นี้
     // แถวไม่มีเจ้าของเคยทำให้ทั้ง endpoint ตอบ 500 มาแล้ว (ดู routes/customer.js)
+    // ⚠️ mapUrl ใช้ $set ไม่ใช่ $setOnInsert — โครงการที่มีอยู่แล้วแต่ยังไม่เคยมีพิกัด ต้องได้รับ
+    // พิกัดที่เพิ่งกรอกมาด้วย ไม่ใช่เฉพาะตอนสร้างแถวใหม่ (แต่ไม่ทับของเดิมด้วยค่าว่าง)
     jobs.push(Customer.updateOne(
       { cCompany: company, cSite: site },
-      { $setOnInsert: { cCompany: company, cSite: site, userId: ownerId } },
+      {
+        $setOnInsert: { cCompany: company, cSite: site, userId: ownerId },
+        ...(mapUrl ? { $set: { mapUrl } } : {}),
+      },
       { upsert: true }
     ));
   }
@@ -438,7 +460,7 @@ router.post("/:id/assign", verifyToken, async (req, res) => {
       if (prev) return prev; // ⚠️ คงความคืบหน้าเดิมไว้ ห้ามสร้างใหม่ทับ
       return {
         userId: String(u._id),
-        name: [u.fname, u.lname].filter(Boolean).join(" ") || u.username,
+        name: personName(u),
         role: u.role,
         assignedAt: new Date(),
         assignedByUserId: me.userId,
@@ -649,7 +671,7 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
       }
     }
     const responsibleName = responsible
-      ? [responsible.fname, responsible.lname].filter(Boolean).join(" ") || responsible.username
+      ? personName(responsible)
       : "";
 
     const me = actor(req);
@@ -757,6 +779,7 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
 
     // ✅ ค่าที่แจ้งมากลายเป็นตัวเลือกให้ครั้งถัดไป (เหมือนที่ฟอร์มของช่างทำตอนสร้างแผนงาน)
     await upsertLookups({
+      mapUrl: c.mapUrl,
       title: dispatch.title,
       system: dispatch.system,
       company: c.company,
@@ -919,6 +942,64 @@ router.post("/:id/resubmit", verifyToken, upload.array("files", 10), async (req,
   } catch (err) {
     console.error("❌ ส่งใบแจ้งงานใหม่ไม่สำเร็จ:", err);
     res.status(500).json({ message: "ส่งใบแจ้งงานใหม่ไม่สำเร็จ" });
+  }
+});
+
+/**
+ * แก้ "ลิงก์ตำแหน่งบน Google Maps" ของใบที่ส่งไปแล้ว
+ *
+ * ✅ ที่เพิ่ม (ผู้ใช้ขอ: "ทำให้กดลิงก์เปิด google map เพื่อหาตำแหน่ง และแอดโลเคชั่นลงระบบได้ง่ายๆ
+ * แก้ได้ทั้งเซลและแอดมิน"): เดิมพิกัดใส่ได้แค่ "ตอนกรอกฟอร์มครั้งแรก" เท่านั้น — ใบที่ส่งไปแล้ว
+ * แต่ลืมใส่พิกัด ไม่มีทางเติมทีหลังเลย (route แก้ข้อมูลตัวเดียวที่มีคือ /resubmit ซึ่งใช้ได้เฉพาะ
+ * ใบที่ถูกตีกลับ) ช่างจึงต้องโทรถามเอาเองทุกครั้ง
+ *
+ * ✅ บันทึกลงทะเบียนลูกค้าด้วย — โครงการเดิมอยู่ที่เดิมเสมอ ครั้งหน้าจะถูกเติมให้อัตโนมัติ
+ * (นี่คือส่วน "แอดโลเคชั่นลงระบบ" ที่ผู้ใช้ขอ ไม่ใช่แค่ติดไว้กับใบใบเดียว)
+ *
+ * ⚠️ สิทธิ์: ผู้แจ้ง (เซลเจ้าของใบ) หรือคนจ่ายงาน (แอดมิน/ผู้จัดการ) — ช่างผู้รับงานแก้ไม่ได้
+ * เพราะพิกัดเป็นข้อมูลที่ฝั่งขาย/คนจัดคิวเป็นคนยืนยันกับลูกค้า
+ * ⚠️ ลิงก์ผ่าน safeMapUrl เสมอ — กัน "javascript:" หลุดไปเป็น href บนจอช่างทุกคนที่เปิดใบนี้
+ */
+router.patch("/:id/map", verifyToken, async (req, res) => {
+  try {
+    const dispatch = await Dispatch.findById(req.params.id);
+    if (!dispatch) return res.status(404).json({ message: "ไม่พบใบแจ้งงานนี้" });
+
+    const me = actor(req);
+    const isRequester = String(dispatch.requestedBy?.userId || "") === String(me.userId);
+    if (!isRequester && !can(req.user, "assignDispatch")) {
+      return res.status(403).json({ message: "แก้ลิงก์แผนที่ได้เฉพาะผู้แจ้งหรือแอดมินเท่านั้น" });
+    }
+
+    const raw = String(req.body.mapUrl || "").trim();
+    const mapUrl = safeMapUrl(raw);
+    // ส่งค่าว่างมา = ตั้งใจลบลิงก์ทิ้ง · ส่งค่ามาแต่ไม่ผ่านการตรวจ = ลิงก์ใช้ไม่ได้ ต้องบอกให้รู้
+    if (raw && !mapUrl) {
+      return res.status(400).json({ message: "ลิงก์ไม่ถูกต้อง — ต้องขึ้นต้นด้วย http:// หรือ https://" });
+    }
+
+    dispatch.customer = dispatch.customer || {};
+    const had = Boolean(dispatch.customer.mapUrl);
+    dispatch.customer.mapUrl = mapUrl;
+    log(dispatch, "map_updated", mapUrl ? (had ? "แก้ลิงก์แผนที่" : "เพิ่มลิงก์แผนที่") : "ลบลิงก์แผนที่", me);
+    await dispatch.save();
+
+    // เก็บเข้าทะเบียนลูกค้าไว้ใช้ครั้งหน้า — ล้มเหลวได้ ไม่ควรทำให้การบันทึกใบนี้พังตาม
+    if (mapUrl && dispatch.customer.company && dispatch.customer.site) {
+      await upsertLookups({
+        company: dispatch.customer.company,
+        site: dispatch.customer.site,
+        ownerId: me.userId,
+        mapUrl,
+      }).catch((e) => console.warn("upsert mapUrl ลงทะเบียนลูกค้าไม่สำเร็จ:", e.message));
+    }
+
+    const out = dispatch.toObject();
+    await attachJob(out);
+    res.json({ dispatch: out });
+  } catch (err) {
+    console.error("❌ แก้ลิงก์แผนที่ไม่สำเร็จ:", err);
+    res.status(500).json({ message: "แก้ลิงก์แผนที่ไม่สำเร็จ" });
   }
 });
 

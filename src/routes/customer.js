@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 
 const Customer = require("../models/Customer");
+const CalendarEvent = require("../models/Events");
 const User = require("../models/User");
 
 const multer = require("multer");
@@ -60,6 +61,78 @@ router.get("/", verifyToken, async (req, res) => {
 });
 
 // Route to get one customer
+/**
+ * PATCH /api/customer/map — ตั้ง/แก้/ลบ "ลิงก์ตำแหน่งบน Google Maps" ของโครงการหนึ่ง
+ *
+ * ✅ ที่เพิ่ม (ผู้ใช้ขอ: "ทำแบบเดียวกันที่มีงานของทุกหน้า ให้ดู หรือแก้ไข google maps ได้"):
+ * เดิมพิกัดมีเฉพาะในระบบใบแจ้งงาน — หน้าอื่นที่มีงาน (ปฏิทิน/การดำเนินงาน/ภาพรวมงาน) ไม่มีเลย
+ *
+ * ⚠️ เก็บที่ "ทะเบียนลูกค้า" ไม่ใช่ที่ตัวงานแต่ละใบ — โครงการเดิมอยู่ที่เดิมเสมอ ถ้าเก็บรายงาน
+ * จะต้องมากรอกซ้ำทุกครั้งที่ลงงานใหม่ และงานเก่า/ใหม่ของที่เดียวกันจะมีพิกัดไม่ตรงกันได้
+ * (เป็นเหตุผลเดียวกับที่ระบบใบแจ้งงานก็ sync ลงทะเบียนลูกค้าเช่นกัน)
+ *
+ * ⚠️ สิทธิ์ "แยกตามสิทธิเดิม" ตามที่ผู้ใช้ระบุ:
+ *   • แอดมิน/ผู้จัดการ (manageMasterData) — เป็นเจ้าของทะเบียนลูกค้าอยู่แล้ว แก้ได้ทุกโครงการ
+ *   • ช่างที่มีงานอยู่ที่โครงการนั้นจริง — คนที่ไปหน้างานเองคือคนที่รู้พิกัดที่ถูกต้องที่สุด
+ *     (เช็คจากงานจริงในระบบ ไม่ใช่เชื่อค่าที่ส่งมา)
+ *   • คนอื่น = อ่านอย่างเดียว (พิกัดถูกส่งไปกับ GET /api/customer อยู่แล้ว)
+ */
+router.patch("/map", verifyToken, async (req, res) => {
+  try {
+    const company = String(req.body.company || "").trim();
+    const site = String(req.body.site || "").trim();
+    if (!site) return res.status(400).json({ message: "ต้องระบุโครงการ" });
+
+    // ลิงก์ต้องเป็น http(s) เท่านั้น — ค่านี้ถูกเอาไปใส่ href บนหน้าจอของทุกคนที่เห็นงานนี้
+    // ถ้าปล่อย "javascript:..." ผ่านได้ จะกลายเป็นช่องทาง XSS ทันที
+    const rawUrl = String(req.body.mapUrl || "").trim();
+    let mapUrl = "";
+    if (rawUrl) {
+      try {
+        const u = new URL(rawUrl);
+        if (!["http:", "https:"].includes(u.protocol)) throw new Error("bad protocol");
+        mapUrl = rawUrl;
+      } catch {
+        return res.status(400).json({ message: "ลิงก์ไม่ถูกต้อง — ต้องขึ้นต้นด้วย http:// หรือ https://" });
+      }
+    }
+
+    let allowed = can(req.user, "manageMasterData");
+    if (!allowed) {
+      // มีงานของตัวเองอยู่ที่โครงการนี้ไหม (ผู้รับผิดชอบ / ทีมเข้างาน / คนสร้างงาน)
+      const uid = String(req.userId || "");
+      const mine = await CalendarEvent.exists({
+        site,
+        ...(company ? { company } : {}),
+        $or: [
+          { responsiblePersonId: uid },
+          { resPerson: uid },
+          { userId: uid },
+          { team: req.user?.fname },
+          { "teamMembers.userId": uid },
+        ],
+      });
+      allowed = Boolean(mine);
+    }
+    if (!allowed) {
+      return res.status(403).json({ message: "แก้พิกัดได้เฉพาะแอดมิน/ผู้จัดการ หรือช่างที่มีงานอยู่ที่โครงการนี้" });
+    }
+
+    // ⚠️ ทะเบียนลูกค้ามี unique index ที่ (cCompany, cSite) — ต้อง match ด้วยคู่นี้เท่านั้น
+    // ⚠️ ต้องใส่ userId ให้แถวใหม่เสมอ (GET /api/customer อ่านฟิลด์นี้ — แถวไม่มีเจ้าของเคยทำให้ 500)
+    await Customer.updateOne(
+      { cCompany: company, cSite: site },
+      { $set: { mapUrl }, $setOnInsert: { cCompany: company, cSite: site, userId: req.userId } },
+      { upsert: true }
+    );
+    const customer = await Customer.findOne({ cCompany: company, cSite: site }).lean();
+    res.json({ customer });
+  } catch (err) {
+    console.error("❌ แก้พิกัดโครงการไม่สำเร็จ:", err);
+    res.status(500).json({ message: "แก้พิกัดโครงการไม่สำเร็จ" });
+  }
+});
+
 router.get("/:id", verifyToken, async (req, res) => {
   const id = req.params.id;
   try {

@@ -11,3 +11,6 @@ serviceAccountKey.json
 .env
 .env.*
 !.env.example
+
+# ไฟล์สำรองข้อมูลจากสคริปต์ซ่อมข้อมูล — เก็บไว้ในเครื่อง ไม่ต้อง commit
+backup-*.json

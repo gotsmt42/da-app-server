@@ -7,6 +7,15 @@ const customerSchema = new mongoose.Schema(
     cEmail: { type: String},
     cName: { type: String},
     address: { type: String },
+    /**
+     * ลิงก์ตำแหน่งจริงบน Google Maps ของโครงการนี้
+     * ✅ เก็บไว้ที่ทะเบียนลูกค้า (ไม่ใช่แค่ในใบแจ้งงานใบเดียว) — โครงการเดิมอยู่ที่เดิมเสมอ
+     * ครั้งหน้าที่แจ้งงานให้โครงการนี้จึงเติมให้อัตโนมัติ ไม่ต้องไปหาลิงก์ใหม่ทุกครั้ง
+     * ⚠️ เก็บเป็น URL ที่ผู้ใช้แปะมาตรงๆ ไม่แกะเป็น lat/lng — ลิงก์ที่แชร์จาก Google Maps มีหลาย
+     * รูปแบบมาก (maps.app.goo.gl ย่อ, /place/, ?q=, พิกัดใน URL) การพยายามแกะเองจะพังเงียบๆ
+     * กับรูปแบบที่ไม่ได้เผื่อไว้ ส่วนการเปิดลิงก์ตรงๆ ใช้ได้กับทุกรูปแบบเสมอ
+     */
+    mapUrl: { type: String, default: "" },
     tel: String,
     tax: String,
     imageUrl: { type: String, default: "asset/image/userDefault-1.jpg" },
