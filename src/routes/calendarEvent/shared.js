@@ -12,7 +12,7 @@ const CalendarEvent = require("../../models/Events");
 const User = require("../../models/User");
 
 const verifyToken = require("../../middleware/auth");
-const { can, isAdminOrManager, SUPERVISOR_ROLES, departmentOf, DEPARTMENT,
+const { can, isAdminOrManager, SUPERVISOR_ROLES, departmentOf, DEPARTMENT, DEPARTMENT_LABEL,
 } = require("../../config/roles");
 
 const multer = require("multer");
@@ -77,6 +77,11 @@ const CONTRACT_FIELD_LABELS = {
   team: "ทีมที่เข้างาน",
   resPerson: "ผู้ปฏิบัติงาน",
   responsiblePerson: "ผู้รับผิดชอบ",
+  // ✅ ป้ายกำกับแผนกเจ้าของสัญญา — "ข้อมูลประกอบ" สำหรับดู/กรอง/ออกรายงานเท่านั้น
+  // ⚠️ คนละตัวกับฟิลด์ department ที่คุมขอบเขตการมองเห็น (ดู departmentScope ด้านล่าง) โดยตั้งใจ —
+  // แยกกันเพื่อให้ติดป้ายว่าสัญญานี้เป็นของฝ่ายขายได้ โดยงานไม่หายไปจากปฏิทิน/หน้าดำเนินงานของช่าง
+  departmentTag: "แผนก",
+  statusNote: "หมายเหตุสถานะสัญญา",
 };
 // responsiblePersonId เปลี่ยนคู่กับ responsiblePerson เสมอ — log แค่ชื่อที่คนอ่านออกก็พอ ไม่งั้นได้
 // บรรทัดรหัสยาวๆ ที่ไม่มีความหมายกับผู้อ่านซ้อนมาอีกรายการทุกครั้งที่เปลี่ยนผู้รับผิดชอบ
@@ -87,6 +92,9 @@ const NUMBER_CONTRACT_FIELDS = new Set(["visitCount", "intervalMonths", "jobValu
 // ทำให้ค่าเทียบกันได้จริง — ค่าที่ "ไม่มี" มาได้ทั้ง undefined / null / "" ต้องถือว่าเท่ากันหมด
 // และวันที่ที่เก็บเป็น Date กับที่ส่งมาเป็นสตริง "YYYY-MM-DD" ต้องเทียบกันได้ด้วย
 function normalizeContractValue(field, v) {
+  // ⚠️ แผนกที่ยังไม่เคยตั้งค่า (งานเก่าก่อนมีฟิลด์นี้) ต้องถือว่าเท่ากับ "service" ตาม default ของ schema
+  // ไม่งั้นการบันทึกครั้งแรกจะขึ้นไทม์ไลน์ว่า "แผนก: ฝ่ายบริการ → ฝ่ายบริการ" ทั้งที่ไม่มีอะไรเปลี่ยนจริง
+  if (field === "departmentTag") return String(v || DEPARTMENT.SERVICE).trim();
   if (v === undefined || v === null || v === "") return "";
   if (DATE_CONTRACT_FIELDS.has(field)) {
     const m = moment(v);
@@ -101,6 +109,9 @@ function normalizeContractValue(field, v) {
 
 function formatContractValue(field, v) {
   const norm = normalizeContractValue(field, v);
+  // ⚠️ แผนกที่ยังไม่เคยตั้งค่า = "ฝ่ายบริการ" ตามค่าเริ่มต้นของ schema (งานเก่าทั้งระบบสร้างก่อนมีฟิลด์นี้)
+  // ไม่ใช่ "(ว่าง)" — ไทม์ไลน์ต้องอ่านแล้วตรงกับที่หน้าจอแสดงจริง ไม่งั้นจะงงว่าย้ายมาจากแผนกอะไร
+  if (field === "departmentTag") return DEPARTMENT_LABEL[norm || DEPARTMENT.SERVICE] || norm;
   if (norm === "") return "(ว่าง)";
   if (DATE_CONTRACT_FIELDS.has(field)) return thaiDateNumeric(moment(norm, "YYYY-MM-DD"));
   if (field === "jobValue" || field === "commission") return `${Number(norm).toLocaleString("th-TH")} บาท`;

@@ -13,6 +13,7 @@ const {
   strictResponsibleOrClauses,
   withDepartmentScope,
   isServiceObserver,
+  DEPARTMENT,
 } = require("./shared");
 
 module.exports = (router) => {
@@ -189,7 +190,7 @@ module.exports = (router) => {
       // ค่าคอมมาทางนี้ (ดู useBasicInfoEndpoint ใน ContractOverview.js) พอไม่มีใครอ่านค่า update ก็ว่าง
       // เปล่า แล้วตกไปเข้าเงื่อนไข "ไม่มีข้อมูลให้แก้ไข" ด้านล่างทุกครั้ง — ส่วนแท็บสัญญาไม่เจอปัญหาเพราะ
       // ไปอีก route (PUT /contract/:contractGroupId) ซึ่งรองรับ commission อยู่แล้ว
-      const { eventIds, company, site, system, title, docNo, team, resPerson, responsiblePerson, responsiblePersonId, jobValue, commission } = req.body;
+      const { eventIds, company, site, system, title, docNo, team, resPerson, responsiblePerson, responsiblePersonId, jobValue, commission, departmentTag, statusNote } = req.body;
       if (!Array.isArray(eventIds) || eventIds.length === 0) {
         return res.status(400).json({ message: "ไม่พบรายการที่จะแก้ไข" });
       }
@@ -257,6 +258,17 @@ module.exports = (router) => {
       // ✅ ล้างค่าได้ด้วยการส่ง "" มา (ให้กลับไปเป็น "ยังไม่ระบุ") ไม่งั้นลบค่าที่เคยใส่ผิดไว้ไม่ได้เลย
       if (jobValue !== undefined) update.jobValue = (jobValue === "" || jobValue === null) ? null : Number(jobValue);
       if (commission !== undefined) update.commission = (commission === "" || commission === null) ? null : Number(commission);
+      // ✅ ป้ายกำกับแผนกของงานทั่วไป/โปรเจค (แถวที่ไม่มี contractGroupId จริง จึงใช้ /contract/:id ไม่ได้
+      // — เทียบ pattern เดียวกับ jobValue/commission ด้านบน) ⚠️ ต้องเป็นค่าที่ schema รู้จักเท่านั้น
+      // ⚠️ ไม่ใช่ฟิลด์ department ที่คุมขอบเขตการมองเห็น — ตัวนี้เป็นข้อมูลประกอบสำหรับดู/กรอง/รายงานล้วนๆ
+      if (departmentTag !== undefined) {
+        if (!Object.values(DEPARTMENT).includes(departmentTag)) {
+          return res.status(400).json({ message: "แผนกไม่ถูกต้อง" });
+        }
+        update.departmentTag = departmentTag;
+      }
+      // ✅ หมายเหตุสถานะของงานทั่วไป/โปรเจค — เทียบ pattern เดียวกับ departmentTag ด้านบน
+      if (statusNote !== undefined) update.statusNote = String(statusNote || "").trim();
       if (Object.keys(update).length === 0) {
         return res.status(400).json({ message: "ไม่มีข้อมูลให้แก้ไข" });
       }

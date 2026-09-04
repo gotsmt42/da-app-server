@@ -12,7 +12,12 @@ const {
   MAX_VISIT_COUNT,
   findDuplicateContractNo,
   diffContractFields,
+  DEPARTMENT,
 } = require("./shared");
+
+// ✅ ค่าแผนกที่ยอมรับได้ — อ่านจากตารางกลาง (config/roles.js) ไม่ hardcode สตริงซ้ำ เพื่อให้เพิ่มแผนก
+// ใหม่ในอนาคตแก้ที่เดียวแล้วมีผลทั้ง schema/route/หน้าจอพร้อมกัน
+const DEPARTMENT_VALUES = Object.values(DEPARTMENT);
 
 module.exports = (router) => {
   // ✅ รวมงานเก่าที่ยังไม่มี contractGroupId (สร้างก่อนมีฟีเจอร์สัญญา) เข้าเป็นสัญญาเดียวกัน — เลือก
@@ -354,8 +359,15 @@ module.exports = (router) => {
       // สัญญาทั้งก้อนเหมือนกัน ไม่ใช่รายครั้ง — ดูหน้า "ภาพรวมสัญญา" ที่แก้ inline ผ่านตารางได้เลย)
       const {
         contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue, commission,
-        team, resPerson, responsiblePerson, responsiblePersonId,
+        team, resPerson, responsiblePerson, responsiblePersonId, departmentTag, statusNote,
       } = req.body;
+
+      // ✅ ป้ายกำกับแผนกเจ้าของสัญญา — ต้องเป็นค่าที่ schema รู้จักเท่านั้น (ดู enum ที่ models/Events.js)
+      // ⚠️ เป็นแค่ "ข้อมูลประกอบ" สำหรับดู/กรอง/ออกรายงาน — ไม่ถูกใช้ในเงื่อนไขการกรองใดๆ ทั้งสิ้น
+      // (คนละตัวกับฟิลด์ department ที่ departmentScope ใช้) ติดป้ายแล้วงานยังอยู่ครบทุกหน้าจอเหมือนเดิม
+      if (departmentTag !== undefined && !DEPARTMENT_VALUES.includes(departmentTag)) {
+        return res.status(400).json({ message: "แผนกไม่ถูกต้อง" });
+      }
 
       // ✅ ห้ามเลขที่สัญญาซ้ำกับสัญญาอื่น — excludeContractGroupId เป็นตัวเอง เพราะทุกครั้งในสัญญานี้
       // มี contractNo เดิมอยู่แล้วโดยตั้งใจ (ไม่ถือว่าซ้ำ)
@@ -422,6 +434,9 @@ module.exports = (router) => {
         }
         update.commission = commission;
       }
+      if (departmentTag !== undefined) update.departmentTag = departmentTag;
+      // ✅ หมายเหตุสถานะ — ข้อความอิสระ ตัดช่องว่างหัวท้ายให้ (ช่องที่มีแต่ช่องว่าง = ตั้งใจล้างทิ้ง)
+      if (statusNote !== undefined) update.statusNote = String(statusNote || "").trim();
       if (team !== undefined) update.team = team;
       if (resPerson !== undefined) update.resPerson = resPerson;
       if (responsiblePerson !== undefined) update.responsiblePerson = responsiblePerson;
