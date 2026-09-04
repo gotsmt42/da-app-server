@@ -190,7 +190,7 @@ module.exports = (router) => {
       // ค่าคอมมาทางนี้ (ดู useBasicInfoEndpoint ใน ContractOverview.js) พอไม่มีใครอ่านค่า update ก็ว่าง
       // เปล่า แล้วตกไปเข้าเงื่อนไข "ไม่มีข้อมูลให้แก้ไข" ด้านล่างทุกครั้ง — ส่วนแท็บสัญญาไม่เจอปัญหาเพราะ
       // ไปอีก route (PUT /contract/:contractGroupId) ซึ่งรองรับ commission อยู่แล้ว
-      const { eventIds, company, site, system, title, docNo, team, resPerson, responsiblePerson, responsiblePersonId, jobValue, commission, departmentTag, statusNote } = req.body;
+      const { eventIds, company, site, system, title, docNo, team, resPerson, responsiblePerson, responsiblePersonId, jobValue, commission, departmentTag, statusNote, remark } = req.body;
       if (!Array.isArray(eventIds) || eventIds.length === 0) {
         return res.status(400).json({ message: "ไม่พบรายการที่จะแก้ไข" });
       }
@@ -269,6 +269,7 @@ module.exports = (router) => {
       }
       // ✅ หมายเหตุสถานะของงานทั่วไป/โปรเจค — เทียบ pattern เดียวกับ departmentTag ด้านบน
       if (statusNote !== undefined) update.statusNote = String(statusNote || "").trim();
+      if (remark !== undefined) update.remark = String(remark || "").trim();
       if (Object.keys(update).length === 0) {
         return res.status(400).json({ message: "ไม่มีข้อมูลให้แก้ไข" });
       }
