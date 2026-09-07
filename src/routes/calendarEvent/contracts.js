@@ -359,7 +359,7 @@ module.exports = (router) => {
       // สัญญาทั้งก้อนเหมือนกัน ไม่ใช่รายครั้ง — ดูหน้า "ภาพรวมสัญญา" ที่แก้ inline ผ่านตารางได้เลย)
       const {
         contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue, commission,
-        team, resPerson, responsiblePerson, responsiblePersonId, departmentTag, statusNote, remark,
+        team, resPerson, responsiblePerson, responsiblePersonId, departmentTag, statusNote, remark, contactName, contactTel,
       } = req.body;
 
       // ✅ ป้ายกำกับแผนกเจ้าของสัญญา — ต้องเป็นค่าที่ schema รู้จักเท่านั้น (ดู enum ที่ models/Events.js)
@@ -439,6 +439,9 @@ module.exports = (router) => {
       if (statusNote !== undefined) update.statusNote = String(statusNote || "").trim();
       // ✅ หมายเหตุทั่วไป — ข้อความอิสระ ตัดช่องว่างหัวท้ายให้ (ช่องที่มีแต่ช่องว่าง = ตั้งใจล้างทิ้ง)
       if (remark !== undefined) update.remark = String(remark || "").trim();
+      // ✅ ผู้ติดต่อหน้างาน — ระดับสัญญา (ทุกครั้งของสัญญาเดียวกันติดต่อคนเดียวกันเป็นปกติ)
+      if (contactName !== undefined) update.contactName = String(contactName || "").trim();
+      if (contactTel !== undefined) update.contactTel = String(contactTel || "").trim();
       if (team !== undefined) update.team = team;
       if (resPerson !== undefined) update.resPerson = resPerson;
       if (responsiblePerson !== undefined) update.responsiblePerson = responsiblePerson;

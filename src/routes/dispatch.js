@@ -738,6 +738,11 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
       title: dispatch.title,
       system: dispatch.system || "",
       description: dispatch.detail || "",
+      // ✅ ผู้ติดต่อหน้างานที่ผู้แจ้ง (เซล) กรอกมาในใบแจ้งงานอยู่แล้ว — คัดลอกลงงานที่สร้างด้วย
+      // ⚠️ ก่อนหน้านี้ข้อมูลนี้ค้างอยู่แค่ในใบแจ้งงาน พอใบถูกอนุมัติกลายเป็นงานจริง ช่างที่เปิดดูงาน
+      // จากปฏิทิน/หน้าการดำเนินงานจะไม่เห็นเบอร์ติดต่อเลย ต้องย้อนไปเปิดใบแจ้งงานเองทุกครั้ง
+      contactName: c.contactName || "",
+      contactTel: c.contactTel || "",
       date: startAt,
       start: startAt,
       // ⚠️ end ของงาน allDay เก็บแบบ exclusive (+1 วัน) ตามแบบแผนของทั้งแอป — ฝั่งจอลบคืน

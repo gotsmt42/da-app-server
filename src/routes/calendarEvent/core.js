@@ -27,6 +27,9 @@ module.exports = (router) => {
   router.post("/", verifyToken, async (req, res) => {
     try {
       const allowedFields = [
+        // ✅ ผู้ติดต่อหน้างาน — ช่างต้องรู้ว่าไปถึงแล้วโทรหาใคร (ดู models/Events.js)
+        "contactName",
+        "contactTel",
         "docNo",
         "company",
         "site",
@@ -456,6 +459,10 @@ module.exports = (router) => {
       // ชั้นหนึ่ง ดู trimForClosedJob ใน EditEvent.js — แต่ห้ามเชื่อ client เป็นด่านสุดท้าย)
       const CLOSED_JOB_TECH_FIELDS = [
         ...NON_BLOCKING_FIELDS,
+        // ✅ contactName/contactTel — เบอร์ผู้ติดต่อเปลี่ยนได้เรื่อยๆ หลังงานปิด (คนดูแลอาคารย้าย
+        // เปลี่ยนเบอร์) และเป็นข้อมูลติดต่อล้วนๆ ไม่กระทบข้อมูลงาน/ยอดเงิน/รายงานใดๆ เลย
+        // — เทียบเกณฑ์เดียวกับ docNo/description ที่เปิดให้แก้หลังปิดงานอยู่แล้ว
+        "contactName", "contactTel",
         "docNo", "description", "backgroundColor", "textColor", "fontSize",
       ];
       const isClosedJobAllowedUpdate = Object.keys(req.body).every((k) => CLOSED_JOB_TECH_FIELDS.includes(k));
@@ -500,6 +507,8 @@ module.exports = (router) => {
       const resubmitterName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
 
       const {
+        contactName,
+        contactTel,
         docNo,
         company,
         site,
@@ -599,6 +608,8 @@ module.exports = (router) => {
       // เปลี่ยนไปจากเดิม ทำให้ลากงานย้ายวันบนปฏิทิน (eventDrop → PUT /:id) พังบ่อยเพราะช่างคนเดิมมีงาน
       // อื่นอยู่แล้ววันนั้น ทั้งที่ในทางปฏิบัติ 1 ทีมรับงานหลายงานในวันเดียวกันได้ตามปกติ ไม่ควรบล็อก
       const newEvent = {
+        contactName,
+        contactTel,
         docNo,
         company,
         site,

@@ -83,6 +83,8 @@ const CONTRACT_FIELD_LABELS = {
   departmentTag: "แผนก",
   statusNote: "หมายเหตุสถานะสัญญา",
   remark: "หมายเหตุ",
+  contactName: "ผู้ติดต่อหน้างาน",
+  contactTel: "เบอร์ผู้ติดต่อ",
 };
 // responsiblePersonId เปลี่ยนคู่กับ responsiblePerson เสมอ — log แค่ชื่อที่คนอ่านออกก็พอ ไม่งั้นได้
 // บรรทัดรหัสยาวๆ ที่ไม่มีความหมายกับผู้อ่านซ้อนมาอีกรายการทุกครั้งที่เปลี่ยนผู้รับผิดชอบ
