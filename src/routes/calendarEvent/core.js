@@ -30,6 +30,7 @@ module.exports = (router) => {
         // ✅ ผู้ติดต่อหน้างาน — ช่างต้องรู้ว่าไปถึงแล้วโทรหาใคร (ดู models/Events.js)
         "contactName",
         "contactTel",
+        "displayOrder",
         "docNo",
         "company",
         "site",
@@ -462,7 +463,8 @@ module.exports = (router) => {
         // ✅ contactName/contactTel — เบอร์ผู้ติดต่อเปลี่ยนได้เรื่อยๆ หลังงานปิด (คนดูแลอาคารย้าย
         // เปลี่ยนเบอร์) และเป็นข้อมูลติดต่อล้วนๆ ไม่กระทบข้อมูลงาน/ยอดเงิน/รายงานใดๆ เลย
         // — เทียบเกณฑ์เดียวกับ docNo/description ที่เปิดให้แก้หลังปิดงานอยู่แล้ว
-        "contactName", "contactTel",
+        // ✅ displayOrder — แค่ลำดับการวางบนปฏิทิน ไม่ใช่ข้อมูลงาน จัดเรียงงานที่ปิดแล้วได้ตามปกติ
+        "contactName", "contactTel", "displayOrder",
         "docNo", "description", "backgroundColor", "textColor", "fontSize",
       ];
       const isClosedJobAllowedUpdate = Object.keys(req.body).every((k) => CLOSED_JOB_TECH_FIELDS.includes(k));
@@ -509,6 +511,7 @@ module.exports = (router) => {
       const {
         contactName,
         contactTel,
+        displayOrder,
         docNo,
         company,
         site,
@@ -610,6 +613,7 @@ module.exports = (router) => {
       const newEvent = {
         contactName,
         contactTel,
+        displayOrder,
         docNo,
         company,
         site,

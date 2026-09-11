@@ -167,6 +167,57 @@ module.exports = (router) => {
     }
   });
 
+  /**
+   * ✅ จัดลำดับงานภายใน "วันเดียวกัน" บนปฏิทิน — ผู้ใช้ลากสลับบน/ล่างเองได้
+   *
+   * รับมาเป็นลิสต์ [{ id, displayOrder }] ทีเดียวทั้งวัน แทนที่จะให้ frontend ยิง PUT /:id ทีละใบ
+   * ⚠️ เหตุผลที่ต้องเป็นคำขอเดียว: การเรียงคือ "ผลลัพธ์ของทั้งวัน" ถ้ายิงแยกแล้วสำเร็จบ้างล้มบ้าง
+   * ลำดับจะเพี้ยนค้างอยู่แบบครึ่งๆ (บางใบเลขใหม่ บางใบเลขเก่า) ซึ่งกู้คืนเองไม่ได้เลย
+   *
+   * ⚠️ ต้องประกาศ "ก่อน" PUT /:id เหมือน /basic-info ด้านล่าง ไม่งั้น Express จะจับ "reorder"
+   * เป็นค่า :id แล้ว route นี้จะไม่มีวันถูกเรียกถึง
+   */
+  router.put("/reorder", verifyToken, async (req, res) => {
+    try {
+      const { items } = req.body;
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ message: "ไม่มีรายการให้จัดลำดับ" });
+      }
+      // ⚠️ จำกัดจำนวนต่อคำขอ — ลำดับเป็นเรื่องของ "งานในวันเดียว" ซึ่งมีไม่กี่สิบใบเป็นอย่างมาก
+      // ถ้ามีมากผิดปกติแปลว่าฝั่งเรียกส่งผิด ไม่ควรปล่อยให้ไปเขียนฐานข้อมูลเป็นพันแถวรวดเดียว
+      if (items.length > 200) {
+        return res.status(400).json({ message: "รายการมากเกินไป" });
+      }
+      const ops = [];
+      for (const it of items) {
+        const order = Number(it?.displayOrder);
+        if (!it?.id || !Number.isFinite(order)) continue;
+        ops.push({
+          updateOne: { filter: { _id: it.id }, update: { $set: { displayOrder: order } } },
+        });
+      }
+      if (ops.length === 0) {
+        return res.status(400).json({ message: "ไม่มีรายการที่ถูกต้อง" });
+      }
+
+      // ✅ ตรวจสิทธิ์จาก "งานจริงในฐานข้อมูล" ไม่ใช่เชื่อ id ที่ส่งมา — และต้องผ่าน departmentScope
+      // ด้วย เพื่อไม่ให้ข้ามแผนกไปจัดลำดับงานที่ตัวเองมองไม่เห็นด้วยซ้ำ
+      const ids = ops.map((o) => o.updateOne.filter._id);
+      const targets = await CalendarEvent.find(
+        withDepartmentScope({ _id: { $in: ids } }, req)
+      ).select("_id").lean();
+      if (targets.length !== ids.length) {
+        return res.status(403).json({ message: "มีงานที่คุณไม่มีสิทธิ์จัดลำดับ" });
+      }
+
+      await CalendarEvent.bulkWrite(ops);
+      res.json({ message: "จัดลำดับเรียบร้อย", updated: ops.length });
+    } catch (error) {
+      console.error("❌ Error reordering events:", error);
+      res.status(500).json({ message: "จัดลำดับไม่สำเร็จ" });
+    }
+  });
+
   // ✅ แก้ไขบริษัท/โครงการ/ระบบ/ประเภทงาน พร้อมกันทุก document ของ "แถว" เดียวกันในหน้า "ภาพรวมงาน"
   // (ทั้งสัญญาจริง — ทุกครั้งที่ผูก contractGroupId เดียวกัน — และงานทั่วไป/โปรเจค/ยังไม่จัดกลุ่มที่อาจ
   // เข้าหลายวันไม่ติดกัน ผูกด้วย jobGroupId เดียวกัน) รับ eventIds ตรงๆ จาก frontend (ซึ่งรู้อยู่แล้วว่า
