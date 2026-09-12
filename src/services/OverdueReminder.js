@@ -447,7 +447,10 @@ async function checkAndNotifyOverdueInvoices() {
       await sendPushToRoles(SUPERVISOR_ROLES, {
         title: "💰 มีใบวางบิลเลยกำหนดชำระ",
         body: `ค้างรับ ${overdue.length} ใบ รวม ${Math.round(totalOutstanding).toLocaleString("th-TH")} บาท (นานสุด ${worst.st.overdueDays} วัน · ${worst.e.company || "ไม่ระบุลูกค้า"})`,
-        url: "/billing?tab=overdue",
+        // ⚠️ ใช้ชื่อ status ไม่ใช่ tab — ฝั่งหน้าเว็บ /billing เป็นลิงก์เก่าที่พาไปหน้ารวมการเงิน
+        // ซึ่งใช้ tab เลือกแท็บของตัวเองอยู่แล้ว ถ้าส่ง tab มาด้วยจะแย่งกันจนเปิดผิดแท็บ
+        // (ดู LegacyTabRedirect ใน da-app/src/app/router/index.js และตัวรับค่าใน BillingTracking.js)
+        url: "/billing?status=overdue",
         tag: "invoice-overdue-reminder",
         renotify: true,
       });
