@@ -44,6 +44,10 @@ const EXPECTED = {
   receiveDispatch: ["technician"],
   // ✅ เซลเปิดดู "ตารางงานช่าง" ได้ (?dept=service) — อ่านอย่างเดียว ไม่มีสิทธิ์เขียนตามมา
   viewServiceCalendar: ["admin", "manager", "sale"],
+  // ✅ ระบบเบิก Advance / Claim — ช่างเบิกของตัวเอง หัวหน้าเบิกแทน/อนุมัติ/ดูรายงานทั้งบริษัท
+  requestExpense: ["admin", "manager", "technician"],
+  approveExpense: ["admin", "manager"],
+  viewAllExpenses: ["admin", "manager"],
 };
 
 const FRONTEND_ROLES_FILE = path.resolve(

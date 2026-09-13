@@ -139,6 +139,19 @@ const CAPABILITIES = {
    * ตอบคำถาม "ใครดูตารางช่างได้บ้าง" ได้ครบในบรรทัดเดียว
    */
   viewServiceCalendar: [ROLES.ADMIN, ROLES.MANAGER, ROLES.SALE],
+
+  // ── เบิกเงินล่วงหน้า (Advance) / เคลียร์ค่าใช้จ่าย (Claim) ───────────────
+  /** ออกใบ Advance / ใบเคลมของตัวเองได้ */
+  requestExpense: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN],
+
+  /**
+   * อนุมัติ / ตีกลับ / บันทึกจ่ายเงิน / ปิดส่วนต่าง
+   * ⚠️ ผู้จัดการอนุมัติใบของตัวเองไม่ได้ (บังคับที่ route) — มีแต่แอดมินที่ทำได้ เพราะเป็นระดับสูงสุด
+   */
+  approveExpense: [ROLES.ADMIN, ROLES.MANAGER],
+
+  /** เห็นใบของทุกคน + เบิกแทนคนอื่นได้ + ดูรายงานทั้งบริษัท (คนอื่นเห็นเฉพาะของตัวเอง — กรองที่ server) */
+  viewAllExpenses: [ROLES.ADMIN, ROLES.MANAGER],
 };
 
 const ALL_CAPABILITIES = Object.keys(CAPABILITIES);

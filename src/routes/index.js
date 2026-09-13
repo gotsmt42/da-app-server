@@ -20,6 +20,8 @@ const issuedDocumentRouter = require("./issuedDocument");
 // ✅ ใบมอบหมายงานข้ามแผนก — แทน workOrder เดิมที่ไม่เคยถูกใช้จริง (0 document) และโครงไม่ตรงโจทย์
 // (บังคับ eventId · ผู้รับคนเดียว · ไม่มีแผนก · ความคืบหน้าเป็นก้อนเดียวแยกรายคนไม่ได้)
 const dispatchRouter = require("./dispatch");
+// ✅ เบิกเงินล่วงหน้า (Advance) / เคลียร์ค่าใช้จ่าย (Claim) ของพนักงาน — คอลเลกชันของตัวเอง (models/Expense.js)
+const expensesRouter = require("./expenses");
 
 /**
  * รวมการ mount router ของ API ทั้งหมดไว้ที่เดียว — เดิมกระจายอยู่ใน index.js ปนกับการตั้งค่า
@@ -42,6 +44,7 @@ router.use("/systemtype", systemTypeRouter);
 router.use("/doc-number", docNumberRouter);
 router.use("/issued-documents", issuedDocumentRouter);
 router.use("/dispatch", dispatchRouter);
+router.use("/expenses", expensesRouter);
 // ✅ เช็คอินเทอร์เน็ตเฉพาะเส้นทางนี้เส้นเดียว (ตัวเดียวที่ต้องยิงออกไปข้างนอก) ไม่ใช่ทั้งแอป
 router.use("/holidays", checkInternetConnection, holidayRouter);
 
