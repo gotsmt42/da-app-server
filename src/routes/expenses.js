@@ -53,17 +53,27 @@ const positionOf = (u) =>
 
 const buddhistYear = () => new Date().getFullYear() + 543;
 
-const DOC_PREFIX = { advance: "ADV", claim: "CLM" };
-const KIND_LABEL = { advance: "ใบเบิก Advance", claim: "ใบเคลม" };
+/**
+ * ชุดเลขที่เอกสาร — คนละชุดกันทั้งสามแบบ (ฝ่ายบัญชีต้องแยกออกจากกันตั้งแต่เลขที่ใบ)
+ * ⚠️ "reimburse" ไม่ใช่ kind ในฐานข้อมูล แต่เป็นชนิดย่อยของ claim (claimType) — ทุกที่ที่ต้องรู้ว่า
+ * ใบนี้อยู่ชุดไหนให้เรียก seriesOf(doc) ห้ามอ่าน doc.kind ตรงๆ ไม่งั้นใบสำรองจ่ายจะไปกินเลขชุด CLM
+ */
+const DOC_PREFIX = { advance: "ADV", claim: "CLM", reimburse: "RMB" };
+const KIND_LABEL = { advance: "ใบเบิก Advance", claim: "ใบเคลม", reimburse: "ใบเบิกค่าใช้จ่าย (สำรองจ่าย)" };
 
-const nextDocNo = async (kind) => {
+const seriesOf = (doc) => (doc?.kind === "claim" && doc?.claimType === "reimburse" ? "reimburse" : doc?.kind);
+const labelOf = (doc) => KIND_LABEL[seriesOf(doc)] || "ใบเบิก";
+/** ใบที่ผู้เบิกสำรองจ่ายเอง (ไม่มี Advance) — บริษัทต้องจ่ายคืนเต็มยอด */
+const isReimburse = (doc) => seriesOf(doc) === "reimburse";
+
+const nextDocNo = async (series) => {
   const year = buddhistYear();
   const c = await DocCounter.findOneAndUpdate(
-    { key: `${kind}:${year}` },
+    { key: `${series}:${year}` },
     { $inc: { seq: 1 } },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   );
-  return `${DOC_PREFIX[kind]}-${String(c.seq).padStart(5, "0")}/${year}`;
+  return `${DOC_PREFIX[series]}-${String(c.seq).padStart(5, "0")}/${year}`;
 };
 
 /**
@@ -72,13 +82,13 @@ const nextDocNo = async (kind) => {
  * ชน unique index แล้วผู้ใช้เจอ "ออกใบเบิกไม่สำเร็จ" ทุกครั้งโดยแก้เองไม่ได้
  * ✅ ชนเลขเมื่อไร ขอเลขถัดไปแล้วลองใหม่ (ตัวนับเดินหน้าเองจนพ้นเลขที่มีอยู่) — ไม่มีทางได้เลขซ้ำเพราะ index กันไว้
  */
-const saveWithDocNo = async (doc, kind) => {
+const saveWithDocNo = async (doc, series) => {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
       return await doc.save();
     } catch (err) {
       if (err?.code !== 11000 || !err?.keyPattern?.docNo) throw err;
-      doc.docNo = await nextDocNo(kind);
+      doc.docNo = await nextDocNo(series);
     }
   }
   throw new Error("ออกเลขที่เอกสารไม่สำเร็จ");
@@ -313,6 +323,9 @@ router.get("/report", verifyToken, async (req, res) => {
       if (to) query.docDate.$lte = new Date(to.getTime() + 12 * 3600 * 1000 - 1);
     }
     if (req.query.userId && can(req.user, "viewAllExpenses")) query["requester.userId"] = String(req.query.userId);
+    // ✅ ใบสำรองจ่าย (ไม่มี Advance) เป็นเงินที่บริษัทจ่ายจริงเหมือนกัน ต้องอยู่ในรายงานด้วย ไม่งั้นยอด
+    // ค่าใช้จ่ายรวมของเดือนจะขาดไปเงียบๆ — แยกเป็นคนละก้อนเพราะไม่มี "ตั้งเบิก/ส่วนต่าง" ให้เทียบ
+    // ⚠️ ก้อนนี้กรองด้วยวันที่ของใบตัวเอง (ต่างจากใบเคลมที่ยึดวันของใบ Advance) เพราะเป็นใบตั้งต้นในตัวเอง
 
     const advances = await Expense.find(query)
       .select("-activityLog -attachments")
@@ -328,7 +341,14 @@ router.get("/report", verifyToken, async (req, res) => {
     // ใบเคลมที่ยังมีผลต่อใบ Advance = ใบล่าสุดที่ไม่ถูกยกเลิก (ใบที่ถูกตีกลับยังนับเป็น "กำลังเคลียร์")
     const claimByAdvance = new Map();
     claims.forEach((c) => { if (!claimByAdvance.has(c.advanceId)) claimByAdvance.set(c.advanceId, c); });
-    res.json({ advances: advances.map((a) => ({ ...a, claim: claimByAdvance.get(String(a._id)) || null })) });
+    const reimbursements = await Expense.find({ ...query, kind: "claim", claimType: "reimburse" })
+      .select("-activityLog -attachments")
+      .sort({ docDate: -1, createdAt: -1 })
+      .lean();
+    res.json({
+      advances: advances.map((a) => ({ ...a, claim: claimByAdvance.get(String(a._id)) || null })),
+      reimbursements,
+    });
   } catch (err) {
     console.error("❌ ดึงรายงานการเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงรายงานไม่สำเร็จ" });
@@ -410,6 +430,11 @@ router.get("/", verifyToken, async (req, res) => {
   try {
     const query = { ...scopeFor(req) };
     if (Expense.KINDS.includes(req.query.kind)) query.kind = req.query.kind;
+    // ✅ แยก "เคลียร์ Advance" ออกจาก "สำรองจ่ายเอง" ได้ที่หน้าใบเคลม
+    // ⚠️ ใบเก่าที่ออกก่อนมีฟีเจอร์นี้ไม่มีฟิลด์ claimType เลย ต้องนับเป็น clear ด้วย ($ne: reimburse)
+    // ไม่ใช่ {claimType: "clear"} ซึ่งจะทำให้ใบเก่าหายไปจากรายการทั้งหมด
+    if (req.query.claimType === "reimburse") query.claimType = "reimburse";
+    else if (req.query.claimType === "clear") query.claimType = { $ne: "reimburse" };
     const statuses = String(req.query.status || "").split(",").map((s) => s.trim()).filter((s) => Expense.STATUS.includes(s));
     if (statuses.length) query.status = { $in: statuses };
     if (req.query.userId && can(req.user, "viewAllExpenses")) query["requester.userId"] = String(req.query.userId);
@@ -615,6 +640,99 @@ router.post("/claims", verifyToken, upload.array("files", 15), async (req, res) 
   }
 });
 
+
+/**
+ * ออกใบเบิกค่าใช้จ่ายแบบ "สำรองจ่ายเอง" (reimbursement) — ไม่มีใบ Advance อ้างอิง
+ *
+ * ✅ ผู้ใช้แจ้ง: "บางทีช่างออกค่าใช้จ่ายไปก่อนไม่ advance" — เดิมระบบบังคับว่าใบเคลมต้องอ้างใบ Advance
+ * ที่จ่ายเงินแล้วเสมอ ช่างที่ควักเงินตัวเองไปก่อนจึงไม่มีทางเบิกคืนในระบบเลย ต้องไปตามเอกสารกระดาษ
+ *
+ * ⚠️ เก็บเป็น kind = "claim" (claimType = "reimburse") ไม่ใช่ kind ใหม่ — ใบนี้คือ "ขอเงินคืนตามที่ใช้
+ * จริงพร้อมใบเสร็จ" เหมือนใบเคลมทุกประการ ต่างกันแค่ยอด Advance = 0 การอนุมัติ/จ่ายคืน/รายงาน/สิทธิ์
+ * จึงใช้กลไกเดียวกันทั้งหมด (ถ้าแยก kind ใหม่ต้องเขียนขอบเขตสิทธิ์-ตัวกรอง-รายงานซ้ำอีกชุด)
+ * ⚠️ difference = total − 0 = ยอดที่บริษัทต้องจ่ายคืน → เข้าขั้น "อนุมัติแล้ว → รอจ่ายคืน" (settle) เดิม
+ * ⚠️ ต้องมีรายการและยอดมากกว่า 0 เสมอ (ต่างจากใบเคลมแบบเคลียร์ Advance ที่ยอด 0 ได้ = ไม่ได้ใช้เงินเลย)
+ */
+router.post("/reimbursements", verifyToken, upload.array("files", 15), async (req, res) => {
+  try {
+    if (!can(req.user, "requestExpense") && !can(req.user, "viewAllExpenses")) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์ออกใบเบิกค่าใช้จ่าย" });
+    }
+    const me = actor(req);
+    const subject = String(req.body.subject || "").trim().slice(0, 300);
+    if (!subject) return res.status(400).json({ message: "กรุณาระบุเรื่องที่ขอเบิก" });
+
+    const items = sanitizeItems(req.body.items, "claim");
+    if (!items.length) return res.status(400).json({ message: "กรุณาเพิ่มรายการค่าใช้จ่ายที่สำรองจ่ายไปอย่างน้อย 1 รายการ" });
+    const total = sumItems(items);
+    if (total <= 0) return res.status(400).json({ message: "ยอดที่ขอเบิกคืนต้องมากกว่า 0 บาท" });
+
+    // ── ผู้เบิก (= คนที่สำรองจ่ายและต้องได้เงินคืน) ────────────────────
+    let requesterUser = req.user;
+    const requesterId = String(req.body.requesterId || "").trim();
+    if (requesterId && requesterId !== me.userId) {
+      if (!can(req.user, "viewAllExpenses")) {
+        return res.status(403).json({ message: "เฉพาะแอดมิน/ผู้จัดการเท่านั้นที่เบิกแทนคนอื่นได้" });
+      }
+      requesterUser = /^[a-f0-9]{24}$/i.test(requesterId) ? await User.findById(requesterId).lean() : null;
+      if (!requesterUser) return res.status(400).json({ message: "ไม่พบผู้เบิกที่เลือก" });
+    }
+
+    const linked = await resolveJob(req.body.eventId);
+    if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
+
+    const claim = new Expense({
+      kind: "claim",
+      claimType: "reimburse",
+      docNo: await nextDocNo("reimburse"),
+      status: "pending",
+      docDate: parseDay(req.body.docDate) || todayNoonUtc(),
+      to: String(req.body.to || "").trim().slice(0, 120),
+      subject,
+      note: String(req.body.note || "").trim().slice(0, 1000),
+      requester: {
+        userId: String(requesterUser._id),
+        name: personName(requesterUser),
+        position: String(req.body.position || "").trim().slice(0, 80) || positionOf(requesterUser),
+      },
+      createdBy: me,
+      ...linked,
+      items,
+      total,
+      // ⚠️ ไม่มีใบ Advance — ต้องเคลียร์ค่า snapshot ให้เป็นศูนย์ชัดเจน ไม่ปล่อยค่าว่างคลุมเครือ
+      advanceId: "",
+      advance: { docNo: "", subject: "", total: 0, paidAt: null },
+      difference: total,
+      submittedAt: new Date(),
+    });
+
+    await attachUploads(req, claim, me, "receipt");
+    const onBehalf = String(requesterUser._id) !== me.userId;
+    log(claim, "created", `ออกใบเบิกค่าใช้จ่าย (สำรองจ่ายเอง) ${fullBaht(total)}${onBehalf ? ` แทน ${claim.requester.name}` : ""}`, me);
+    await saveWithDocNo(claim, "reimburse");
+
+    notifySupervisors(me, {
+      title: `🧾 ขออนุมัติเบิกคืนค่าสำรองจ่าย · ${claim.requester.name}`,
+      body: [claim.docNo, subject, jobLabel(claim), `จ่ายคืน ${fullBaht(total)}`].filter(Boolean).join(" · "),
+      url: urlOf(claim),
+      tag: `expense-${claim._id}`,
+    });
+    if (onBehalf) {
+      notifyUsers([claim.requester.userId], me, {
+        title: `🧾 ${me.name} ออกใบเบิกค่าสำรองจ่ายให้คุณ`,
+        body: `${claim.docNo} · ${subject} · ${fullBaht(total)}`,
+        url: urlOf(claim),
+        tag: `expense-${claim._id}`,
+      });
+    }
+
+    res.status(201).json({ expense: claim.toObject() });
+  } catch (err) {
+    console.error("❌ ออกใบเบิกค่าสำรองจ่ายไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ออกใบเบิกค่าใช้จ่ายไม่สำเร็จ" });
+  }
+});
+
 // ══ /:id ══════════════════════════════════════════════════════════════════
 
 const loadVisible = async (req, res) => {
@@ -678,12 +796,15 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
 
     if (req.body.items !== undefined) {
       const items = sanitizeItems(req.body.items, doc.kind);
-      if (doc.kind === "advance" && !items.length) {
-        return res.status(400).json({ message: "กรุณาเพิ่มรายการที่ขอเบิกอย่างน้อย 1 รายการ" });
+      // ⚠️ ใบสำรองจ่ายต้องมีรายการและยอด > 0 เหมือนใบ Advance — "ไม่ได้ใช้เงินเลย" ใช้ได้เฉพาะใบที่
+      // เคลียร์ Advance (เงินออกไปแล้วจริง) ส่วนใบสำรองจ่ายยอด 0 ไม่มีอะไรให้จ่ายคืน = ไม่ควรมีใบ
+      const needItems = doc.kind === "advance" || isReimburse(doc);
+      if (needItems && !items.length) {
+        return res.status(400).json({ message: "กรุณาเพิ่มรายการอย่างน้อย 1 รายการ" });
       }
       const total = sumItems(items);
-      if (doc.kind === "advance" && total <= 0) return res.status(400).json({ message: "ยอดขอเบิกต้องมากกว่า 0 บาท" });
-      if (doc.kind === "claim" && !items.length && !doc.note) {
+      if (needItems && total <= 0) return res.status(400).json({ message: "ยอดที่ขอเบิกต้องมากกว่า 0 บาท" });
+      if (doc.kind === "claim" && !needItems && !items.length && !doc.note) {
         return res.status(400).json({ message: "กรุณาเพิ่มรายการที่ใช้จริง หรือระบุหมายเหตุหากไม่ได้ใช้เงินเลย" });
       }
       doc.items = items;
@@ -691,14 +812,16 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
       if (doc.kind === "claim") doc.difference = money(total - (doc.advance?.total || 0));
     }
 
-    if (doc.kind === "advance") {
+    // ✅ ใบ Advance และใบสำรองจ่าย เป็น "ใบที่ตั้งต้นเอง" — ผูกงาน/เปลี่ยนผู้เบิกได้
+    // ⚠️ ใบเคลมที่เคลียร์ Advance ทำสองอย่างนี้ไม่ได้ ทั้งงานและผู้เบิกต้องตามใบ Advance เสมอ
+    if (doc.kind === "advance" || isReimburse(doc)) {
       if (req.body.eventId !== undefined) {
         const linked = await resolveJob(req.body.eventId);
         if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
         doc.eventId = linked.eventId;
         doc.job = linked.job;
       }
-      if (req.body.dueClearAt !== undefined) doc.dueClearAt = parseDay(req.body.dueClearAt);
+      if (doc.kind === "advance" && req.body.dueClearAt !== undefined) doc.dueClearAt = parseDay(req.body.dueClearAt);
       const requesterId = String(req.body.requesterId || "").trim();
       if (requesterId && requesterId !== doc.requester.userId) {
         if (!can(req.user, "viewAllExpenses")) {
@@ -724,7 +847,7 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
 
     if (wasRejected) {
       notifySupervisors(me, {
-        title: `🔁 ส่ง${KIND_LABEL[doc.kind]}ใหม่หลังแก้ไข · ${doc.requester.name}`,
+        title: `🔁 ส่ง${labelOf(doc)}ใหม่หลังแก้ไข · ${doc.requester.name}`,
         body: `${doc.docNo} · ${doc.subject} · ${fullBaht(doc.total)}`,
         url: urlOf(doc),
         tag: `expense-${doc._id}`,
@@ -769,7 +892,8 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
         }
       } else {
         doc.status = "approved";
-        log(doc, "approved", `อนุมัติ · ${doc.difference > 0 ? "รอจ่ายเพิ่ม" : "รอรับคืน"} ${fullBaht(Math.abs(doc.difference))}${note ? ` · ${note}` : ""}`, me);
+        const waitText = isReimburse(doc) ? "รอจ่ายคืน" : doc.difference > 0 ? "รอจ่ายเพิ่ม" : "รอรับคืน";
+        log(doc, "approved", `อนุมัติ · ${waitText} ${fullBaht(Math.abs(doc.difference))}${note ? ` · ${note}` : ""}`, me);
       }
     }
     await doc.save();
@@ -777,11 +901,13 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
 
     const body = doc.kind === "advance"
       ? `${doc.docNo} · ${fullBaht(doc.total)} — รอฝ่ายบัญชีจ่ายเงิน`
-      : doc.status === "settled"
-        ? `${doc.docNo} · เคลียร์ ${doc.advance?.docNo} เรียบร้อย`
-        : `${doc.docNo} · ${doc.difference > 0 ? `บริษัทจะจ่ายเพิ่มให้ ${fullBaht(doc.difference)}` : `กรุณาคืนเงิน ${fullBaht(-doc.difference)}`}`;
+      : isReimburse(doc)
+        ? `${doc.docNo} · บริษัทจะจ่ายคืนให้ ${fullBaht(doc.difference)}`
+        : doc.status === "settled"
+          ? `${doc.docNo} · เคลียร์ ${doc.advance?.docNo} เรียบร้อย`
+          : `${doc.docNo} · ${doc.difference > 0 ? `บริษัทจะจ่ายเพิ่มให้ ${fullBaht(doc.difference)}` : `กรุณาคืนเงิน ${fullBaht(-doc.difference)}`}`;
     notifyUsers(ownersOf(doc), me, {
-      title: `✅ ${KIND_LABEL[doc.kind]}ได้รับอนุมัติแล้ว`,
+      title: `✅ ${labelOf(doc)}ได้รับอนุมัติแล้ว`,
       body,
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
@@ -811,7 +937,7 @@ router.post("/:id/reject", verifyToken, async (req, res) => {
     await doc.save();
 
     notifyUsers(ownersOf(doc), me, {
-      title: `↩️ ${KIND_LABEL[doc.kind]}ถูกตีกลับให้แก้ไข`,
+      title: `↩️ ${labelOf(doc)}ถูกตีกลับให้แก้ไข`,
       body: `${doc.docNo} · ${reason}`,
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
@@ -879,7 +1005,9 @@ router.post("/:id/settle", verifyToken, upload.array("files", 5), async (req, re
     doc.payment = readPayment(req, me);
     doc.status = "settled";
     await attachUploads(req, doc, me, "transfer_slip");
-    const diffText = doc.difference > 0 ? `จ่ายเพิ่ม ${fullBaht(doc.difference)}` : `รับคืน ${fullBaht(-doc.difference)}`;
+    const diffText = isReimburse(doc)
+      ? `จ่ายคืนค่าสำรองจ่าย ${fullBaht(doc.difference)}`
+      : doc.difference > 0 ? `จ่ายเพิ่ม ${fullBaht(doc.difference)}` : `รับคืน ${fullBaht(-doc.difference)}`;
     log(doc, "settled", `${diffText} (${PAYMENT_LABEL[doc.payment.method]}${doc.payment.ref ? ` ${doc.payment.ref}` : ""})`, me);
 
     const advance = doc.advanceId ? await Expense.findById(doc.advanceId) : null;
@@ -891,7 +1019,7 @@ router.post("/:id/settle", verifyToken, upload.array("files", 5), async (req, re
     if (advance) await advance.save();
 
     notifyUsers(ownersOf(doc), me, {
-      title: "🏁 เคลียร์ Advance เรียบร้อย",
+      title: isReimburse(doc) ? "🏁 ได้รับเงินคืนค่าสำรองจ่ายแล้ว" : "🏁 เคลียร์ Advance เรียบร้อย",
       body: `${doc.docNo} · ${diffText}`,
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
@@ -946,7 +1074,7 @@ router.post("/:id/cancel", verifyToken, async (req, res) => {
     if (advance) await advance.save();
 
     notifyUsers(ownersOf(doc), me, {
-      title: `🚫 ${KIND_LABEL[doc.kind]}ถูกยกเลิก`,
+      title: `🚫 ${labelOf(doc)}ถูกยกเลิก`,
       body: `${doc.docNo}${reason ? ` · ${reason}` : ""}`,
       url: urlOf(doc),
       tag: `expense-${doc._id}`,

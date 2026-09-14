@@ -63,14 +63,17 @@ async function checkAndNotifyPendingExpenses() {
   try {
     const cutoff = moment().subtract(PENDING_HOURS, "hours").toDate();
     const rows = await Expense.find({ status: "pending", submittedAt: { $lt: cutoff } })
-      .select("kind total").lean();
+      .select("kind claimType total").lean();
     if (rows.length === 0) return;
     if (!(await NotifyLog.claimOncePerDay("expense-pending", "broadcast", "admin+manager"))) return;
     const adv = rows.filter((r) => r.kind === "advance").length;
-    const clm = rows.length - adv;
+    // ✅ แยกใบสำรองจ่ายออกจากใบเคลมในข้อความ — สองใบนี้คนละเรื่องกันสำหรับคนอนุมัติ (ใบหนึ่งเคลียร์เงิน
+    // ที่จ่ายไปแล้ว อีกใบคือพนักงานควักเงินตัวเองรออยู่)
+    const rmb = rows.filter((r) => r.kind === "claim" && r.claimType === "reimburse").length;
+    const clm = rows.length - adv - rmb;
     await sendPushToRoles(SUPERVISOR_ROLES, {
       title: "📝 มีใบเบิกรออนุมัติค้างอยู่",
-      body: [adv ? `Advance ${adv} ใบ` : "", clm ? `ใบเคลม ${clm} ใบ` : ""].filter(Boolean).join(" · ") + ` เกิน ${PENDING_HOURS} ชั่วโมง`,
+      body: [adv ? `Advance ${adv} ใบ` : "", clm ? `ใบเคลม ${clm} ใบ` : "", rmb ? `สำรองจ่าย ${rmb} ใบ` : ""].filter(Boolean).join(" · ") + ` เกิน ${PENDING_HOURS} ชั่วโมง`,
       url: "/expenses/approvals",
       tag: "expense-pending",
       renotify: true,

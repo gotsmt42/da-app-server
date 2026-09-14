@@ -10,8 +10,9 @@ const mongoose = require("../db");
  * รายงานงบประมาณก็ต้องอ่านทั้งคู่พร้อมกันอยู่แล้ว
  *
  * ── วงจรชีวิต ─────────────────────────────────────────────────────────────
- * Advance:  pending → approved → paid → clearing → cleared
- * Claim:    pending → approved → settled
+ * Advance:        pending → approved → paid → clearing → cleared
+ * Claim (clear):  pending → approved → settled        (เคลียร์ใบ Advance)
+ * Claim (reimburse): pending → approved → settled     (สำรองจ่ายเอง ไม่มี Advance — บริษัทจ่ายคืน)
  * ทั้งคู่:   pending ⇄ rejected (ตีกลับให้แก้ แล้วส่งใหม่ในใบเดิม) · cancelled (จบ ไม่นับในยอด)
  *
  * ⚠️ สถานะ clearing/cleared ของ Advance ถูกตั้งจากฝั่งใบเคลมเท่านั้น (ดู routes/expenses.js)
@@ -20,6 +21,19 @@ const mongoose = require("../db");
  */
 
 const KINDS = ["advance", "claim"];
+
+/**
+ * ชนิดย่อยของใบเคลม (ใช้เฉพาะ kind = "claim")
+ *   clear     — เคลมเพื่อเคลียร์ใบ Advance ที่รับเงินไปแล้ว (ต้องมี advanceId)
+ *   reimburse — ผู้เบิก "สำรองจ่ายเอง" ไปก่อน ไม่มี Advance (ผู้ใช้แจ้ง: "บางทีช่างออกค่าใช้จ่ายไปก่อน
+ *               ไม่ advance") บริษัทจ่ายคืนเต็มยอดที่อนุมัติ
+ * ⚠️ ใบ reimburse ไม่มี advanceId/advance.total เสมอ → difference = ยอดรวม = เงินที่บริษัทต้องจ่ายคืน
+ * (สูตรส่วนต่างเดิม total − advance.total ให้ผลถูกต้องอยู่แล้วเมื่อยอด Advance เป็น 0 จึงไม่ต้องแยกสูตร)
+
+ * ⚠️ เลขที่เอกสารคนละชุดกัน: CLM-xxxxx/ปี (clear) · RMB-xxxxx/ปี (reimburse) — ฝ่ายบัญชีต้องแยก
+ * "เคลียร์เงินที่จ่ายล่วงหน้าไปแล้ว" ออกจาก "จ่ายคืนเงินที่พนักงานออกไปก่อน" ได้ตั้งแต่เลขที่ใบ
+ */
+const CLAIM_TYPES = ["clear", "reimburse"];
 
 const STATUS = [
   "pending",   // รออนุมัติ
@@ -133,6 +147,8 @@ const expenseSchema = new mongoose.Schema(
     total: { type: Number, default: 0, min: 0 },
 
     // ── เฉพาะ Claim ──────────────────────────────────────────────────────
+    /** ⚠️ ใบ advance ไม่ใช้ฟิลด์นี้ (ค่าจะเป็น "clear" ตาม default เฉยๆ) — อ่านค่าเมื่อ kind = "claim" เท่านั้น */
+    claimType: { type: String, enum: CLAIM_TYPES, default: "clear", index: true },
     advanceId: { type: String, default: "", index: true },
     /** snapshot ของใบ Advance ตอนเคลม — ยอดตั้งเบิกต้องไม่ขยับตามใบต้นทางที่อาจถูกแก้ภายหลัง */
     advance: {
@@ -195,6 +211,7 @@ expenseSchema.index({ kind: 1, status: 1, docDate: -1 });
 const Expense = mongoose.model("Expense", expenseSchema);
 
 Expense.KINDS = KINDS;
+Expense.CLAIM_TYPES = CLAIM_TYPES;
 Expense.STATUS = STATUS;
 Expense.CATEGORIES = CATEGORIES;
 Expense.FILE_KINDS = FILE_KINDS;
