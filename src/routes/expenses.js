@@ -12,6 +12,7 @@
  * ⚠️ ยอดเงินทุกตัวคำนวณที่ server เสมอ (qty × ราคาต่อหน่วย → รวม → ส่วนต่าง) ไม่เชื่อค่าที่ client ส่งมา —
  * นี่คือเอกสารการเงิน ถ้าเชื่อยอดจากหน้าจอ ใครแก้ request เองก็เบิกเกินรายการได้ทันที
  */
+const crypto = require("crypto");
 const express = require("express");
 const moment = require("moment");
 const multer = require("multer");
@@ -947,6 +948,70 @@ router.post("/:id/cancel", verifyToken, async (req, res) => {
   } catch (err) {
     console.error("❌ ยกเลิกใบเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "ยกเลิกไม่สำเร็จ" });
+  }
+});
+
+/**
+ * ออก "รหัสฟอร์มเคลมเปล่า" สำหรับพิมพ์ไปกรอกด้วยลายมือ โดยผูกกับใบ Advance ที่รอเคลียร์
+ *
+ * ✅ ทำไมรหัสต้องออกจาก server (ไม่สุ่มที่หน้าจอ): รหัสที่สุ่มในเบราว์เซอร์ใครก็พิมพ์ขึ้นมาเองได้
+ * ไม่มีทางรู้ว่าจริงหรือปลอม — รหัสจากที่นี่สุ่มด้วย crypto และถูกบันทึกลงประวัติของใบ Advance ทันที
+ * ฝ่ายบัญชีที่รับกระดาษมาจึงเปิดใบ Advance แล้วเทียบได้เลยว่ารหัสบนกระดาษถูกออกจริง โดยใคร เมื่อไร
+ * (กระดาษที่รหัสไม่อยู่ในประวัติ = ไม่ได้ออกจากระบบ ต้องตรวจสอบก่อนรับ)
+ *
+ * ⚠️ ออกได้เฉพาะใบที่ "จ่ายเงินแล้ว รอเคลียร์" — เงื่อนไขเดียวกับการออกใบเคลมในระบบ (POST /claims)
+ * ไม่งั้นจะมีกระดาษเคลมของใบที่เคลียร์ไปแล้ว/ยกเลิกไปแล้วหลุดออกไปใช้ซ้ำได้
+ * ⚠️ ใช้ $push แบบอะตอมมิก ไม่ใช่ doc.save() — แค่เพิ่มบรรทัดประวัติ ต้องไม่ไปเขียนทับฟิลด์อื่น
+ * ที่คนอื่นอาจกำลังแก้อยู่พร้อมกัน (เช่น หัวหน้ากำลังบันทึกจ่ายเงิน)
+ */
+const FORM_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // ตัด 0/O/1/I ที่อ่านสับสนบนกระดาษ
+const newFormCode = () => {
+  // 256 หารด้วย 32 ลงตัว → byte % 32 ได้การกระจายเท่ากันทุกตัว (ไม่มีอคติแบบ modulo)
+  const rand = Array.from(crypto.randomBytes(6), (b) => FORM_CODE_ALPHABET[b % 32]).join("");
+  return `FC-${moment().format("YYMMDD")}-${rand}`;
+};
+
+router.post("/:id/blank-claim-form", verifyToken, async (req, res) => {
+  try {
+    if (!can(req.user, "requestExpense") && !can(req.user, "viewAllExpenses")) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์ออกฟอร์มใบเคลม" });
+    }
+    const doc = await loadVisible(req, res);
+    if (!doc) return;
+    if (doc.kind !== "advance") return res.status(400).json({ message: "ฟอร์มเคลมต้องอ้างถึงใบ Advance เท่านั้น" });
+    if (doc.status !== "paid") {
+      const why = {
+        pending: "ใบ Advance ยังไม่ได้รับอนุมัติ",
+        rejected: "ใบ Advance ถูกตีกลับอยู่",
+        approved: "ยังไม่ได้บันทึกการจ่ายเงิน Advance",
+        clearing: `ใบ Advance นี้มีใบเคลม ${doc.claimDocNo || ""} อยู่แล้ว`,
+        cleared: "ใบ Advance นี้เคลียร์เรียบร้อยแล้ว",
+        cancelled: "ใบ Advance นี้ถูกยกเลิกแล้ว",
+      }[doc.status];
+      return res.status(409).json({ message: why || "ใบ Advance นี้ยังเคลียร์ไม่ได้" });
+    }
+
+    const me = actor(req);
+    const code = newFormCode();
+    const issuedAt = new Date();
+    await Expense.updateOne(
+      { _id: doc._id },
+      {
+        $push: {
+          activityLog: {
+            action: "blank_claim_form",
+            detail: `ออกฟอร์มเคลมเปล่า (กรอกด้วยลายมือ) รหัส ${code}`,
+            userId: me.userId,
+            userName: me.name,
+            timestamp: issuedAt,
+          },
+        },
+      }
+    );
+    res.json({ code, issuedAt, issuedBy: me.name });
+  } catch (err) {
+    console.error("❌ ออกฟอร์มเคลมเปล่าไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ออกฟอร์มเคลมเปล่าไม่สำเร็จ" });
   }
 });
 
