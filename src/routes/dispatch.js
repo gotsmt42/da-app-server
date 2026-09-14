@@ -248,7 +248,9 @@ router.get("/summary", verifyToken, async (req, res) => {
       { $match: scopeFor(req) },
       { $group: { _id: "$status", count: { $sum: 1 } } },
     ]);
-    const byStatus = { requested: 0, assigned: 0, in_progress: 0, done: 0, cancelled: 0 };
+    // ⚠️ ต้องมี rejected ด้วย — ใบที่ถูกตีกลับคือใบที่ "ผู้แจ้งต้องแก้แล้วส่งใหม่" ใช้ทำป้ายตัวเลขบนเมนู
+    // (เดิมตกหล่นจากตารางนี้ ค่าที่ aggregate นับมาได้จึงถูกทิ้งเงียบๆ)
+    const byStatus = { requested: 0, rejected: 0, assigned: 0, in_progress: 0, done: 0, cancelled: 0 };
     rows.forEach((r) => { if (byStatus[r._id] !== undefined) byStatus[r._id] = r.count; });
 
     const urgentOpen = await Dispatch.countDocuments({

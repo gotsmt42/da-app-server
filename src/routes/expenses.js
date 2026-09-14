@@ -267,7 +267,11 @@ router.get("/summary", verifyToken, async (req, res) => {
   try {
     const scope = scopeFor(req);
     const now = new Date();
-    const [pending, toPay, awaitingClaim, overdueClear, toSettle, outstanding] = await Promise.all([
+    // ✅ ใบของฉันที่ถูกตีกลับ — ใช้ทำป้ายตัวเลขบนเมนู "ใบ Advance"/"ใบเคลม" (งานที่ "ฉัน" ต้องแก้)
+    // ⚠️ ต้องอิงตัวผู้ใช้เสมอ ไม่ใช่ scope ตามสิทธิ์ — หัวหน้าเห็นใบตีกลับของทุกคนใน scope แต่ใบที่
+    // *เขา* ต้องแก้มีแค่ของตัวเอง ป้ายที่นับของคนอื่นด้วยจะกดเข้าไปแล้วไม่มีอะไรให้ทำ
+    const mine = { $or: [{ "requester.userId": String(req.userId || "") }, { "createdBy.userId": String(req.userId || "") }] };
+    const [pending, toPay, awaitingClaim, overdueClear, toSettle, outstanding, advanceRejectedMine, claimRejectedMine] = await Promise.all([
       Expense.countDocuments({ ...scope, status: "pending" }),
       Expense.countDocuments({ ...scope, kind: "advance", status: "approved" }),
       Expense.countDocuments({ ...scope, kind: "advance", status: "paid" }),
@@ -277,9 +281,12 @@ router.get("/summary", verifyToken, async (req, res) => {
         { $match: { ...scope, kind: "advance", status: { $in: ["paid", "clearing"] } } },
         { $group: { _id: null, total: { $sum: "$total" } } },
       ]),
+      Expense.countDocuments({ ...mine, kind: "advance", status: "rejected" }),
+      Expense.countDocuments({ ...mine, kind: "claim", status: "rejected" }),
     ]);
     res.json({
       pending, toPay, awaitingClaim, overdueClear, toSettle,
+      advanceRejectedMine, claimRejectedMine,
       outstandingAmount: money(outstanding[0]?.total || 0),
     });
   } catch (err) {

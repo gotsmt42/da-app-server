@@ -49,7 +49,7 @@ async function checkAndNotifyOverdueAdvances() {
     await sendPushToRoles(SUPERVISOR_ROLES, {
       title: "⏰ มี Advance เลยกำหนดเคลียร์",
       body: `${rows.length} ใบ รวม ${baht(sum)} ยังไม่ส่งใบเคลม`,
-      url: "/expenses?tab=advances&status=paid",
+      url: "/expenses/advances?status=overdue",
       tag: "advance-overdue",
       renotify: true,
     });
@@ -71,7 +71,7 @@ async function checkAndNotifyPendingExpenses() {
     await sendPushToRoles(SUPERVISOR_ROLES, {
       title: "📝 มีใบเบิกรออนุมัติค้างอยู่",
       body: [adv ? `Advance ${adv} ใบ` : "", clm ? `ใบเคลม ${clm} ใบ` : ""].filter(Boolean).join(" · ") + ` เกิน ${PENDING_HOURS} ชั่วโมง`,
-      url: "/expenses?tab=approvals",
+      url: "/expenses/approvals",
       tag: "expense-pending",
       renotify: true,
     });
