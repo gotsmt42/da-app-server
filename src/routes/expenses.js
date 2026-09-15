@@ -151,9 +151,61 @@ const sanitizeItems = (raw, kind) =>
         amount: money(qty * unitPrice),
         advanceItemIndex: kind === "claim" && Number.isInteger(idx) && idx >= 0 ? idx : null,
         receiptNo: kind === "claim" ? String(it?.receiptNo || "").trim().slice(0, 60) : "",
+        person: {
+          userId: /^[a-f0-9]{24}$/i.test(String(it?.person?.userId || "")) ? String(it.person.userId) : "",
+          name: String(it?.person?.name || "").trim().slice(0, 80),
+        },
       };
     })
     .filter((it) => it.description);
+
+/**
+ * ชื่อ-นามสกุล สำหรับเอกสาร — "สมชาย ใจดี"
+ * ✅ ผู้ใช้ขอ: "ถ้าระบุอัตโนมัติให้มีนามสกุลด้วย" — ใบเบิกที่พิมพ์ออกไปลงชื่อ/ส่งบัญชี ต้องระบุตัวคนได้ชัด
+ * ⚠️ ต่างจาก personName (ชื่อต้นอย่างเดียว) ที่ระบบใช้เรียกคนบนหน้าจอทั่วไป — ฟิลด์ requester.name ฯลฯ ยังเก็บ
+ * ชื่อต้นตามแบบแผนเดิม ส่วนชื่อเต็มเติมให้ตอนอ่านด้วย withFullNames (ใบเก่าก็ได้นามสกุลด้วย ไม่ต้องย้อนแก้ข้อมูล)
+ */
+const fullNameOf = (u) =>
+  [u?.fname, u?.lname].map((x) => String(x || "").trim()).filter(Boolean).join(" ") || personName(u);
+
+/**
+ * เติม fullName (ชื่อ-นามสกุลปัจจุบันจากทะเบียนพนักงาน) ให้ทุกคนที่ถูกอ้างถึงในใบ — ผู้เบิก/ผู้อนุมัติ/คนออกใบ/
+ * พนักงานในแต่ละรายการ รวมถึงใบคู่ที่แนบมา (advanceDoc/claim) · ยิง query รายชื่อครั้งเดียวต่อคำขอ
+ * @param {object|object[]} docs  เอกสารแบบ plain object (toObject()/lean) — แก้ไขในตัว แล้วคืนตัวเดิม
+ */
+const withFullNames = async (docs) => {
+  const list = (Array.isArray(docs) ? docs : [docs]).filter(Boolean);
+  const all = [];
+  list.forEach((d) => { all.push(d); if (d.advanceDoc) all.push(d.advanceDoc); if (d.claim) all.push(d.claim); });
+  const refsOf = (d) => [d.requester, d.approvedBy, d.createdBy, ...(d.items || []).map((it) => it.person)]
+    .filter((p) => p && /^[a-f0-9]{24}$/i.test(String(p.userId || "")));
+  const ids = [...new Set(all.flatMap((d) => refsOf(d).map((p) => String(p.userId))))];
+  if (!ids.length) return docs;
+  const users = await User.find({ _id: { $in: ids } }).select("fname lname username").lean();
+  const byId = new Map(users.map((u) => [String(u._id), fullNameOf(u)]));
+  all.forEach((d) => refsOf(d).forEach((p) => {
+    const name = byId.get(String(p.userId));
+    if (name) p.fullName = name;
+  }));
+  return docs;
+};
+
+/**
+ * เติม/ยืนยันชื่อพนักงานของแต่ละรายการจากทะเบียนพนักงาน (ดู item.person ใน models/Expense.js)
+ * ⚠️ ชื่อที่ส่งมาพร้อม userId เชื่อไม่ได้ — ใครแก้ request เองก็ใส่ userId ของคน ก. แต่ชื่อคน ข. ได้
+ * ✅ userId ที่ไม่มีในระบบ = ถือเป็นคนนอกระบบ (ล้าง userId เหลือแค่ชื่อที่พิมพ์)
+ */
+const withPersons = async (items) => {
+  const ids = [...new Set(items.map((it) => it.person?.userId).filter(Boolean))];
+  const users = ids.length ? await User.find({ _id: { $in: ids } }).select("fname lname username").lean() : [];
+  // ✅ ชื่อ-นามสกุล — ชื่อในรายการคือ "เงินบรรทัดนี้จ่ายให้ใคร" บนเอกสารการเงิน ต้องระบุตัวคนได้ชัด
+  const byId = new Map(users.map((u) => [String(u._id), fullNameOf(u)]));
+  return items.map((it) => {
+    const id = it.person?.userId;
+    if (id && byId.has(id)) return { ...it, person: { userId: id, name: byId.get(id) } };
+    return { ...it, person: { userId: "", name: it.person?.name || "" } };
+  });
+};
 
 const sumItems = (items) => money(items.reduce((s, it) => s + (Number(it.amount) || 0), 0));
 
@@ -233,18 +285,58 @@ const attachUploads = async (req, doc, me, fallbackKind) => {
   }
 };
 
-/** snapshot งานที่ผูก — ตรวจกับของจริงเสมอ ห้ามเชื่อชื่องานที่ client ส่งมา */
+/**
+ * snapshot งานที่ผูก — ตรวจกับของจริงเสมอ ห้ามเชื่อชื่องานที่ client ส่งมา
+ * ✅ คืน jobKey (กุญแจงานสำหรับกันออกใบ Advance ซ้ำ ดู models/Expense.js) มาด้วย
+ */
 const resolveJob = async (eventId) => {
   const id = String(eventId || "").trim();
-  if (!id) return { eventId: "", job: { title: "", company: "", site: "", docNo: "", start: null } };
+  if (!id) return { eventId: "", jobKey: "", job: { title: "", system: "", company: "", site: "", docNo: "", start: null, round: "", visitCount: 0 } };
   if (!/^[a-f0-9]{24}$/i.test(id)) return null;
-  const ev = await CalendarEvent.findById(id).select("title company site docNo start").lean();
+  const ev = await CalendarEvent.findById(id).select("title system company site docNo start time visitCount jobGroupId").lean();
   if (!ev) return null;
   return {
     eventId: id,
-    job: { title: ev.title || "", company: ev.company || "", site: ev.site || "", docNo: ev.docNo || "", start: ev.start || null },
+    jobKey: ev.jobGroupId || id,
+    job: {
+      title: ev.title || "", system: ev.system || "", company: ev.company || "", site: ev.site || "",
+      docNo: ev.docNo || "", start: ev.start || null,
+      round: ev.time === undefined || ev.time === null ? "" : String(ev.time), visitCount: Number(ev.visitCount) || 0,
+    },
   };
 };
+
+const STATUS_TH = {
+  pending: "รออนุมัติ", rejected: "ถูกตีกลับ", approved: "อนุมัติแล้ว รอจ่ายเงิน", paid: "จ่ายแล้ว รอเคลียร์",
+  clearing: "ส่งเคลมแล้ว รอตรวจ", cleared: "เคลียร์แล้ว",
+};
+
+/**
+ * ใบ Advance ที่ "ยังมีผล" ของงานนี้ (ทุกสถานะยกเว้นยกเลิก) — null = ออกใบใหม่ได้
+ * ⚠️ ใบที่ถูกตีกลับยังนับ — ใบนั้นแก้แล้วส่งใหม่ได้ ถ้าปล่อยให้ออกใบใหม่ซ้อนจะมี 2 ใบของงานเดียวกัน
+ * ⚠️ ตรวจทั้ง jobKey และ eventId ของทุกวันในกลุ่มงาน — ใบเก่าที่ออกก่อนมีฟิลด์ jobKey มีแค่ eventId
+ * ของวันใดวันหนึ่ง ถ้าเทียบแค่ jobKey จะมองไม่เห็นใบพวกนั้นเลย
+ */
+const findActiveAdvanceForJob = async (linked, excludeId = null) => {
+  if (!linked?.eventId) return null;
+  const groupIds = linked.jobKey && linked.jobKey !== linked.eventId
+    ? (await CalendarEvent.find({ jobGroupId: linked.jobKey }).select("_id").lean()).map((e) => String(e._id))
+    : [];
+  const eventIds = [...new Set([linked.eventId, ...groupIds])];
+  const query = {
+    kind: "advance",
+    status: { $ne: "cancelled" },
+    $or: [{ jobKey: linked.jobKey }, { eventId: { $in: eventIds } }],
+  };
+  if (excludeId) query._id = { $ne: excludeId };
+  return Expense.findOne(query).select("docNo status total requester createdBy").lean();
+};
+
+const duplicateAdvanceMessage = (adv) =>
+  `งานนี้มีใบเบิก Advance แล้ว (${adv.docNo} · ${STATUS_TH[adv.status] || adv.status}${adv.requester?.name ? ` · ${adv.requester.name}` : ""}) — 1 งานออกใบ Advance ได้ใบเดียว`;
+
+/** ชนล็อก unique ของ activeAdvanceJob = มีคนออกใบ Advance ของงานเดียวกันไปพร้อมกันเสี้ยววินาทีก่อน */
+const isAdvanceLockConflict = (err) => err?.code === 11000 && Boolean(err?.keyPattern?.activeAdvanceJob);
 
 const jobLabel = (doc) => [doc.job?.title, doc.job?.site].filter(Boolean).join(" · ");
 
@@ -358,8 +450,10 @@ router.get("/report", verifyToken, async (req, res) => {
 /** รายชื่อคนที่เบิกแทนได้ — เฉพาะหัวหน้า */
 router.get("/people", verifyToken, async (req, res) => {
   try {
-    if (!can(req.user, "viewAllExpenses")) {
-      return res.status(403).json({ message: "เฉพาะแอดมิน/ผู้จัดการเท่านั้นที่เบิกแทนคนอื่นได้" });
+    // ✅ ทุกคนที่ออกใบเบิกได้ ดึงรายชื่อได้ — หัวหน้างานใช้เลือกพนักงานในแต่ละรายการ (เบิกเบี้ยเลี้ยงให้ลูกทีม)
+    // ⚠️ การ "เปลี่ยนผู้เบิกเป็นคนอื่น" ยังจำกัดเฉพาะแอดมิน/ผู้จัดการเหมือนเดิม — ตรวจที่ POST/PUT ไม่ใช่ที่นี่
+    if (!can(req.user, "viewAllExpenses") && !can(req.user, "requestExpense")) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์ใช้งานระบบเบิก" });
     }
     const users = await User.find({}).select("fname lname username role rank imageUrl").sort({ fname: 1 }).lean();
     res.json({
@@ -402,14 +496,66 @@ router.get("/jobs", verifyToken, async (req, res) => {
     }
     const query = and.length ? { ...base, $and: and } : base;
     const jobs = await CalendarEvent.find(query)
-      .select("title company site docNo system start end status")
+      .select("title company site docNo system start end status jobGroupId time visitCount team teamMembers")
       .sort({ start: -1 })
       .limit(40)
       .lean();
-    res.json({ jobs });
+
+    // ✅ บอกหน้าจอว่างานไหนมีใบ Advance แล้ว — ช่องเลือกงานในฟอร์มจะได้ปิดตัวเลือกนั้นไว้ตั้งแต่แรก
+    // ไม่ต้องให้ผู้ใช้กรอกทั้งใบแล้วค่อยมาเจอว่าส่งไม่ได้ตอนกดส่ง (server ยังตรวจซ้ำตอนบันทึกเสมอ)
+    const keyOf = (j) => j.jobGroupId || String(j._id);
+    const byEvent = new Map(jobs.map((j) => [String(j._id), keyOf(j)]));
+    const advances = jobs.length
+      ? await Expense.find({
+        kind: "advance",
+        status: { $ne: "cancelled" },
+        $or: [{ jobKey: { $in: jobs.map(keyOf) } }, { eventId: { $in: [...byEvent.keys()] } }],
+      }).select("docNo status jobKey eventId").lean()
+      : [];
+    const advByKey = new Map();
+    advances.forEach((a) => {
+      const key = a.jobKey || byEvent.get(String(a.eventId));
+      if (key && !advByKey.has(key)) advByKey.set(key, { _id: a._id, docNo: a.docNo, status: a.status });
+    });
+    res.json({
+      jobs: jobs.map(({ jobGroupId, time, team, teamMembers, ...j }) => ({
+        ...j,
+        round: time === undefined || time === null ? "" : String(time),
+        // ✅ รายชื่อคนในงาน (หัวหน้าทีม + ลูกทีม) — ปุ่ม "เบี้ยเลี้ยงทีมงาน" ในฟอร์มใช้สร้างรายการให้ทีละคน
+        teamNames: [...new Set([team, ...(teamMembers || []).map((m) => m?.name)].map((n) => String(n || "").trim()).filter(Boolean))],
+        advance: advByKey.get(jobGroupId || String(j._id)) || null,
+      })),
+    });
   } catch (err) {
     console.error("❌ ค้นหางานไม่สำเร็จ:", err);
     res.status(500).json({ message: "ค้นหางานไม่สำเร็จ" });
+  }
+});
+
+/**
+ * งานนี้มีใบเบิก Advance แล้วหรือยัง — ใช้ในหน้าตารางงาน (เมนู "เบิก Advance งานนี้") และฟอร์มออกใบ
+ * ✅ ตอบแค่ข้อมูลที่จำเป็นต่อการตัดสินใจ (เลขที่/สถานะ/ผู้เบิก) — ช่างคนอื่นในงานเดียวกันต้องรู้ว่า
+ * "มีคนเบิกไปแล้ว" แม้ใบนั้นจะไม่ใช่ของตัวเอง ส่วนรายละเอียดยอด/รายการยังเปิดดูได้ตามสิทธิ์เดิมเท่านั้น (canOpen)
+ */
+router.get("/job-advance/:eventId", verifyToken, async (req, res) => {
+  try {
+    if (!can(req.user, "requestExpense") && !can(req.user, "viewAllExpenses")) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์ใช้งานระบบเบิก" });
+    }
+    const linked = await resolveJob(req.params.eventId);
+    if (!linked || !linked.eventId) return res.status(404).json({ message: "ไม่พบงานนี้" });
+    const adv = await findActiveAdvanceForJob(linked);
+    res.json({
+      advance: adv
+        ? {
+          _id: adv._id, docNo: adv.docNo, status: adv.status, statusLabel: STATUS_TH[adv.status] || adv.status,
+          requesterName: adv.requester?.name || "", canOpen: canSee(req, adv),
+        }
+        : null,
+    });
+  } catch (err) {
+    console.error("❌ ตรวจใบ Advance ของงานไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ตรวจสอบไม่สำเร็จ" });
   }
 });
 
@@ -465,7 +611,7 @@ router.get("/", verifyToken, async (req, res) => {
       .sort({ docDate: -1, createdAt: -1 })
       .limit(limit)
       .lean();
-    res.json({ expenses });
+    res.json({ expenses: await withFullNames(expenses) });
   } catch (err) {
     console.error("❌ ดึงรายการใบเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงรายการไม่สำเร็จ" });
@@ -485,7 +631,7 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
     const subject = String(req.body.subject || "").trim().slice(0, 300);
     if (!subject) return res.status(400).json({ message: "กรุณาระบุเรื่องที่ขอเบิก" });
 
-    const items = sanitizeItems(req.body.items, "advance");
+    const items = await withPersons(sanitizeItems(req.body.items, "advance"));
     if (!items.length) return res.status(400).json({ message: "กรุณาเพิ่มรายการที่ขอเบิกอย่างน้อย 1 รายการ" });
     const total = sumItems(items);
     if (total <= 0) return res.status(400).json({ message: "ยอดขอเบิกต้องมากกว่า 0 บาท" });
@@ -503,6 +649,11 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
 
     const linked = await resolveJob(req.body.eventId);
     if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
+    // 🔒 1 งาน ออกใบ Advance ได้ใบเดียว (ดู activeAdvanceJob ใน models/Expense.js)
+    const existing = await findActiveAdvanceForJob(linked);
+    if (existing) {
+      return res.status(409).json({ message: duplicateAdvanceMessage(existing), advance: { _id: existing._id, docNo: existing.docNo, status: existing.status } });
+    }
 
     const expense = new Expense({
       kind: "advance",
@@ -519,6 +670,7 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
       },
       createdBy: me,
       ...linked,
+      ...(linked.jobKey ? { activeAdvanceJob: linked.jobKey } : {}),
       items,
       total,
       dueClearAt: parseDay(req.body.dueClearAt),
@@ -545,8 +697,11 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
       });
     }
 
-    res.status(201).json({ expense: expense.toObject() });
+    res.status(201).json({ expense: await withFullNames(expense.toObject()) });
   } catch (err) {
+    if (isAdvanceLockConflict(err)) {
+      return res.status(409).json({ message: "งานนี้เพิ่งมีการออกใบเบิก Advance ไปแล้ว — 1 งานออกใบ Advance ได้ใบเดียว" });
+    }
     console.error("❌ ออกใบเบิก Advance ไม่สำเร็จ:", err);
     res.status(500).json({ message: "ออกใบเบิกไม่สำเร็จ" });
   }
@@ -581,7 +736,7 @@ router.post("/claims", verifyToken, upload.array("files", 15), async (req, res) 
       return res.status(409).json({ message: why || "ใบ Advance นี้ยังเคลียร์ไม่ได้" });
     }
 
-    const items = sanitizeItems(req.body.items, "claim");
+    const items = await withPersons(sanitizeItems(req.body.items, "claim"));
     const total = sumItems(items);
     const note = String(req.body.note || "").trim().slice(0, 1000);
     // ✅ ยอด 0 ได้ (ไม่ได้ใช้เงินเลย คืนทั้งก้อน) แต่ต้องมีคำอธิบาย ไม่งั้นผู้อนุมัติไม่รู้ว่าเกิดอะไรขึ้น
@@ -633,7 +788,7 @@ router.post("/claims", verifyToken, upload.array("files", 15), async (req, res) 
       tag: `expense-${claim._id}`,
     });
 
-    res.status(201).json({ expense: claim.toObject() });
+    res.status(201).json({ expense: await withFullNames(claim.toObject()) });
   } catch (err) {
     console.error("❌ ออกใบเคลมไม่สำเร็จ:", err);
     res.status(500).json({ message: "ออกใบเคลมไม่สำเร็จ" });
@@ -662,7 +817,7 @@ router.post("/reimbursements", verifyToken, upload.array("files", 15), async (re
     const subject = String(req.body.subject || "").trim().slice(0, 300);
     if (!subject) return res.status(400).json({ message: "กรุณาระบุเรื่องที่ขอเบิก" });
 
-    const items = sanitizeItems(req.body.items, "claim");
+    const items = await withPersons(sanitizeItems(req.body.items, "claim"));
     if (!items.length) return res.status(400).json({ message: "กรุณาเพิ่มรายการค่าใช้จ่ายที่สำรองจ่ายไปอย่างน้อย 1 รายการ" });
     const total = sumItems(items);
     if (total <= 0) return res.status(400).json({ message: "ยอดที่ขอเบิกคืนต้องมากกว่า 0 บาท" });
@@ -726,7 +881,7 @@ router.post("/reimbursements", verifyToken, upload.array("files", 15), async (re
       });
     }
 
-    res.status(201).json({ expense: claim.toObject() });
+    res.status(201).json({ expense: await withFullNames(claim.toObject()) });
   } catch (err) {
     console.error("❌ ออกใบเบิกค่าสำรองจ่ายไม่สำเร็จ:", err);
     res.status(500).json({ message: "ออกใบเบิกค่าใช้จ่ายไม่สำเร็จ" });
@@ -763,7 +918,7 @@ router.get("/:id", verifyToken, async (req, res) => {
     } else if (expense.kind === "claim" && expense.advanceId) {
       expense.advanceDoc = await Expense.findById(expense.advanceId).select("-activityLog").lean();
     }
-    res.json({ expense });
+    res.json({ expense: await withFullNames(expense) });
   } catch (err) {
     console.error("❌ ดึงใบเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงใบเบิกไม่สำเร็จ" });
@@ -795,7 +950,7 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
     if (req.body.docDate !== undefined) doc.docDate = parseDay(req.body.docDate) || doc.docDate;
 
     if (req.body.items !== undefined) {
-      const items = sanitizeItems(req.body.items, doc.kind);
+      const items = await withPersons(sanitizeItems(req.body.items, doc.kind));
       // ⚠️ ใบสำรองจ่ายต้องมีรายการและยอด > 0 เหมือนใบ Advance — "ไม่ได้ใช้เงินเลย" ใช้ได้เฉพาะใบที่
       // เคลียร์ Advance (เงินออกไปแล้วจริง) ส่วนใบสำรองจ่ายยอด 0 ไม่มีอะไรให้จ่ายคืน = ไม่ควรมีใบ
       const needItems = doc.kind === "advance" || isReimburse(doc);
@@ -818,7 +973,14 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
       if (req.body.eventId !== undefined) {
         const linked = await resolveJob(req.body.eventId);
         if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
+        if (doc.kind === "advance") {
+          // 🔒 ย้ายใบไปผูกงานที่มีใบ Advance อยู่แล้วไม่ได้ (ไม่นับตัวเอง — แก้ใบเดิมโดยไม่เปลี่ยนงานต้องผ่าน)
+          const existing = await findActiveAdvanceForJob(linked, doc._id);
+          if (existing) return res.status(409).json({ message: duplicateAdvanceMessage(existing) });
+          doc.activeAdvanceJob = linked.jobKey || undefined;
+        }
         doc.eventId = linked.eventId;
+        doc.jobKey = linked.jobKey;
         doc.job = linked.job;
       }
       if (doc.kind === "advance" && req.body.dueClearAt !== undefined) doc.dueClearAt = parseDay(req.body.dueClearAt);
@@ -853,8 +1015,11 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
         tag: `expense-${doc._id}`,
       });
     }
-    res.json({ expense: doc.toObject() });
+    res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
+    if (isAdvanceLockConflict(err)) {
+      return res.status(409).json({ message: "งานนี้มีใบเบิก Advance อยู่แล้ว — 1 งานออกใบ Advance ได้ใบเดียว" });
+    }
     console.error("❌ แก้ไขใบเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "แก้ไขไม่สำเร็จ" });
   }
@@ -912,7 +1077,7 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
     });
-    res.json({ expense: doc.toObject() });
+    res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
     console.error("❌ อนุมัติใบเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "อนุมัติไม่สำเร็จ" });
@@ -942,7 +1107,7 @@ router.post("/:id/reject", verifyToken, async (req, res) => {
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
     });
-    res.json({ expense: doc.toObject() });
+    res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
     console.error("❌ ตีกลับใบเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "ตีกลับไม่สำเร็จ" });
@@ -985,7 +1150,7 @@ router.post("/:id/pay", verifyToken, upload.array("files", 5), async (req, res) 
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
     });
-    res.json({ expense: doc.toObject() });
+    res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
     console.error("❌ บันทึกจ่ายเงินไม่สำเร็จ:", err);
     res.status(500).json({ message: "บันทึกจ่ายเงินไม่สำเร็จ" });
@@ -1024,7 +1189,7 @@ router.post("/:id/settle", verifyToken, upload.array("files", 5), async (req, re
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
     });
-    res.json({ expense: doc.toObject() });
+    res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
     console.error("❌ ปิดส่วนต่างไม่สำเร็จ:", err);
     res.status(500).json({ message: "ปิดส่วนต่างไม่สำเร็จ" });
@@ -1056,6 +1221,8 @@ router.post("/:id/cancel", verifyToken, async (req, res) => {
     doc.cancelledBy = { userId: me.userId, name: me.name };
     doc.cancelledAt = new Date();
     doc.cancelReason = reason;
+    // 🔓 ใบ Advance ที่ยกเลิกไม่นับเป็น "งานนี้มีใบแล้ว" — ปลดล็อกให้งานนั้นออกใบใหม่ได้
+    if (doc.kind === "advance") doc.activeAdvanceJob = undefined;
     log(doc, "cancelled", `ยกเลิก${reason ? ` · ${reason}` : ""}`, me);
 
     let advance = null;
@@ -1079,7 +1246,7 @@ router.post("/:id/cancel", verifyToken, async (req, res) => {
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
     });
-    res.json({ expense: doc.toObject() });
+    res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
     console.error("❌ ยกเลิกใบเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "ยกเลิกไม่สำเร็จ" });
@@ -1164,7 +1331,7 @@ router.post("/:id/files", verifyToken, upload.array("files", 10), async (req, re
     await attachUploads(req, doc, me, doc.kind === "claim" ? "receipt" : "other");
     log(doc, "files_added", `แนบไฟล์ ${req.files.length} ไฟล์`, me);
     await doc.save();
-    res.json({ expense: doc.toObject() });
+    res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
     console.error("❌ แนบไฟล์ไม่สำเร็จ:", err);
     res.status(500).json({ message: "แนบไฟล์ไม่สำเร็จ" });
@@ -1185,7 +1352,7 @@ router.delete("/:id/files/:fileId", verifyToken, async (req, res) => {
     file.deleteOne();
     log(doc, "file_removed", `ลบไฟล์ ${name}`, me);
     await doc.save();
-    res.json({ expense: doc.toObject() });
+    res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
     console.error("❌ ลบไฟล์ไม่สำเร็จ:", err);
     res.status(500).json({ message: "ลบไฟล์ไม่สำเร็จ" });

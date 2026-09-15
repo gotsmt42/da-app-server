@@ -82,6 +82,18 @@ const itemSchema = new mongoose.Schema(
     advanceItemIndex: { type: Number, default: null },
     /** Claim: เลขที่ใบเสร็จ/บิล */
     receiptNo: { type: String, default: "", trim: true },
+    /**
+     * พนักงานที่รายการนี้เบิกให้ (ไม่บังคับ) — ผู้ใช้ขอ: "รายการที่ขอเบิกให้เพิ่มรายชื่อพนักงานคนอื่นได้
+     * บางทีให้แค่หัวหน้างานเบิกให้" เช่น หัวหน้างานเบิกเบี้ยเลี้ยงให้ลูกทีม 3 คนในใบเดียว แยกบรรทัดละคน
+     * ✅ ผู้เบิก (requester) ยังเป็นหัวหน้างานคนเดียว — คนรับเงินและต้องเคลียร์ใบ ส่วนฟิลด์นี้บอกแค่ว่า
+     * เงินบรรทัดนี้เป็นของใคร ให้ผู้อนุมัติ/บัญชีตรวจได้ว่าจ่ายให้ใครบ้าง
+     * ⚠️ userId ว่างได้ (คนนอกระบบ เช่น น.ศ. ฝึกงาน/แรงงานรายวัน) — ถ้ามี userId ชื่อจะถูกดึงจากทะเบียน
+     * พนักงานเสมอ ไม่เชื่อชื่อที่ client ส่งมา (ดู withPersons ใน routes/expenses.js)
+     */
+    person: {
+      userId: { type: String, default: "" },
+      name: { type: String, default: "", trim: true },
+    },
   },
   { _id: true }
 );
@@ -137,11 +149,34 @@ const expenseSchema = new mongoose.Schema(
     eventId: { type: String, default: "", index: true },
     job: {
       title: { type: String, default: "" },
+      /** ระบบงาน เช่น "Fire Alarm" — ชื่องานเต็มคือ "PM Fire Alarm" */
+      system: { type: String, default: "" },
       company: { type: String, default: "" },
       site: { type: String, default: "" },
       docNo: { type: String, default: "" },
       start: { type: Date, default: null },
+      /** ครั้งที่ (ฟิลด์ time ของงาน) + จำนวนครั้งทั้งสัญญา — แสดงเป็น "ครั้งที่ 3/8" */
+      round: { type: String, default: "" },
+      visitCount: { type: Number, default: 0 },
     },
+
+    /**
+     * กุญแจ "งานหนึ่งงาน" = jobGroupId ของงาน (ถ้ามี) ไม่งั้นใช้ eventId
+     * ⚠️ งานที่เข้าหลายวันไม่ติดกันเป็นหลาย record ในปฏิทินที่ jobGroupId ตรงกัน — ต้องนับเป็นงานเดียว
+     * ไม่งั้นกดเบิกจากวันที่ 2 ของงานเดียวกันจะหลุดการกันซ้ำ (eventId คนละตัว)
+     * (เซ็ตจาก resolveJob ใน routes/expenses.js ทุกครั้งที่ผูกงาน — ห้ามรับค่าจาก client)
+     */
+    jobKey: { type: String, default: "", index: true },
+    /**
+     * 🔒 ล็อก "1 งาน ออกใบ Advance ได้ใบเดียว" ระดับฐานข้อมูล (ผู้ใช้สั่ง: "งานไหนมีการออกใบ Advance แล้ว
+     * จะไม่สามารถออกซ้ำได้")
+     * ✅ มีค่า (= jobKey) เฉพาะใบ Advance ที่ผูกงานและ "ยังมีผล" — ยกเลิกใบเมื่อไรต้องลบค่าทิ้ง (unset) เพื่อ
+     * ปลดล็อกให้งานนั้นออกใบใหม่ได้ · index unique + sparse: ใบที่ไม่มีค่านี้ไม่ถูกนับ
+     * ⚠️ ทำไมต้องมีทั้งที่ route ตรวจซ้ำก่อนบันทึกอยู่แล้ว: การตรวจก่อนบันทึกกัน "กดพร้อมกัน" ไม่ได้
+     * (มือถือเน็ตช้าแล้วกดส่งซ้ำ / 2 คนกดเบิกงานเดียวกันพร้อมกัน) — ทั้งคู่ผ่านการตรวจเพราะยังไม่มีใบไหน
+     * ถูกบันทึก แล้วได้ใบซ้ำ 2 ใบ ด่านสุดท้ายต้องเป็นฐานข้อมูลที่ปฏิเสธตัวที่สองเอง
+     */
+    activeAdvanceJob: { type: String },
 
     items: { type: [itemSchema], default: [] },
     total: { type: Number, default: 0, min: 0 },
@@ -207,6 +242,7 @@ const expenseSchema = new mongoose.Schema(
 );
 
 expenseSchema.index({ kind: 1, status: 1, docDate: -1 });
+expenseSchema.index({ activeAdvanceJob: 1 }, { unique: true, sparse: true });
 
 const Expense = mongoose.model("Expense", expenseSchema);
 
