@@ -255,8 +255,13 @@ const expenseSchema = new mongoose.Schema(
       requester: sealSchema,
       /** ผู้ตรวจสอบ (ขั้นที่ 1 — ปกติคือแอดมิน) */
       reviewer: sealSchema,
-      /** ผู้อนุมัติ (ขั้นที่ 2 — ปกติคือผู้จัดการ) */
+      /** ผู้อนุมัติ (ขั้นที่ 3 — ผู้จัดการแผนกช่าง) */
       approver: sealSchema,
+      /**
+       * ผู้อนุมัติเบิกจ่าย (ขั้นที่ 4 — ผู้จัดการแผนกช่าง / กรรมการผู้จัดการ)
+       * ✅ ผู้ใช้ขอเพิ่มช่องลงนามนี้ · ผนึกตอนกด "อนุมัติเบิกจ่าย" (/pay ของ Advance, /settle ของใบเคลม)
+       */
+      disburser: sealSchema,
     },
     submittedAt: { type: Date, default: Date.now },
     /**

@@ -1,9 +1,11 @@
 /**
  * /api/expenses — ใบเบิกเงินล่วงหน้า (Advance) และใบเคลียร์ค่าใช้จ่าย (Claim)
  *
- * สายงาน (ตามที่ผู้ใช้เลือก):
- *   ช่างออกใบ Advance ของตัวเอง (หรือแอดมิน/ผู้จัดการออกแทน) → หัวหน้าอนุมัติ → บันทึกจ่ายเงิน →
- *   ผู้เบิกออกใบเคลมอ้างใบ Advance พร้อมใบเสร็จ → หัวหน้าอนุมัติ → ชำระส่วนต่าง (คืน/จ่ายเพิ่ม) → จบ
+ * สายงาน 4 ขั้น (ผู้ใช้กำหนด — ใช้เหมือนกันทุกชนิดใบ, ใครทำขั้นไหนดูที่ config/roles.js):
+ *   1. ส่งขอเบิก       → แจ้งแอดมินช่าง + ผู้จัดการแผนกช่าง
+ *   2. ตรวจสอบ         → แจ้งผู้จัดการแผนกช่าง
+ *   3. อนุมัติ          → แจ้งผู้จัดการแผนกช่าง + กรรมการผู้จัดการ
+ *   4. อนุมัติเบิกจ่าย  → เงินออกจริง (Advance: จ่ายเงิน → ผู้เบิกออกใบเคลม · ใบเคลม: ปิดส่วนต่าง → จบ)
  *
  * ⚠️ **ลำดับ route ห้ามสลับ** — path ตายตัว (/summary, /report, /people, /jobs, /suggest,
  * /advances, /claims) ต้องมาก่อน /:id ทั้งหมด ไม่งั้นจะถูกกลืนเงียบๆ กลายเป็นการหาใบที่ id ชื่อ
@@ -25,7 +27,7 @@ const User = require("../models/User");
 const CalendarEvent = require("../models/Events");
 const DocCounter = require("../models/DocCounter");
 const verifyToken = require("../middleware/auth");
-const { can, ROLE_LABEL, SUPERVISOR_ROLES, DEPARTMENT } = require("../config/roles");
+const { can, ROLE_LABEL, CAPABILITIES, DEPARTMENT } = require("../config/roles");
 const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers } = require("../services/PushNotify");
@@ -381,18 +383,118 @@ const notifyUsers = (ids, me, payload) => {
   sendPushToUsers(targets, payload).catch((e) => console.error("push expense:", e.message));
 };
 
-/** แจ้งหัวหน้าทุกคน ยกเว้นคนที่เพิ่งกดเอง */
-const notifySupervisors = async (me, payload) => {
+const ownersOf = (doc) => [doc.requester?.userId, doc.createdBy?.userId];
+const urlOf = (doc) => `/expenses/${doc._id}`;
+
+/**
+ * ══ สายอนุมัติ 4 ขั้น ═══════════════════════════════════════════════════════
+ * ✅ ผู้ใช้สั่ง: ส่งขอเบิก → ตรวจสอบ → อนุมัติ → อนุมัติเบิกจ่าย และแจ้งเตือน "เฉพาะคนที่ต้องทำขั้นถัดไป"
+ * ⚠️ ผู้รับแจ้งเตือนของแต่ละขั้น = role ที่มีสิทธิ์ของขั้นนั้นใน config/roles.js (อ่านจากตารางเดียวกับที่
+ * route ใช้ตัดสินสิทธิ์) — ไม่เขียนรายชื่อ role ซ้ำที่นี่ ไม่งั้นวันหนึ่งคนที่ได้แจ้งเตือนกับคนที่กดได้จะไม่ตรงกัน
+ */
+const TOTAL_STEPS = 4;
+const STEP = {
+  review: { no: 2, cap: "reviewExpense", label: "ตรวจสอบ" },
+  approve: { no: 3, cap: "approveExpense", label: "อนุมัติ" },
+  disburse: { no: 4, cap: "disburseExpense", label: "อนุมัติเบิกจ่าย" },
+};
+/** ใบในสถานะนี้กำลังรอขั้นไหน */
+const STEP_OF_STATUS = { pending: "review", reviewed: "approve", approved: "disburse" };
+const PROCESS_CAPS = Object.values(STEP).map((s) => s.cap);
+
+/** ชื่อ role ที่ทำขั้นนั้นได้ — ใช้ในข้อความตอบกลับ ("ขั้นนี้เป็นของ ผู้จัดการแผนกช่าง / กรรมการผู้จัดการ") */
+const stepOwnersLabel = (step) => (CAPABILITIES[STEP[step].cap] || []).map((r) => ROLE_LABEL[r]).filter(Boolean).join(" / ");
+
+/** มีสิทธิ์ดำเนินการใบเบิกขั้นใดขั้นหนึ่งไหม (ตรวจสอบ / อนุมัติ / อนุมัติเบิกจ่าย) */
+const isProcessor = (req) => PROCESS_CAPS.some((cap) => can(req.user, cap));
+
+/** ทำขั้นที่ใบนี้กำลังรออยู่ได้ไหม */
+const canActOnCurrentStep = (req, doc) => {
+  const step = STEP_OF_STATUS[doc?.status];
+  return Boolean(step) && can(req.user, STEP[step].cap);
+};
+
+/** ชื่อ-นามสกุลของคนในใบ (ฟิลด์ในใบเก็บชื่อต้นอย่างเดียว) — ยิงรายชื่อครั้งเดียวต่อข้อความ */
+const fullNamesOf = async (refs) => {
+  const ids = refs.map((p) => String(p?.userId || "")).filter((id) => /^[a-f0-9]{24}$/i.test(id));
+  const users = ids.length ? await User.find({ _id: { $in: ids } }).select("fname lname username").lean() : [];
+  const byId = new Map(users.map((u) => [String(u._id), fullNameOf(u)]));
+  return refs.map((p) => byId.get(String(p?.userId || "")) || p?.name || "");
+};
+
+/** ยอดเงินของใบ เขียนให้อ่านแล้วรู้ทันทีว่าเงินไหลไปทางไหน */
+const moneyLineOf = (doc) => {
+  if (doc.kind === "advance") return `ขอเบิกเงินล่วงหน้า ${fullBaht(doc.total)}`;
+  if (isReimburse(doc)) return `ขอเบิกคืนค่าสำรองจ่าย ${fullBaht(doc.total)}`;
+  const diff = money(doc.total - (doc.advance?.total || 0));
+  const base = `เคลียร์ ${doc.advance?.docNo || "Advance"} · ใช้จริง ${fullBaht(doc.total)} จากที่เบิก ${fullBaht(doc.advance?.total || 0)}`;
+  if (diff > 0) return `${base}\nบริษัทต้องจ่ายเพิ่มให้พนักงาน ${fullBaht(diff)}`;
+  if (diff < 0) return `${base}\nพนักงานต้องคืนเงินบริษัท ${fullBaht(-diff)}`;
+  return `${base}\nใช้พอดี ไม่มีส่วนต่าง`;
+};
+
+/** สิ่งที่ผู้อนุมัติเบิกจ่ายต้องทำ (ขั้น 4) */
+const disburseLineOf = (doc) => {
+  if (doc.kind === "advance") return `จ่ายเงิน Advance ให้พนักงาน ${fullBaht(doc.total)}`;
+  if (isReimburse(doc)) return `จ่ายคืนค่าสำรองจ่ายให้พนักงาน ${fullBaht(doc.difference)}`;
+  return doc.difference > 0
+    ? `จ่ายส่วนต่างเพิ่มให้พนักงาน ${fullBaht(doc.difference)} (อ้าง ${doc.advance?.docNo || "Advance"})`
+    : `รับเงินคืนจากพนักงาน ${fullBaht(-doc.difference)} (อ้าง ${doc.advance?.docNo || "Advance"})`;
+};
+
+const STEP_HEAD = {
+  review: "📝 รอตรวจสอบ",
+  approve: "🔎 รออนุมัติ",
+  disburse: "✍️ รออนุมัติเบิกจ่าย",
+};
+
+const STEP_ASK = {
+  review: "กรุณาตรวจสอบรายการและหลักฐานประกอบ",
+  approve: "กรุณาพิจารณาอนุมัติ",
+  disburse: "กรุณาอนุมัติเบิกจ่ายและบันทึกการจ่ายเงิน",
+};
+
+/** ส่งแจ้งเตือนหาทุกคนที่มีสิทธิ์ของขั้นนั้น (ยกเว้นคนที่เพิ่งกดเอง) */
+const notifyCapable = async (cap, me, payload) => {
   try {
-    const users = await User.find({ role: { $in: SUPERVISOR_ROLES } }).select("_id").lean();
+    const users = await User.find({ role: { $in: CAPABILITIES[cap] || [] } }).select("_id").lean();
     notifyUsers(users.map((u) => String(u._id)), me, payload);
   } catch (e) {
-    console.error("push expense supervisors:", e.message);
+    console.error(`push expense ${cap}:`, e.message);
   }
 };
 
-const ownersOf = (doc) => [doc.requester?.userId, doc.createdBy?.userId];
-const urlOf = (doc) => `/expenses/${doc._id}`;
+/**
+ * แจ้งเตือน "ถึงคิวขั้นถัดไป" — ข้อความรูปแบบเดียวกันทุกขั้น อ่านบนจอล็อกแล้วตัดสินใจได้เลย:
+ *   หัวเรื่อง : <ไอคอน> <สิ่งที่รอ> · <ชนิดใบ>
+ *   บรรทัด   : เลขที่ใบ · ผู้เบิก / เรื่อง · งาน / ยอดเงินและทิศทางเงิน / ขั้นที่ x จาก 4 · ใครทำขั้นก่อนหน้า
+ * @param {"review"|"approve"|"disburse"} step  ขั้นที่ "รอ" ให้ผู้รับทำ
+ * @param {{ lead?: string, prevBy?: string }} opt  lead = ป้ายต่อท้ายหัวเรื่อง · prevBy = ใครทำขั้นก่อนหน้า
+ */
+const notifyNextStep = async (step, doc, me, { lead = "", prevBy = "" } = {}) => {
+  try {
+    const [requesterName] = await fullNamesOf([doc.requester]);
+    const ask = step === "disburse" && doc.kind === "claim" && !isReimburse(doc) && doc.difference < 0
+      ? "กรุณายืนยันการรับเงินคืนและบันทึกหลักฐาน"
+      : STEP_ASK[step];
+    const body = [
+      `${doc.docNo} · ผู้เบิก ${requesterName}`,
+      [doc.subject, jobLabel(doc)].filter(Boolean).join(" · "),
+      step === "disburse" ? disburseLineOf(doc) : moneyLineOf(doc),
+      `ขั้นที่ ${STEP[step].no}/${TOTAL_STEPS} ${STEP[step].label}${prevBy ? ` · ${prevBy}` : ""}`,
+      ask,
+    ].filter(Boolean).join("\n");
+    notifyCapable(STEP[step].cap, me, {
+      title: `${STEP_HEAD[step]} · ${labelOf(doc)}${lead ? ` (${lead})` : ""}`,
+      body,
+      url: urlOf(doc),
+      tag: `expense-${doc._id}`,
+      renotify: true,
+    });
+  } catch (e) {
+    console.error("push expense next step:", e.message);
+  }
+};
 
 const DEFAULT_CLEAR_DAYS = 7;
 
@@ -432,7 +534,7 @@ router.get("/summary", verifyToken, async (req, res) => {
      */
     const uid = String(req.userId || "");
     const notMine = can(req.user, "approveOwnExpense") ? {} : { "requester.userId": { $ne: uid } };
-    const [inboxPending, inboxReviewing, awaitingClaimMine] = await Promise.all([
+    const [inboxPending, inboxReviewing, inboxDisburse, awaitingClaimMine] = await Promise.all([
       can(req.user, "reviewExpense") ? Expense.countDocuments({ ...scope, ...notMine, status: "pending" }) : 0,
       can(req.user, "approveExpense")
         ? Expense.countDocuments({
@@ -442,12 +544,14 @@ router.get("/summary", verifyToken, async (req, res) => {
           ...(can(req.user, "approveOwnReview") ? {} : { "reviewedBy.userId": { $ne: uid } }),
         })
         : 0,
+      // ✅ ขั้น 4 — อนุมัติเบิกจ่าย (Advance รอจ่ายเงิน + ใบเคลม/สำรองจ่ายรอปิดส่วนต่าง) เฉพาะผู้มีสิทธิ์ขั้นนี้
+      can(req.user, "disburseExpense") ? Expense.countDocuments({ ...scope, ...notMine, status: "approved" }) : 0,
       Expense.countDocuments({ "requester.userId": uid, kind: "advance", status: "paid" }),
     ]);
 
     res.json({
       pending, reviewing, toPay, awaitingClaim, overdueClear, toSettle,
-      inboxPending, inboxReviewing, awaitingClaimMine,
+      inboxPending, inboxReviewing, inboxDisburse, awaitingClaimMine,
       advanceRejectedMine, claimRejectedMine,
       outstandingAmount: money(outstanding[0]?.total || 0),
     });
@@ -908,12 +1012,8 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
     log(expense, "created", `ออกใบเบิก Advance ${fullBaht(total)}${onBehalf ? ` แทน ${expense.requester.name}` : ""}`, me);
     await saveWithDocNo(expense, "advance");
 
-    notifySupervisors(me, {
-      title: `💵 ขออนุมัติเบิก Advance · ${expense.requester.name}`,
-      body: [expense.docNo, subject, jobLabel(expense), fullBaht(total)].filter(Boolean).join(" · "),
-      url: urlOf(expense),
-      tag: `expense-${expense._id}`,
-    });
+    // ✅ ขั้น 1 → 2: แจ้งเฉพาะผู้ตรวจสอบ (แอดมินช่าง + ผู้จัดการแผนกช่าง) ไม่ว่าผู้เบิกจะเป็นสิทธิ์ไหน
+    notifyNextStep("review", expense, me, { prevBy: onBehalf ? `ออกใบแทนโดย ${fullNameOf(req.user)}` : "" });
     if (onBehalf) {
       notifyUsers([expense.requester.userId], me, {
         title: `💵 ${me.name} ออกใบเบิก Advance ให้คุณ`,
@@ -1012,12 +1112,8 @@ router.post("/claims", verifyToken, upload.array("files", 15), async (req, res) 
     log(advance, "claim_created", `ส่งใบเคลม ${claim.docNo} แล้ว`, me);
     await advance.save();
 
-    const diff = claim.difference;
-    notifySupervisors(me, {
-      title: `🧾 ขออนุมัติใบเคลม · ${claim.requester.name}`,
-      body: `${claim.docNo} อ้าง ${advance.docNo} · ใช้จริง ${fullBaht(total)}${diff ? ` · ${diff > 0 ? "จ่ายเพิ่ม" : "คืนเงิน"} ${fullBaht(Math.abs(diff))}` : ""}`,
-      url: urlOf(claim),
-      tag: `expense-${claim._id}`,
+    notifyNextStep("review", claim, me, {
+      prevBy: String(claim.requester.userId) !== me.userId ? `ออกใบแทนโดย ${fullNameOf(req.user)}` : "",
     });
 
     res.status(201).json({ expense: await withFullNames(claim.toObject()) });
@@ -1104,12 +1200,7 @@ router.post("/reimbursements", verifyToken, upload.array("files", 15), async (re
     log(claim, "created", `ออกใบเบิกค่าใช้จ่าย (สำรองจ่ายเอง) ${fullBaht(total)}${onBehalf ? ` แทน ${claim.requester.name}` : ""}`, me);
     await saveWithDocNo(claim, "reimburse");
 
-    notifySupervisors(me, {
-      title: `🧾 ขออนุมัติเบิกคืนค่าสำรองจ่าย · ${claim.requester.name}`,
-      body: [claim.docNo, subject, jobLabel(claim), `จ่ายคืน ${fullBaht(total)}`].filter(Boolean).join(" · "),
-      url: urlOf(claim),
-      tag: `expense-${claim._id}`,
-    });
+    notifyNextStep("review", claim, me, { prevBy: onBehalf ? `ออกใบแทนโดย ${fullNameOf(req.user)}` : "" });
     if (onBehalf) {
       notifyUsers([claim.requester.userId], me, {
         title: `🧾 ${me.name} ออกใบเบิกค่าสำรองจ่ายให้คุณ`,
@@ -1178,6 +1269,7 @@ router.get("/:id/signatures", verifyToken, async (req, res) => {
       requester: doc.signatures?.requester,
       reviewer: doc.signatures?.reviewer,
       approver: doc.signatures?.approver,
+      disburser: doc.signatures?.disburser,
     };
     const images = await imagesFor(Object.values(seals));
     const out = {};
@@ -1305,12 +1397,8 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
     await doc.save();
 
     if (wasRejected) {
-      notifySupervisors(me, {
-        title: `🔁 ส่ง${labelOf(doc)}ใหม่หลังแก้ไข · ${doc.requester.name}`,
-        body: `${doc.docNo} · ${doc.subject} · ${fullBaht(doc.total)}`,
-        url: urlOf(doc),
-        tag: `expense-${doc._id}`,
-      });
+      // ✅ ส่งใหม่ = เริ่มขั้นตรวจสอบใหม่ทั้งสาย (ผลตรวจ/อนุมัติเดิมถูกล้างไปตอนตีกลับแล้ว)
+      notifyNextStep("review", doc, me, { lead: "ส่งใหม่หลังแก้ไข" });
     }
     res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
@@ -1323,15 +1411,17 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
 });
 
 /**
- * ขั้นที่ 1 — ตรวจสอบใบ (ปกติคือแอดมิน)
+ * ขั้นที่ 2 — ตรวจสอบใบ (แอดมินช่าง / ผู้จัดการแผนกช่าง)
  *
- * ✅ ผู้ใช้สั่ง: "ผู้กดอนุมัติเบื้องต้นคือสิทธิ์แอดมิน ลงผู้ตรวจสอบ · ผู้จัดการทำหน้าที่เป็นผู้อนุมัติอีกที"
  * ใบที่ผ่านขั้นนี้ขึ้นสถานะ "ตรวจสอบแล้ว รออนุมัติ" และลายเซ็นลงช่อง "ผู้ตรวจสอบ" ของใบ PDF
- * ⚠️ ตรวจสอบใบของตัวเองไม่ได้ (เหตุผลเดียวกับการอนุมัติใบตัวเอง)
+ * ✅ ผู้ใช้สั่ง: "พอแอดมินอนุมัติตรวจสอบเสร็จ ให้ส่งแจ้งเตือนแค่ผู้จัดการที่อนุมัติ แล้วจัดการต่อ"
+ * ⚠️ ตรวจสอบใบของตัวเองไม่ได้ (เว้นแต่มีสิทธิ์ approveOwnExpense)
  */
 router.post("/:id/review", verifyToken, async (req, res) => {
   try {
-    if (!can(req.user, "reviewExpense")) return res.status(403).json({ message: "คุณไม่มีสิทธิ์ตรวจสอบใบเบิก" });
+    if (!can(req.user, "reviewExpense")) {
+      return res.status(403).json({ message: `คุณไม่มีสิทธิ์ตรวจสอบใบเบิก — ขั้นนี้เป็นของ ${stepOwnersLabel("review")}` });
+    }
     const doc = await loadVisible(req, res);
     if (!doc) return;
     if (doc.status !== "pending") {
@@ -1354,19 +1444,8 @@ router.post("/:id/review", verifyToken, async (req, res) => {
     log(doc, "reviewed", `ตรวจสอบแล้ว ${fullBaht(doc.total)}${note ? ` · ${note}` : ""}`, me);
     await doc.save();
 
-    // ⚠️ แจ้ง "ผู้อนุมัติ" ให้มากดขั้นต่อไปด้วย ไม่ใช่แจ้งแค่ผู้เบิก — ไม่งั้นใบค้างรอโดยไม่มีใครรู้
-    notifySupervisors(me, {
-      title: `🔎 ผ่านการตรวจสอบ · รออนุมัติ · ${doc.requester?.name || ""}`,
-      body: `${doc.docNo} · ${doc.subject} · ${fullBaht(doc.total)} — ตรวจสอบโดย ${me.name}`,
-      url: urlOf(doc),
-      tag: `expense-${doc._id}`,
-    });
-    notifyUsers(ownersOf(doc), me, {
-      title: `🔎 ${labelOf(doc)}ผ่านการตรวจสอบแล้ว`,
-      body: `${doc.docNo} · รอผู้จัดการอนุมัติขั้นสุดท้าย`,
-      url: urlOf(doc),
-      tag: `expense-${doc._id}`,
-    });
+    // ✅ ขั้น 2 → 3: แจ้ง "เฉพาะผู้อนุมัติ" (ผู้จัดการแผนกช่าง) ตามที่ผู้ใช้กำหนด — ผู้เบิกดูความคืบหน้าในใบได้เอง
+    notifyNextStep("approve", doc, me, { prevBy: `ตรวจสอบโดย ${fullNameOf(req.user)}${note ? ` (${note})` : ""}` });
     res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
     console.error("❌ ตรวจสอบใบเบิกไม่สำเร็จ:", err);
@@ -1374,10 +1453,16 @@ router.post("/:id/review", verifyToken, async (req, res) => {
   }
 });
 
-/** ขั้นที่ 2 — อนุมัติขั้นสุดท้าย (ปกติคือผู้จัดการ) */
+/**
+ * ขั้นที่ 3 — อนุมัติ (ผู้จัดการแผนกช่าง)
+ * ✅ ผู้ใช้สั่ง: "หลังจากผู้จัดการอนุมัติ ให้แจ้งเตือนผู้จัดการ และกรรมการผู้จัดการ ดำเนินการ (อนุมัติเบิกจ่าย) ได้"
+ * ⚠️ ใบเคลมที่ใช้พอดีกับยอด Advance (ส่วนต่าง 0) ไม่มีเงินต้องเคลื่อนไหว → ปิดจบในขั้นนี้ ไม่ส่งไปขั้น 4
+ */
 router.post("/:id/approve", verifyToken, async (req, res) => {
   try {
-    if (!can(req.user, "approveExpense")) return res.status(403).json({ message: "คุณไม่มีสิทธิ์อนุมัติใบเบิก" });
+    if (!can(req.user, "approveExpense")) {
+      return res.status(403).json({ message: `คุณไม่มีสิทธิ์อนุมัติใบเบิก — ขั้นนี้เป็นของ ${stepOwnersLabel("approve")}` });
+    }
     const doc = await loadVisible(req, res);
     if (!doc) return;
     // 🔒 ต้องผ่านการตรวจสอบก่อนเสมอ ข้ามขั้นไม่ได้ — นี่คือหัวใจของการแยกเป็น 2 ขั้น
@@ -1431,19 +1516,22 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
     await doc.save();
     if (advance) await advance.save();
 
-    const body = doc.kind === "advance"
-      ? `${doc.docNo} · ${fullBaht(doc.total)} — รอฝ่ายบัญชีจ่ายเงิน`
-      : isReimburse(doc)
-        ? `${doc.docNo} · บริษัทจะจ่ายคืนให้ ${fullBaht(doc.difference)}`
-        : doc.status === "settled"
-          ? `${doc.docNo} · เคลียร์ ${doc.advance?.docNo} เรียบร้อย`
-          : `${doc.docNo} · ${doc.difference > 0 ? `บริษัทจะจ่ายเพิ่มให้ ${fullBaht(doc.difference)}` : `กรุณาคืนเงิน ${fullBaht(-doc.difference)}`}`;
-    notifyUsers(ownersOf(doc), me, {
-      title: `✅ ${labelOf(doc)}ได้รับอนุมัติแล้ว`,
-      body,
-      url: urlOf(doc),
-      tag: `expense-${doc._id}`,
-    });
+    if (doc.status === "settled") {
+      // ✅ ไม่มีส่วนต่าง = จบสายงานแล้ว — แจ้งผู้เบิกว่าเคลียร์เรียบร้อย (ไม่มีขั้นอนุมัติเบิกจ่ายให้ใครทำต่อ)
+      notifyUsers(ownersOf(doc), me, {
+        title: "🏁 เคลียร์ Advance เรียบร้อย",
+        body: [
+          `${doc.docNo} · เคลียร์ ${doc.advance?.docNo || "Advance"}`,
+          `ใช้จริง ${fullBaht(doc.total)} พอดีกับยอดที่เบิก — ไม่มีส่วนต่าง`,
+          `อนุมัติโดย ${fullNameOf(req.user)}`,
+        ].join("\n"),
+        url: urlOf(doc),
+        tag: `expense-${doc._id}`,
+      });
+    } else {
+      // ✅ ขั้น 3 → 4: แจ้งผู้อนุมัติเบิกจ่าย (ผู้จัดการแผนกช่าง + กรรมการผู้จัดการ)
+      notifyNextStep("disburse", doc, me, { prevBy: `อนุมัติโดย ${fullNameOf(req.user)}${note ? ` (${note})` : ""}` });
+    }
     res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
     console.error("❌ อนุมัติใบเบิกไม่สำเร็จ:", err);
@@ -1451,40 +1539,63 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
   }
 });
 
+/**
+ * ตีกลับให้ผู้เบิกแก้ไข — ✅ ทำได้ "ในขั้นที่ตัวเองรับผิดชอบ" เท่านั้น
+ *   รอตรวจสอบ → ผู้ตรวจสอบ · รออนุมัติ → ผู้อนุมัติ · รออนุมัติเบิกจ่าย → ผู้อนุมัติเบิกจ่าย
+ * ⚠️ แอดมินช่างตีกลับใบที่ผู้จัดการอนุมัติไปแล้วไม่ได้ (ข้ามอำนาจขั้นที่สูงกว่า)
+ */
 router.post("/:id/reject", verifyToken, async (req, res) => {
   try {
-    // ✅ ตีกลับได้ทั้งผู้ตรวจสอบและผู้อนุมัติ — เจอปัญหาตอนไหนก็ต้องส่งกลับให้แก้ได้ตอนนั้น
-    if (!can(req.user, "reviewExpense") && !can(req.user, "approveExpense")) {
-      return res.status(403).json({ message: "คุณไม่มีสิทธิ์ตีกลับใบเบิก" });
-    }
+    if (!isProcessor(req)) return res.status(403).json({ message: "คุณไม่มีสิทธิ์ตีกลับใบเบิก" });
     const doc = await loadVisible(req, res);
     if (!doc) return;
-    if (!["pending", "reviewed"].includes(doc.status)) {
-      return res.status(409).json({ message: "ตีกลับได้เฉพาะใบที่รอตรวจสอบหรือรออนุมัติเท่านั้น" });
+    const step = STEP_OF_STATUS[doc.status];
+    if (!step) {
+      return res.status(409).json({ message: "ตีกลับได้เฉพาะใบที่อยู่ระหว่างตรวจสอบ อนุมัติ หรืออนุมัติเบิกจ่ายเท่านั้น" });
+    }
+    if (!canActOnCurrentStep(req, doc)) {
+      return res.status(403).json({ message: `ใบนี้อยู่ขั้น "${STEP[step].label}" — ผู้ที่ตีกลับได้คือ ${stepOwnersLabel(step)}` });
     }
     const reason = String(req.body?.reason || "").trim().slice(0, 500);
     if (!reason) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ตีกลับ เพื่อให้ผู้เบิกแก้ได้ถูกจุด" });
 
     const me = actor(req);
-    // ⚠️ ใบถูกตีกลับ = เนื้อหาจะถูกแก้ ผลตรวจสอบเดิมใช้ไม่ได้อีก ต้องล้างทั้งชื่อผู้ตรวจและลายเซ็น
-    // ไม่งั้นใบที่แก้ยอดใหม่จะยังมีลายเซ็นผู้ตรวจสอบของเนื้อหาชุดเก่าค้างอยู่
-    if (doc.status === "reviewed") {
+    // แจ้งคนที่ลงนามขั้นก่อนหน้าด้วย (ใบที่เขาตรวจ/อนุมัติไปถูกตีกลับ) — เก็บไว้ก่อนล้าง
+    const priorSigners = [doc.reviewedBy?.userId, doc.approvedBy?.userId];
+    const rejectedAt = STEP[step].label;
+    /**
+     * ⚠️ ใบถูกตีกลับ = เนื้อหาจะถูกแก้ ผลตรวจสอบ/อนุมัติเดิมใช้ไม่ได้อีก ต้องล้างทั้งชื่อและลายเซ็นทุกขั้น
+     * ไม่งั้นใบที่แก้ยอดใหม่จะยังมีลายเซ็นผู้ตรวจสอบ/ผู้อนุมัติของเนื้อหาชุดเก่าค้างอยู่
+     */
+    const emptySeal = { userId: "", name: "", position: "", signedAt: null, hash: "" };
+    if (doc.reviewedBy?.userId) {
       doc.reviewedBy = { userId: "", name: "" };
       doc.reviewedAt = null;
-      doc.set("signatures.reviewer", { userId: "", name: "", position: "", signedAt: null, hash: "" });
+      doc.set("signatures.reviewer", emptySeal);
+    }
+    if (doc.approvedBy?.userId) {
+      doc.approvedBy = { userId: "", name: "" };
+      doc.approvedAt = null;
+      doc.set("signatures.approver", emptySeal);
     }
     doc.status = "rejected";
     doc.rejectedBy = { userId: me.userId, name: me.name };
     doc.rejectedAt = new Date();
     doc.rejectReason = reason;
-    log(doc, "rejected", `ตีกลับ · ${reason}`, me);
+    log(doc, "rejected", `ตีกลับ (ขั้น${rejectedAt}) · ${reason}`, me);
     await doc.save();
 
-    notifyUsers(ownersOf(doc), me, {
-      title: `↩️ ${labelOf(doc)}ถูกตีกลับให้แก้ไข`,
-      body: `${doc.docNo} · ${reason}`,
+    notifyUsers([...ownersOf(doc), ...priorSigners], me, {
+      title: `↩️ ${labelOf(doc)}ถูกตีกลับ · ขั้น${rejectedAt}`,
+      body: [
+        `${doc.docNo} · ${doc.subject}`,
+        `เหตุผล: ${reason}`,
+        `ตีกลับโดย ${fullNameOf(req.user)}`,
+        "ผู้เบิกแก้ไขแล้วกดส่งใหม่ได้ทันที — ใบจะเริ่มที่ขั้นตรวจสอบอีกครั้ง",
+      ].join("\n"),
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
+      renotify: true,
     });
     res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
@@ -1503,31 +1614,62 @@ const readPayment = (req, me) => ({
   by: { userId: me.userId, name: me.name },
 });
 
-/** บันทึกจ่ายเงิน Advance (อนุมัติแล้ว → จ่ายแล้ว รอเคลียร์) */
+/** ข้อความตอบกลับเมื่อพยายามอนุมัติเบิกจ่ายใบที่ยังไม่ถึงขั้น */
+const notReadyToDisburse = (doc) => ({
+  pending: "ใบนี้ยังไม่ผ่านการตรวจสอบ — ต้องผ่านขั้นตรวจสอบและอนุมัติก่อน",
+  reviewed: "ใบนี้ยังไม่ได้รับอนุมัติจากผู้จัดการ — อนุมัติเบิกจ่ายได้หลังขั้นอนุมัติเท่านั้น",
+  rejected: "ใบนี้ถูกตีกลับอยู่",
+  paid: "ใบนี้อนุมัติเบิกจ่ายไปแล้ว",
+  clearing: "ใบนี้อนุมัติเบิกจ่ายไปแล้ว",
+  cleared: "ใบนี้เคลียร์เรียบร้อยแล้ว",
+  settled: "ใบนี้ปิดส่วนต่างเรียบร้อยแล้ว",
+  cancelled: "ใบนี้ถูกยกเลิกแล้ว",
+}[doc.status] || "อนุมัติเบิกจ่ายได้เฉพาะใบที่อนุมัติแล้วเท่านั้น");
+
+/** ลายเซ็นผู้อนุมัติเบิกจ่าย (ขั้น 4) — ผนึกเฉพาะเมื่อผู้กดติ๊กเลือกใช้ */
+const sealDisburser = async (req, doc, me) => {
+  if (!wantsSignature(req)) return;
+  const seal = await sealFor(req.userId, { name: fullNameOf(req.user) || me.name, position: positionOf(req.user) });
+  if (seal) doc.set("signatures.disburser", seal);
+};
+
+const paymentText = (p) => `${PAYMENT_LABEL[p.method] || "อื่นๆ"}${p.ref ? ` ${p.ref}` : ""} · ${thaiDate(p.at)}`;
+
+/** ขั้นที่ 4 — อนุมัติเบิกจ่าย ใบ Advance (อนุมัติแล้ว → จ่ายเงินแล้ว รอเคลียร์) */
 router.post("/:id/pay", verifyToken, upload.array("files", 5), async (req, res) => {
   try {
-    if (!can(req.user, "approveExpense")) return res.status(403).json({ message: "คุณไม่มีสิทธิ์บันทึกการจ่ายเงิน" });
+    if (!can(req.user, "disburseExpense")) {
+      return res.status(403).json({ message: `คุณไม่มีสิทธิ์อนุมัติเบิกจ่าย — ขั้นนี้เป็นของ ${stepOwnersLabel("disburse")}` });
+    }
     const doc = await loadVisible(req, res);
     if (!doc) return;
     if (doc.kind !== "advance") return res.status(400).json({ message: "บันทึกจ่ายเงินได้เฉพาะใบ Advance" });
-    if (doc.status !== "approved") return res.status(409).json({ message: "จ่ายเงินได้เฉพาะใบที่อนุมัติแล้วเท่านั้น" });
+    if (doc.status !== "approved") return res.status(409).json({ message: notReadyToDisburse(doc) });
+    if (blockSelfApproval(req, doc)) return res.status(403).json({ message: "ไม่สามารถอนุมัติเบิกจ่ายใบของตัวเองได้" });
 
     const me = actor(req);
     doc.payment = readPayment(req, me);
     doc.status = "paid";
+    await sealDisburser(req, doc, me);
     // ✅ กำหนดเคลียร์: ใช้ค่าที่ระบุ ถ้าไม่ระบุและใบยังไม่มี = วันจ่าย + 7 วัน (ใช้ยิงเตือนรายวัน)
     const due = parseDay(req.body?.dueClearAt);
     if (due) doc.dueClearAt = due;
     else if (!doc.dueClearAt) doc.dueClearAt = moment(doc.payment.at).add(DEFAULT_CLEAR_DAYS, "days").toDate();
     await attachUploads(req, doc, me, "transfer_slip", "pay");
-    log(doc, "paid", `จ่ายเงิน ${fullBaht(doc.total)} (${PAYMENT_LABEL[doc.payment.method]}${doc.payment.ref ? ` ${doc.payment.ref}` : ""})`, me);
+    log(doc, "paid", `อนุมัติเบิกจ่าย · จ่ายเงิน ${fullBaht(doc.total)} (${PAYMENT_LABEL[doc.payment.method]}${doc.payment.ref ? ` ${doc.payment.ref}` : ""})`, me);
     await doc.save();
 
     notifyUsers(ownersOf(doc), me, {
-      title: "💸 ได้รับเงิน Advance แล้ว",
-      body: `${doc.docNo} · ${fullBaht(doc.total)} — กรุณาส่งใบเคลมภายใน ${thaiDate(doc.dueClearAt)}`,
+      title: "💸 อนุมัติเบิกจ่ายแล้ว · ได้รับเงิน Advance",
+      body: [
+        `${doc.docNo} · ${doc.subject}`,
+        `จ่ายเงิน ${fullBaht(doc.total)} (${paymentText(doc.payment)})`,
+        `อนุมัติเบิกจ่ายโดย ${fullNameOf(req.user)}`,
+        `กรุณาส่งใบเคลมพร้อมใบเสร็จภายใน ${thaiDate(doc.dueClearAt)}`,
+      ].join("\n"),
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
+      renotify: true,
     });
     res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
@@ -1536,18 +1678,22 @@ router.post("/:id/pay", verifyToken, upload.array("files", 5), async (req, res) 
   }
 });
 
-/** ปิดส่วนต่างของใบเคลม (รับคืน / จ่ายเพิ่ม) → ใบ Advance เคลียร์เรียบร้อย */
+/** ขั้นที่ 4 — อนุมัติเบิกจ่าย ใบเคลม/ใบสำรองจ่าย (จ่ายเพิ่ม / รับคืน / จ่ายคืน) → ใบ Advance เคลียร์เรียบร้อย */
 router.post("/:id/settle", verifyToken, upload.array("files", 5), async (req, res) => {
   try {
-    if (!can(req.user, "approveExpense")) return res.status(403).json({ message: "คุณไม่มีสิทธิ์ปิดส่วนต่าง" });
+    if (!can(req.user, "disburseExpense")) {
+      return res.status(403).json({ message: `คุณไม่มีสิทธิ์อนุมัติเบิกจ่าย — ขั้นนี้เป็นของ ${stepOwnersLabel("disburse")}` });
+    }
     const doc = await loadVisible(req, res);
     if (!doc) return;
     if (doc.kind !== "claim") return res.status(400).json({ message: "ปิดส่วนต่างได้เฉพาะใบเคลม" });
-    if (doc.status !== "approved") return res.status(409).json({ message: "ปิดส่วนต่างได้เฉพาะใบเคลมที่อนุมัติแล้ว" });
+    if (doc.status !== "approved") return res.status(409).json({ message: notReadyToDisburse(doc) });
+    if (blockSelfApproval(req, doc)) return res.status(403).json({ message: "ไม่สามารถอนุมัติเบิกจ่ายใบของตัวเองได้" });
 
     const me = actor(req);
     doc.payment = readPayment(req, me);
     doc.status = "settled";
+    await sealDisburser(req, doc, me);
     await attachUploads(req, doc, me, "transfer_slip", "settle");
     const diffText = isReimburse(doc)
       ? `จ่ายคืนค่าสำรองจ่าย ${fullBaht(doc.difference)}`
@@ -1562,11 +1708,22 @@ router.post("/:id/settle", verifyToken, upload.array("files", 5), async (req, re
     await doc.save();
     if (advance) await advance.save();
 
+    const title = isReimburse(doc)
+      ? "💸 อนุมัติเบิกจ่ายแล้ว · ได้รับเงินคืนค่าสำรองจ่าย"
+      : doc.difference > 0
+        ? "💸 อนุมัติเบิกจ่ายแล้ว · ได้รับส่วนต่างเพิ่ม"
+        : "🏁 ยืนยันรับเงินคืนแล้ว · เคลียร์ Advance เรียบร้อย";
     notifyUsers(ownersOf(doc), me, {
-      title: isReimburse(doc) ? "🏁 ได้รับเงินคืนค่าสำรองจ่ายแล้ว" : "🏁 เคลียร์ Advance เรียบร้อย",
-      body: `${doc.docNo} · ${diffText}`,
+      title,
+      body: [
+        `${doc.docNo}${doc.advance?.docNo ? ` · เคลียร์ ${doc.advance.docNo}` : ` · ${doc.subject}`}`,
+        `${diffText} (${paymentText(doc.payment)})`,
+        `${doc.difference < 0 && !isReimburse(doc) ? "ยืนยันรับเงินโดย" : "อนุมัติเบิกจ่ายโดย"} ${fullNameOf(req.user)}`,
+        "ปิดรายการเรียบร้อย",
+      ].join("\n"),
       url: urlOf(doc),
       tag: `expense-${doc._id}`,
+      renotify: true,
     });
     res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
@@ -1585,9 +1742,20 @@ router.post("/:id/cancel", verifyToken, async (req, res) => {
   try {
     const doc = await loadVisible(req, res);
     if (!doc) return;
-    const approver = can(req.user, "approveExpense");
     const ownerCan = isOwner(req, doc) && EDITABLE.includes(doc.status);
-    const approverCan = approver && [...EDITABLE, "reviewed", "approved"].includes(doc.status);
+    /**
+     * ✅ ผู้ดำเนินการยกเลิกได้ตามขั้นที่ตัวเองรับผิดชอบ
+     *   รอตรวจสอบ/ถูกตีกลับ → ผู้ดำเนินการทุกขั้น · ตรวจสอบแล้ว → ผู้ตรวจสอบ/ผู้อนุมัติ
+     *   อนุมัติแล้ว (รออนุมัติเบิกจ่าย) → ผู้อนุมัติ/ผู้อนุมัติเบิกจ่าย
+     * ⚠️ เงินออกไปแล้วยกเลิกไม่ได้ทุกกรณี (ต้องเคลียร์ด้วยใบเคลม)
+     */
+    const CANCEL_CAPS = {
+      pending: PROCESS_CAPS,
+      rejected: PROCESS_CAPS,
+      reviewed: ["reviewExpense", "approveExpense"],
+      approved: ["approveExpense", "disburseExpense"],
+    };
+    const approverCan = (CANCEL_CAPS[doc.status] || []).some((cap) => can(req.user, cap));
     if (!ownerCan && !approverCan) {
       const msg = doc.kind === "advance" && ["paid", "clearing"].includes(doc.status)
         ? "ใบ Advance ที่จ่ายเงินแล้วยกเลิกไม่ได้ — ต้องเคลียร์ด้วยใบเคลม (ถ้าไม่ได้ใช้เงิน ให้ออกใบเคลมยอด 0 เพื่อคืนเงินทั้งหมด)"
@@ -1702,7 +1870,7 @@ router.post("/:id/files", verifyToken, upload.array("files", 10), async (req, re
     const doc = await loadVisible(req, res);
     if (!doc) return;
     if (doc.status === "cancelled") return res.status(409).json({ message: "ใบที่ยกเลิกแล้วแนบไฟล์ไม่ได้" });
-    if (!isOwner(req, doc) && !can(req.user, "approveExpense")) {
+    if (!isOwner(req, doc) && !isProcessor(req)) {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์แนบไฟล์ในใบนี้" });
     }
     if (!req.files?.length) return res.status(400).json({ message: "กรุณาเลือกไฟล์" });
@@ -1722,7 +1890,7 @@ router.delete("/:id/files/:fileId", verifyToken, async (req, res) => {
   try {
     const doc = await loadVisible(req, res);
     if (!doc) return;
-    const allowed = can(req.user, "approveExpense") ? doc.status !== "cancelled" : canEdit(req, doc);
+    const allowed = isProcessor(req) ? doc.status !== "cancelled" : canEdit(req, doc);
     if (!allowed) return res.status(409).json({ message: "ลบไฟล์ในใบนี้ไม่ได้แล้ว" });
     const file = doc.attachments.id(req.params.fileId);
     if (!file) return res.status(404).json({ message: "ไม่พบไฟล์" });

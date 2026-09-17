@@ -46,9 +46,11 @@ const EXPECTED = {
   viewServiceCalendar: ["admin", "manager", "director", "sale"],
   // ✅ ระบบเบิก Advance / Claim — ช่างเบิกของตัวเอง หัวหน้าเบิกแทน/อนุมัติ/ดูรายงานทั้งบริษัท
   requestExpense: ["admin", "manager", "director", "technician", "techlead"],
-  reviewExpense: ["admin", "manager", "director"],
-  approveExpense: ["admin", "manager", "director"],
-  approveOwnReview: ["manager", "director"],
+  // ✅ 4 ขั้น: ส่งขอเบิก → ตรวจสอบ (แอดมิน/ผู้จัดการ) → อนุมัติ (ผู้จัดการ) → อนุมัติเบิกจ่าย (ผู้จัดการ/กรรมการ)
+  reviewExpense: ["admin", "manager"],
+  approveExpense: ["manager"],
+  disburseExpense: ["manager", "director"],
+  approveOwnReview: ["manager"],
   approveOwnExpense: ["admin", "manager", "director"],
   viewAllExpenses: ["admin", "manager", "director"],
 };

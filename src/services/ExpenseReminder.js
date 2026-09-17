@@ -10,7 +10,7 @@ const moment = require("moment");
 const Expense = require("../models/Expense");
 const NotifyLog = require("../models/NotifyLog");
 const { sendPushToUsers, sendPushToRoles } = require("./PushNotify");
-const { SUPERVISOR_ROLES } = require("../config/roles");
+const { SUPERVISOR_ROLES, CAPABILITIES } = require("../config/roles");
 const { thaiDate } = require("../utils/thaiDate");
 
 const PENDING_HOURS = 24; // ใบรออนุมัติค้างเกินเท่านี้ = หัวหน้าต้องรู้
@@ -58,28 +58,51 @@ async function checkAndNotifyOverdueAdvances() {
   }
 }
 
-/** ใบเบิก/ใบเคลมที่รออนุมัติค้างนาน */
+/**
+ * ใบเบิกที่ค้างอยู่ในสายอนุมัติ 4 ขั้นนานเกินกำหนด — ✅ เตือน "เฉพาะคนที่ต้องทำขั้นนั้น" (ผู้ใช้กำหนด)
+ *   รอตรวจสอบ        → แอดมินช่าง + ผู้จัดการแผนกช่าง   (นับจากเวลาส่งใบ)
+ *   รออนุมัติ         → ผู้จัดการแผนกช่าง               (นับจากเวลาตรวจสอบ)
+ *   รออนุมัติเบิกจ่าย  → ผู้จัดการแผนกช่าง + กรรมการผู้จัดการ (นับจากเวลาอนุมัติ)
+ * ⚠️ ผู้รับอ่านจาก CAPABILITIES ของขั้นนั้น — ตรงกับคนที่กดได้จริงเสมอ
+ */
+const STALE_STEPS = [
+  { key: "expense-pending", status: "pending", since: "submittedAt", cap: "reviewExpense", head: "📝 ใบเบิกรอตรวจสอบค้างอยู่", step: "ขั้นที่ 2/4 ตรวจสอบ" },
+  { key: "expense-reviewed", status: "reviewed", since: "reviewedAt", cap: "approveExpense", head: "🔎 ใบเบิกรออนุมัติค้างอยู่", step: "ขั้นที่ 3/4 อนุมัติ" },
+  { key: "expense-approved", status: "approved", since: "approvedAt", cap: "disburseExpense", head: "✍️ ใบเบิกรออนุมัติเบิกจ่ายค้างอยู่", step: "ขั้นที่ 4/4 อนุมัติเบิกจ่าย" },
+];
+
 async function checkAndNotifyPendingExpenses() {
-  try {
-    const cutoff = moment().subtract(PENDING_HOURS, "hours").toDate();
-    const rows = await Expense.find({ status: "pending", submittedAt: { $lt: cutoff } })
-      .select("kind claimType total").lean();
-    if (rows.length === 0) return;
-    if (!(await NotifyLog.claimOncePerDay("expense-pending", "broadcast", "admin+manager"))) return;
-    const adv = rows.filter((r) => r.kind === "advance").length;
-    // ✅ แยกใบสำรองจ่ายออกจากใบเคลมในข้อความ — สองใบนี้คนละเรื่องกันสำหรับคนอนุมัติ (ใบหนึ่งเคลียร์เงิน
-    // ที่จ่ายไปแล้ว อีกใบคือพนักงานควักเงินตัวเองรออยู่)
-    const rmb = rows.filter((r) => r.kind === "claim" && r.claimType === "reimburse").length;
-    const clm = rows.length - adv - rmb;
-    await sendPushToRoles(SUPERVISOR_ROLES, {
-      title: "📝 มีใบเบิกรออนุมัติค้างอยู่",
-      body: [adv ? `Advance ${adv} ใบ` : "", clm ? `ใบเคลม ${clm} ใบ` : "", rmb ? `สำรองจ่าย ${rmb} ใบ` : ""].filter(Boolean).join(" · ") + ` เกิน ${PENDING_HOURS} ชั่วโมง`,
-      url: "/expenses/approvals",
-      tag: "expense-pending",
-      renotify: true,
-    });
-  } catch (err) {
-    console.error("❌ ตรวจใบเบิกรออนุมัติค้างไม่สำเร็จ:", err);
+  const cutoff = moment().subtract(PENDING_HOURS, "hours").toDate();
+  for (const s of STALE_STEPS) {
+    try {
+      // eslint-disable-next-line no-await-in-loop -- 3 ขั้นเท่านั้น และต้องไม่ให้ขั้นหนึ่งพังแล้วลากขั้นอื่นไปด้วย
+      const rows = await Expense.find({ status: s.status, [s.since]: { $lt: cutoff } })
+        .select("kind claimType total difference").lean();
+      if (rows.length === 0) continue;
+      // eslint-disable-next-line no-await-in-loop
+      if (!(await NotifyLog.claimOncePerDay(s.key, "broadcast", s.cap))) continue;
+      const adv = rows.filter((r) => r.kind === "advance");
+      // ✅ แยกใบสำรองจ่ายออกจากใบเคลมในข้อความ — สองใบนี้คนละเรื่องกันสำหรับคนอนุมัติ (ใบหนึ่งเคลียร์เงิน
+      // ที่จ่ายไปแล้ว อีกใบคือพนักงานควักเงินตัวเองรออยู่)
+      const rmb = rows.filter((r) => r.kind === "claim" && r.claimType === "reimburse");
+      const clm = rows.filter((r) => r.kind === "claim" && r.claimType !== "reimburse");
+      const sum = (list) => list.reduce((t, r) => t + (Number(r.total) || 0), 0);
+      const parts = [
+        adv.length ? `Advance ${adv.length} ใบ (${baht(sum(adv))})` : "",
+        clm.length ? `ใบเคลม ${clm.length} ใบ` : "",
+        rmb.length ? `สำรองจ่าย ${rmb.length} ใบ (${baht(sum(rmb))})` : "",
+      ].filter(Boolean).join(" · ");
+      // eslint-disable-next-line no-await-in-loop
+      await sendPushToRoles(CAPABILITIES[s.cap] || [], {
+        title: s.head,
+        body: `${parts}\n${s.step} · ค้างเกิน ${PENDING_HOURS} ชั่วโมง — กรุณาดำเนินการ`,
+        url: "/expenses/approvals",
+        tag: s.key,
+        renotify: true,
+      });
+    } catch (err) {
+      console.error(`❌ ตรวจใบเบิกค้าง (${s.status}) ไม่สำเร็จ:`, err);
+    }
   }
 }
 
