@@ -88,12 +88,13 @@ router.get("/alluser", verifyToken, async (req, res) => {
  */
 router.get("/staff-directory", verifyToken, async (req, res) => {
   try {
-    const users = await User.find({}).select("_id fname lname position role tel imageUrl").sort({ fname: 1 }).lean();
+    // ⚠️ ฟิลด์ตำแหน่งในฐานข้อมูลชื่อ "rank" ไม่ใช่ "position" — เลือกผิดชื่อทำให้ได้ค่าว่างทุกคนแบบเงียบๆ
+    const users = await User.find({}).select("_id fname lname rank role tel imageUrl").sort({ fname: 1 }).lean();
     res.json({
       users: users.map((u) => ({
         userId: String(u._id),
         name: [u.fname, u.lname].filter(Boolean).join(" ").trim() || u.fname || "",
-        position: u.position || "",
+        position: u.rank || "",
         tel: u.tel || "",
         role: u.role || "",
         imageUrl: u.imageUrl || "",
@@ -267,6 +268,8 @@ router.put(
       if (fname !== undefined) newUser.fname = fname;
       if (lname !== undefined) newUser.lname = lname;
       if (tel !== undefined) newUser.tel = tel;
+      // ✅ ตำแหน่ง (rank) แก้ไขได้จากหน้าบัญชีของตัวเอง — ใช้พิมพ์ใต้ชื่อในเอกสารที่ออกจากระบบ
+      if (req.body.rank !== undefined) newUser.rank = String(req.body.rank || "").trim().slice(0, 80);
 
       const existingUser = await User.findById(userId);
       if (!existingUser) {
@@ -300,6 +303,23 @@ router.put(
           // 🔒 กฎข้อ 1: ตั้งสิทธิ์ที่สูงกว่าระดับตัวเองไม่ได้ (แอดมินตั้งใครเป็นผู้จัดการไม่ได้)
           if (!canAssignRole(req.user, wantedRole)) {
             return res.status(403).json({ message: `คุณไม่มีสิทธิ์ตั้งใครเป็น${ROLE_LABEL[wantedRole] || wantedRole} — ต้องให้ผู้จัดการเป็นคนตั้ง` });
+          }
+          /**
+           * 🔒 ยืนยันตัวตนซ้ำด้วยรหัสผ่านของ "คนที่กดเปลี่ยน" (ผู้ใช้สั่ง)
+           * ✅ การเปลี่ยนสิทธิ์คือการให้/ถอดอำนาจในระบบ — ถ้าเครื่องถูกเปิดทิ้งไว้หรือ token หลุด
+           * คนอื่นจะยกระดับสิทธิ์ให้บัญชีของตัวเองไม่ได้ถ้าไม่รู้รหัสผ่านของเจ้าของเครื่อง
+           * ⚠️ ต้องตรวจที่ server เท่านั้น — กล่องกรอกรหัสผ่านบนหน้าจอเป็นแค่ UX ข้ามได้ด้วยการยิง API ตรง
+           */
+          const confirmPassword = String(req.body.confirmPassword || "").trim();
+          if (!confirmPassword) {
+            return res.status(400).json({ message: "การเปลี่ยนสิทธิ์ต้องยืนยันด้วยรหัสผ่านของคุณ" });
+          }
+          const actorAccount = await User.findById(req.userId).select("+password").lean();
+          const passwordOk = actorAccount?.password
+            ? await bcrypt.compare(confirmPassword, actorAccount.password)
+            : false;
+          if (!passwordOk) {
+            return res.status(401).json({ message: "รหัสผ่านไม่ถูกต้อง — เปลี่ยนสิทธิ์ไม่สำเร็จ" });
           }
           // 🔒 กันระบบไม่มีแอดมินเหลือเลย — ถ้าถอดสิทธิ์แอดมินคนสุดท้าย จะไม่มีใครเข้าไปแก้อะไรได้อีก
           // (รวมถึงตั้งสิทธิ์คืน) ต้องกู้ด้วยการแก้ฐานข้อมูลตรงๆ เท่านั้น
