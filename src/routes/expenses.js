@@ -31,6 +31,7 @@ const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers } = require("../services/PushNotify");
 const { thaiDate } = require("../utils/thaiDate");
 const { effectiveResponsibleOrClauses } = require("./calendarEvent/shared");
+const { sealFor, imagesFor } = require("../services/signatureSeal");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), fileFilter, limits });
@@ -242,6 +243,26 @@ const canEdit = (req, doc) =>
  */
 const blockSelfApproval = (req, doc) =>
   String(doc?.requester?.userId || "") === String(req.userId || "") && !can(req.user, "manageAll");
+
+/** ผู้ใช้ติ๊กเลือกว่าจะลงลายเซ็นอิเล็กทรอนิกส์ในใบนี้ไหม (ไม่ส่งมา = ใช้ ตามค่าเริ่มต้นเดิม) */
+const wantsSignature = (req) => {
+  const v = req.body?.useSignature;
+  return !(v === false || v === "false" || v === "0" || v === 0);
+};
+
+/**
+ * ผนึกลายเซ็นของผู้เบิกลงใบ — ✅ เฉพาะตอน "ผู้เบิกเป็นคนกดออก/ส่งใบเอง" และเจ้าตัวเลือกให้ลงนาม
+ * ⚠️ แอดมินออกใบแทนคนอื่น ช่องผู้เบิกต้องว่างไว้ให้เซ็นมือ — เจ้าตัวยังไม่ได้แสดงเจตนาลงนาม
+ * การเอาลายเซ็นคนอื่นไปแปะเองคือการปลอมลายมือชื่อ ไม่ใช่ความสะดวก
+ */
+const sealRequester = async (req, doc) => {
+  if (!wantsSignature(req)) return;
+  if (String(doc.requester?.userId || "") !== String(req.userId)) return;
+  const seal = await sealFor(req.userId, { name: doc.requester.name, position: doc.requester.position });
+  // ⚠️ set ทีละ path เสมอ — การ spread ทั้งก้อน signatures ของ mongoose ทำให้ path ที่ไม่ได้ใส่
+  // กลายเป็น undefined แล้ว cast ไม่ผ่าน (บันทึกใบไม่ได้ทั้งใบ)
+  if (seal) doc.set("signatures.requester", seal);
+};
 
 const log = (doc, action, detail, me) => {
   doc.activityLog = doc.activityLog || [];
@@ -844,6 +865,7 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
       submittedAt: new Date(),
     });
 
+    await sealRequester(req, expense);
     await attachUploads(req, expense, me, "other");
     const onBehalf = String(requesterUser._id) !== me.userId;
     log(expense, "created", `ออกใบเบิก Advance ${fullBaht(total)}${onBehalf ? ` แทน ${expense.requester.name}` : ""}`, me);
@@ -941,6 +963,7 @@ router.post("/claims", verifyToken, upload.array("files", 15), async (req, res) 
       submittedAt: new Date(),
     });
 
+    await sealRequester(req, claim);
     await attachUploads(req, claim, me, "receipt");
     log(claim, "created", `ออกใบเคลมอ้าง ${advance.docNo} · ใช้จริง ${fullBaht(total)}`, me);
     // ⚠️ บันทึกใบเคลมก่อน — เลขที่อาจถูกขยับตอนกันเลขชน ใบ Advance ต้องจำเลขที่ "ที่ได้จริง"
@@ -1038,6 +1061,7 @@ router.post("/reimbursements", verifyToken, upload.array("files", 15), async (re
       submittedAt: new Date(),
     });
 
+    await sealRequester(req, claim);
     await attachUploads(req, claim, me, "receipt");
     const onBehalf = String(requesterUser._id) !== me.userId;
     log(claim, "created", `ออกใบเบิกค่าใช้จ่าย (สำรองจ่ายเอง) ${fullBaht(total)}${onBehalf ? ` แทน ${claim.requester.name}` : ""}`, me);
@@ -1099,6 +1123,32 @@ router.get("/:id", verifyToken, async (req, res) => {
   } catch (err) {
     console.error("❌ ดึงใบเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงใบเบิกไม่สำเร็จ" });
+  }
+});
+
+/**
+ * รูปลายเซ็นที่ผนึกไว้ในใบนี้ — ฝั่งเบราว์เซอร์เรียกก่อนสร้าง PDF
+ * 🔒 นี่เป็นทางเดียวที่คนอื่นจะเห็นลายเซ็นของคนอื่นได้ และได้เฉพาะ:
+ *   • ลายเซ็นที่ "ถูกผนึกไว้ในใบนี้แล้ว" (คนนั้นกดออกใบ/อนุมัติเองจริง) เท่านั้น
+ *   • ผู้เรียกต้องมีสิทธิ์เห็นใบนี้อยู่แล้ว (loadVisible)
+ * ⚠️ ไม่มี endpoint ไหนในระบบที่คืนรูปลายเซ็นของคนอื่นแบบ "ขอตาม userId" ได้ — ดู routes/signatures.js
+ */
+router.get("/:id/signatures", verifyToken, async (req, res) => {
+  try {
+    const doc = await loadVisible(req, res);
+    if (!doc) return;
+    const seals = { requester: doc.signatures?.requester, approver: doc.signatures?.approver };
+    const images = await imagesFor(Object.values(seals));
+    const out = {};
+    Object.entries(seals).forEach(([role, seal]) => {
+      const img = seal?.hash ? images.get(seal.hash) : null;
+      if (!img) return;
+      out[role] = { image: img.image, width: img.width, height: img.height, name: seal.name, position: seal.position, signedAt: seal.signedAt };
+    });
+    res.json({ signatures: out });
+  } catch (err) {
+    console.error("❌ ดึงลายเซ็นในใบไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ดึงลายเซ็นในใบไม่สำเร็จ" });
   }
 });
 
@@ -1188,6 +1238,20 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
 
     await attachUploads(req, doc, me, doc.kind === "claim" ? "receipt" : "other");
 
+    // ⚠️ เปลี่ยนผู้เบิก = ลายเซ็นของคนเดิมต้องหลุดออกจากใบทันที (เหตุผลเดียวกับบัญชีรับเงิน)
+    if (doc.requester.userId !== requesterBefore && doc.signatures?.requester?.hash) {
+      doc.set("signatures.requester", { userId: "", name: "", position: "", signedAt: null, hash: "" });
+    }
+    // ✅ ติ๊ก "ไม่ใช้ลายเซ็น" ตอนแก้ใบ = ถอดลายเซ็นออกจากใบทันที (เจ้าตัวถอนเจตนาลงนามของตัวเอง)
+    if (req.body.useSignature !== undefined && !wantsSignature(req) && String(doc.requester?.userId || "") === String(req.userId)) {
+      doc.set("signatures.requester", { userId: "", name: "", position: "", signedAt: null, hash: "" });
+    }
+    // ✅ ส่งใหม่หลังถูกตีกลับ = การลงนามครั้งใหม่ (เนื้อหาในใบเปลี่ยนไปแล้ว ลายเซ็นต้องมีเวลาใหม่)
+    // ✅ แก้ใบที่ยังรออนุมัติแล้วเพิ่งติ๊กใช้ลายเซ็น ก็ต้องผนึกให้ ณ ตอนนั้น
+    if (wasRejected || (req.body.useSignature !== undefined && wantsSignature(req) && !doc.signatures?.requester?.hash)) {
+      await sealRequester(req, doc);
+    }
+
     if (wasRejected) {
       doc.status = "pending";
       doc.submittedAt = new Date();
@@ -1228,6 +1292,11 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
     const note = String(req.body?.note || "").trim().slice(0, 500);
     doc.approvedBy = { userId: me.userId, name: me.name };
     doc.approvedAt = new Date();
+    // ✅ ลายเซ็นผู้อนุมัติ — ผนึกตอนกดอนุมัติเท่านั้น และเฉพาะเมื่อผู้อนุมัติติ๊กเลือกใช้
+    const approverSeal = wantsSignature(req)
+      ? await sealFor(req.userId, { name: fullNameOf(req.user) || me.name, position: positionOf(req.user) })
+      : null;
+    if (approverSeal) doc.set("signatures.approver", approverSeal);
 
     let advance = null;
     if (doc.kind === "advance") {

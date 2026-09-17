@@ -61,6 +61,10 @@ app.use(cors(corsOptions));
 app.use(helmet());
 app.use(compression());
 
+// ⚠️ ลายเซ็นอิเล็กทรอนิกส์ส่งมาเป็น base64 ใน JSON ซึ่งใหญ่กว่าเพดาน 100kb ของ express.json
+// ตัวเดียวกับที่ใช้ทุก route — ต้องมีตัวแยกเพดานของตัวเอง "ก่อน" ตัวกลาง ไม่งั้นผู้ใช้จะเจอ
+// "request entity too large" แบบไม่มีคำอธิบาย แทนข้อความบอกขนาดที่รับได้ (ดู routes/signatures.js)
+app.use("/api/signatures", express.json({ limit: "1mb" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 

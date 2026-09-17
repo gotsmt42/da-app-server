@@ -115,6 +115,19 @@ const personSchema = {
   name: { type: String, default: "" },
 };
 
+/**
+ * ลายเซ็นอิเล็กทรอนิกส์ที่ถูก "ผนึก" ไว้ในใบตอนคนนั้นกดทำรายการเอง (ออกใบ / อนุมัติ)
+ * ⚠️ เก็บแค่ hash ของรูป ไม่ใช่ตัวรูป — ดูเหตุผลที่ models/SignatureImage.js
+ * ⚠️ hash ว่าง/ไม่มีฟิลด์นี้ = คนนั้นยังไม่ได้ตั้งลายเซ็นตอนกด → ใบพิมพ์ออกมาเป็นเส้นให้เซ็นมือตามเดิม
+ */
+const sealSchema = {
+  userId: { type: String, default: "" },
+  name: { type: String, default: "" },
+  position: { type: String, default: "" },
+  signedAt: { type: Date, default: null },
+  hash: { type: String, default: "" },
+};
+
 const expenseSchema = new mongoose.Schema(
   {
     kind: { type: String, enum: KINDS, required: true, index: true },
@@ -222,6 +235,16 @@ const expenseSchema = new mongoose.Schema(
     claimDocNo: { type: String, default: "" },
 
     // ── ร่องรอยการอนุมัติ/จ่ายเงิน ─────────────────────────────────────
+    /**
+     * ✅ ลายเซ็นอิเล็กทรอนิกส์ในใบนี้ (ผู้ใช้ขอ: ตั้งค่าลายเซ็นไว้ที่ user แล้วใช้กับ PDF ทุกใบ)
+     * ⚠️ requester ผนึกให้เฉพาะตอน "ผู้เบิกเป็นคนออกใบเอง" — ถ้าแอดมินออกใบแทน ช่องผู้เบิกต้อง
+     * ว่างไว้ให้เซ็นมือ เพราะเจ้าตัวยังไม่ได้แสดงเจตนาลงนามในใบนั้น
+     * ⚠️ approver ผนึกตอนกดอนุมัติเท่านั้น (ดู routes/expenses.js)
+     */
+    signatures: {
+      requester: sealSchema,
+      approver: sealSchema,
+    },
     submittedAt: { type: Date, default: Date.now },
     approvedBy: personSchema,
     approvedAt: { type: Date, default: null },

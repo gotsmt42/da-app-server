@@ -61,7 +61,10 @@ router.get("/alluser", verifyToken, async (req, res) => {
   try {
     const token = req.token;
 
-    const allUser = await User.find({}).exec();
+    // 🔒 ตัด hash รหัสผ่านออกจากผลลัพธ์ — endpoint นี้คืนข้อมูลผู้ใช้ "ทุกคน" ให้ทุกคนที่ล็อกอิน
+    // ถ้าส่ง password hash ไปด้วย ใครก็ตามที่ล็อกอินได้จะดูดไปลองถอดรหัสแบบออฟไลน์ได้ทั้งบริษัท
+    // (ไม่มีหน้าจอไหนใช้ค่านี้เลย — ตรวจแล้วทั้งฝั่งแอป)
+    const allUser = await User.find({}).select("-password").exec();
 
     if (allUser) {
       res.json({ allUser: allUser, token: token });
@@ -73,6 +76,32 @@ router.get("/alluser", verifyToken, async (req, res) => {
     // console.log(user);
   } catch (err) {
     res.status(500).send(err.message);
+  }
+});
+
+/**
+ * ทะเบียนพนักงานแบบย่อ — ชื่อ / ตำแหน่ง / เบอร์ สำหรับช่อง "ผู้ลงนาม" ในเอกสารที่ออกจากระบบ
+ *
+ * ✅ ผู้ใช้ขอ: "ใบแจ้งแผนงาน และใบส่งมอบ ให้เลือกชื่อ พร้อมเบอร์ ในระบบได้เลย" — เดิมต้องพิมพ์
+ * ชื่อและเบอร์เองทุกใบ ซึ่งพิมพ์ผิด/ใส่เบอร์เก่าได้ง่าย และลูกค้าโทรกลับไม่ติด
+ * 🔒 คืนเฉพาะฟิลด์ที่จำเป็นต้องขึ้นหน้าเอกสารเท่านั้น — ไม่ใช่เอกสารผู้ใช้ทั้งก้อนแบบ /alluser
+ */
+router.get("/staff-directory", verifyToken, async (req, res) => {
+  try {
+    const users = await User.find({}).select("_id fname lname position role tel imageUrl").sort({ fname: 1 }).lean();
+    res.json({
+      users: users.map((u) => ({
+        userId: String(u._id),
+        name: [u.fname, u.lname].filter(Boolean).join(" ").trim() || u.fname || "",
+        position: u.position || "",
+        tel: u.tel || "",
+        role: u.role || "",
+        imageUrl: u.imageUrl || "",
+      })),
+    });
+  } catch (err) {
+    console.error("❌ ดึงทะเบียนพนักงานไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ดึงทะเบียนพนักงานไม่สำเร็จ" });
   }
 });
 

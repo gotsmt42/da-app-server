@@ -22,6 +22,8 @@ const issuedDocumentRouter = require("./issuedDocument");
 const dispatchRouter = require("./dispatch");
 // ✅ เบิกเงินล่วงหน้า (Advance) / เคลียร์ค่าใช้จ่าย (Claim) ของพนักงาน — คอลเลกชันของตัวเอง (models/Expense.js)
 const expensesRouter = require("./expenses");
+// ✅ ลายเซ็นอิเล็กทรอนิกส์ของพนักงาน (ตั้งค่าเอง แล้วระบบผนึกลงเอกสาร PDF ที่คนนั้นออก/อนุมัติ)
+const signaturesRouter = require("./signatures");
 
 /**
  * รวมการ mount router ของ API ทั้งหมดไว้ที่เดียว — เดิมกระจายอยู่ใน index.js ปนกับการตั้งค่า
@@ -33,6 +35,7 @@ const expensesRouter = require("./expenses");
 const router = express.Router();
 
 router.use("/auth", authRouter);
+router.use("/signatures", signaturesRouter);
 router.use("/customer", customerRouter);
 router.use("/product", productRouter);
 router.use("/stockproduct", stockProductRouter);
