@@ -36,7 +36,8 @@ const KINDS = ["advance", "claim"];
 const CLAIM_TYPES = ["clear", "reimburse"];
 
 const STATUS = [
-  "pending",   // รออนุมัติ
+  "pending",   // รอตรวจสอบ (ขั้นที่ 1)
+  "reviewed",  // ตรวจสอบแล้ว รออนุมัติขั้นสุดท้าย (ขั้นที่ 2)
   "rejected",  // ตีกลับให้แก้
   "approved",  // อนุมัติแล้ว (Advance = รอจ่ายเงิน · Claim = รอชำระส่วนต่าง)
   "paid",      // Advance: จ่ายเงินแล้ว รอเคลียร์
@@ -243,9 +244,18 @@ const expenseSchema = new mongoose.Schema(
      */
     signatures: {
       requester: sealSchema,
+      /** ผู้ตรวจสอบ (ขั้นที่ 1 — ปกติคือแอดมิน) */
+      reviewer: sealSchema,
+      /** ผู้อนุมัติ (ขั้นที่ 2 — ปกติคือผู้จัดการ) */
       approver: sealSchema,
     },
     submittedAt: { type: Date, default: Date.now },
+    /**
+     * ✅ ขั้นตรวจสอบ (ผู้ใช้สั่ง: แอดมินตรวจสอบก่อน แล้วผู้จัดการอนุมัติอีกที)
+     * ⚠️ ใบเก่าก่อนมีขั้นนี้จะไม่มีค่า — หน้าจอ/PDF ต้องรองรับใบที่ไม่มีผู้ตรวจสอบเสมอ
+     */
+    reviewedBy: personSchema,
+    reviewedAt: { type: Date, default: null },
     approvedBy: personSchema,
     approvedAt: { type: Date, default: null },
     rejectedBy: personSchema,

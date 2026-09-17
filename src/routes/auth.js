@@ -15,7 +15,7 @@ const upload = multer({ storage, fileFilter, limits });
 const checkFile = require("../middleware/checkFile");
 
 // 🔒 ตารางสิทธิ์กลางของระบบ — ใช้ requireCap แทนการเช็ค role เขียนสดตามที่ config/roles.js กำหนดไว้
-const { requireCap, ALL_ROLES, can, normalizeRole } = require("../config/roles");
+const { requireCap, ALL_ROLES, ROLES, can, normalizeRole } = require("../config/roles");
 
 router.post("/validate-password", verifyToken, async (req, res) => {
   try {
@@ -261,18 +261,41 @@ router.put(
       if (lname !== undefined) newUser.lname = lname;
       if (tel !== undefined) newUser.tel = tel;
 
+      const existingUser = await User.findById(userId);
+      if (!existingUser) {
+        return res.status(404).json({ message: "ไม่พบผู้ใช้ที่ต้องการแก้ไข" });
+      }
+
+      /**
+       * 🐛 บั๊กที่แก้ (ผู้ใช้แจ้ง "อัปเดตของตัวเองไม่ได้"): หน้าทะเบียนพนักงานส่ง role เดิมติดมากับ
+       * ทุกการแก้ไขเสมอ พอแอดมินแก้ข้อมูล "ของตัวเอง" จึงโดนกฎ "เปลี่ยนสิทธิ์ตัวเองไม่ได้" เด้งกลับ
+       * ทั้งที่ไม่ได้เปลี่ยนสิทธิ์อะไรเลย
+       * ✅ กติกาที่ถูกต้องคือห้าม "การเปลี่ยนสิทธิ์" ไม่ใช่ห้าม "การส่งฟิลด์ role มา" — ถ้าค่าที่ส่งมา
+       * เท่ากับสิทธิ์ปัจจุบันก็ถือว่าไม่มีอะไรเปลี่ยน ปล่อยผ่านได้ (ยังกันการยกระดับสิทธิ์ครบเหมือนเดิม)
+       */
       if (role !== undefined) {
         const wantedRole = normalizeRole(role);
-        if (!isAdmin) {
-          return res.status(403).json({ message: "เปลี่ยนสิทธิ์ผู้ใช้ได้เฉพาะแอดมินเท่านั้น" });
+        const currentRole = normalizeRole(existingUser.role);
+        if (wantedRole !== currentRole) {
+          if (!isAdmin) {
+            return res.status(403).json({ message: "เปลี่ยนสิทธิ์ผู้ใช้ได้เฉพาะแอดมินเท่านั้น" });
+          }
+          if (isSelf) {
+            return res.status(403).json({ message: "เปลี่ยนสิทธิ์ของตัวเองไม่ได้ — ให้แอดมินคนอื่นเป็นคนเปลี่ยนให้" });
+          }
+          if (!ALL_ROLES.includes(wantedRole)) {
+            return res.status(400).json({ message: `สิทธิ์ไม่ถูกต้อง — ต้องเป็นหนึ่งใน: ${ALL_ROLES.join(", ")}` });
+          }
+          // 🔒 กันระบบไม่มีแอดมินเหลือเลย — ถ้าถอดสิทธิ์แอดมินคนสุดท้าย จะไม่มีใครเข้าไปแก้อะไรได้อีก
+          // (รวมถึงตั้งสิทธิ์คืน) ต้องกู้ด้วยการแก้ฐานข้อมูลตรงๆ เท่านั้น
+          if (currentRole === ROLES.ADMIN) {
+            const admins = await User.countDocuments({ role: ROLES.ADMIN });
+            if (admins <= 1) {
+              return res.status(409).json({ message: "ถอดสิทธิ์แอดมินคนสุดท้ายไม่ได้ — ต้องมีแอดมินอย่างน้อย 1 คนในระบบ" });
+            }
+          }
+          newUser.role = wantedRole;
         }
-        if (isSelf) {
-          return res.status(403).json({ message: "เปลี่ยนสิทธิ์ของตัวเองไม่ได้ — ให้แอดมินคนอื่นเป็นคนเปลี่ยนให้" });
-        }
-        if (!ALL_ROLES.includes(wantedRole)) {
-          return res.status(400).json({ message: `role ไม่ถูกต้อง — ต้องเป็นหนึ่งใน: ${ALL_ROLES.join(", ")}` });
-        }
-        newUser.role = wantedRole;
       }
 
       if (req.file && req.file.path) {
@@ -280,11 +303,6 @@ router.put(
         console.log("📷 Uploaded to:", req.file.path);
       } else {
         console.log("⚠️ ไม่มีไฟล์ใหม่ถูกอัปโหลด");
-      }
-
-      const existingUser = await User.findById(userId);
-      if (!existingUser) {
-        return res.status(404).send("User not found");
       }
 
       // ✅ เปลี่ยน role เมื่อไหร่ ให้เพิ่ม sessionVersion เพื่อบังคับ token เก่าให้หมดอายุทันที
@@ -323,6 +341,16 @@ router.delete("/user/:id", verifyToken, requireCap("manageAll"), async (req, res
 
     if (String(req.userId) === String(userId)) {
       return res.status(400).json({ message: "ลบบัญชีของตัวเองไม่ได้" });
+    }
+
+    // 🔒 เหตุผลเดียวกับการถอดสิทธิ์: ระบบต้องเหลือแอดมินอย่างน้อย 1 คนเสมอ
+    const target = await User.findById(userId).select("role").lean();
+    if (!target) return res.status(404).json({ message: "ไม่พบผู้ใช้ที่ต้องการลบ" });
+    if (normalizeRole(target.role) === ROLES.ADMIN) {
+      const admins = await User.countDocuments({ role: ROLES.ADMIN });
+      if (admins <= 1) {
+        return res.status(409).json({ message: "ลบแอดมินคนสุดท้ายไม่ได้ — ต้องมีแอดมินอย่างน้อย 1 คนในระบบ" });
+      }
     }
 
     const deletedUser = await User.findByIdAndDelete(userId);

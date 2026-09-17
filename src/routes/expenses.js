@@ -396,8 +396,10 @@ router.get("/summary", verifyToken, async (req, res) => {
     // ⚠️ ต้องอิงตัวผู้ใช้เสมอ ไม่ใช่ scope ตามสิทธิ์ — หัวหน้าเห็นใบตีกลับของทุกคนใน scope แต่ใบที่
     // *เขา* ต้องแก้มีแค่ของตัวเอง ป้ายที่นับของคนอื่นด้วยจะกดเข้าไปแล้วไม่มีอะไรให้ทำ
     const mine = { $or: [{ "requester.userId": String(req.userId || "") }, { "createdBy.userId": String(req.userId || "") }] };
-    const [pending, toPay, awaitingClaim, overdueClear, toSettle, outstanding, advanceRejectedMine, claimRejectedMine] = await Promise.all([
+    const [pending, reviewing, toPay, awaitingClaim, overdueClear, toSettle, outstanding, advanceRejectedMine, claimRejectedMine] = await Promise.all([
       Expense.countDocuments({ ...scope, status: "pending" }),
+      // ✅ ผ่านตรวจสอบแล้ว รออนุมัติขั้นสุดท้าย — แยกตัวเลขให้เห็นว่าใบค้างอยู่ที่ขั้นไหน
+      Expense.countDocuments({ ...scope, status: "reviewed" }),
       Expense.countDocuments({ ...scope, kind: "advance", status: "approved" }),
       Expense.countDocuments({ ...scope, kind: "advance", status: "paid" }),
       Expense.countDocuments({ ...scope, kind: "advance", status: "paid", dueClearAt: { $lt: now } }),
@@ -410,7 +412,7 @@ router.get("/summary", verifyToken, async (req, res) => {
       Expense.countDocuments({ ...mine, kind: "claim", status: "rejected" }),
     ]);
     res.json({
-      pending, toPay, awaitingClaim, overdueClear, toSettle,
+      pending, reviewing, toPay, awaitingClaim, overdueClear, toSettle,
       advanceRejectedMine, claimRejectedMine,
       outstandingAmount: money(outstanding[0]?.total || 0),
     });
@@ -1137,7 +1139,11 @@ router.get("/:id/signatures", verifyToken, async (req, res) => {
   try {
     const doc = await loadVisible(req, res);
     if (!doc) return;
-    const seals = { requester: doc.signatures?.requester, approver: doc.signatures?.approver };
+    const seals = {
+      requester: doc.signatures?.requester,
+      reviewer: doc.signatures?.reviewer,
+      approver: doc.signatures?.approver,
+    };
     const images = await imagesFor(Object.values(seals));
     const out = {};
     Object.entries(seals).forEach(([role, seal]) => {
@@ -1280,13 +1286,78 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
   }
 });
 
+/**
+ * ขั้นที่ 1 — ตรวจสอบใบ (ปกติคือแอดมิน)
+ *
+ * ✅ ผู้ใช้สั่ง: "ผู้กดอนุมัติเบื้องต้นคือสิทธิ์แอดมิน ลงผู้ตรวจสอบ · ผู้จัดการทำหน้าที่เป็นผู้อนุมัติอีกที"
+ * ใบที่ผ่านขั้นนี้ขึ้นสถานะ "ตรวจสอบแล้ว รออนุมัติ" และลายเซ็นลงช่อง "ผู้ตรวจสอบ" ของใบ PDF
+ * ⚠️ ตรวจสอบใบของตัวเองไม่ได้ (เหตุผลเดียวกับการอนุมัติใบตัวเอง)
+ */
+router.post("/:id/review", verifyToken, async (req, res) => {
+  try {
+    if (!can(req.user, "reviewExpense")) return res.status(403).json({ message: "คุณไม่มีสิทธิ์ตรวจสอบใบเบิก" });
+    const doc = await loadVisible(req, res);
+    if (!doc) return;
+    if (doc.status !== "pending") {
+      return res.status(409).json({
+        message: doc.status === "reviewed" ? "ใบนี้ผ่านการตรวจสอบแล้ว รอผู้จัดการอนุมัติ" : "ตรวจสอบได้เฉพาะใบที่รอตรวจสอบเท่านั้น",
+      });
+    }
+    if (blockSelfApproval(req, doc)) return res.status(403).json({ message: "ไม่สามารถตรวจสอบใบของตัวเองได้ — ให้หัวหน้าท่านอื่นเป็นผู้ตรวจสอบ" });
+
+    const me = actor(req);
+    const note = String(req.body?.note || "").trim().slice(0, 500);
+    doc.status = "reviewed";
+    doc.reviewedBy = { userId: me.userId, name: me.name };
+    doc.reviewedAt = new Date();
+    // ✅ ลายเซ็นผู้ตรวจสอบ — ผนึกตอนกดตรวจสอบเท่านั้น และเฉพาะเมื่อผู้ตรวจสอบติ๊กเลือกใช้
+    const reviewerSeal = wantsSignature(req)
+      ? await sealFor(req.userId, { name: fullNameOf(req.user) || me.name, position: positionOf(req.user) })
+      : null;
+    if (reviewerSeal) doc.set("signatures.reviewer", reviewerSeal);
+    log(doc, "reviewed", `ตรวจสอบแล้ว ${fullBaht(doc.total)}${note ? ` · ${note}` : ""}`, me);
+    await doc.save();
+
+    // ⚠️ แจ้ง "ผู้อนุมัติ" ให้มากดขั้นต่อไปด้วย ไม่ใช่แจ้งแค่ผู้เบิก — ไม่งั้นใบค้างรอโดยไม่มีใครรู้
+    notifySupervisors(me, {
+      title: `🔎 ผ่านการตรวจสอบ · รออนุมัติ · ${doc.requester?.name || ""}`,
+      body: `${doc.docNo} · ${doc.subject} · ${fullBaht(doc.total)} — ตรวจสอบโดย ${me.name}`,
+      url: urlOf(doc),
+      tag: `expense-${doc._id}`,
+    });
+    notifyUsers(ownersOf(doc), me, {
+      title: `🔎 ${labelOf(doc)}ผ่านการตรวจสอบแล้ว`,
+      body: `${doc.docNo} · รอผู้จัดการอนุมัติขั้นสุดท้าย`,
+      url: urlOf(doc),
+      tag: `expense-${doc._id}`,
+    });
+    res.json({ expense: await withFullNames(doc.toObject()) });
+  } catch (err) {
+    console.error("❌ ตรวจสอบใบเบิกไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ตรวจสอบไม่สำเร็จ" });
+  }
+});
+
+/** ขั้นที่ 2 — อนุมัติขั้นสุดท้าย (ปกติคือผู้จัดการ) */
 router.post("/:id/approve", verifyToken, async (req, res) => {
   try {
     if (!can(req.user, "approveExpense")) return res.status(403).json({ message: "คุณไม่มีสิทธิ์อนุมัติใบเบิก" });
     const doc = await loadVisible(req, res);
     if (!doc) return;
-    if (doc.status !== "pending") return res.status(409).json({ message: "อนุมัติได้เฉพาะใบที่รออนุมัติเท่านั้น" });
+    // 🔒 ต้องผ่านการตรวจสอบก่อนเสมอ ข้ามขั้นไม่ได้ — นี่คือหัวใจของการแยกเป็น 2 ขั้น
+    if (doc.status !== "reviewed") {
+      return res.status(409).json({
+        message: doc.status === "pending"
+          ? "ใบนี้ยังไม่ผ่านการตรวจสอบ — ต้องให้ผู้ตรวจสอบกดตรวจสอบก่อน"
+          : "อนุมัติได้เฉพาะใบที่ตรวจสอบแล้วเท่านั้น",
+      });
+    }
     if (blockSelfApproval(req, doc)) return res.status(403).json({ message: "ไม่สามารถอนุมัติใบของตัวเองได้ — ให้หัวหน้าท่านอื่นเป็นผู้อนุมัติ" });
+    // 🔒 คนที่ตรวจสอบใบนี้จะมาอนุมัติเองได้เฉพาะผู้ที่มีสิทธิ์ approveOwnReview (ผู้จัดการ)
+    // ✅ ผู้ใช้สั่งให้ผู้จัดการกดได้ทั้งสองขั้น — ส่วนคนอื่นยังต้องให้คนที่สองสอบทานเหมือนเดิม
+    if (String(doc.reviewedBy?.userId || "") === String(req.userId) && !can(req.user, "approveOwnReview")) {
+      return res.status(403).json({ message: "คุณเป็นผู้ตรวจสอบใบนี้แล้ว — ให้หัวหน้าท่านอื่นเป็นผู้อนุมัติขั้นสุดท้าย" });
+    }
 
     const me = actor(req);
     const note = String(req.body?.note || "").trim().slice(0, 500);
@@ -1346,14 +1417,26 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
 
 router.post("/:id/reject", verifyToken, async (req, res) => {
   try {
-    if (!can(req.user, "approveExpense")) return res.status(403).json({ message: "คุณไม่มีสิทธิ์ตีกลับใบเบิก" });
+    // ✅ ตีกลับได้ทั้งผู้ตรวจสอบและผู้อนุมัติ — เจอปัญหาตอนไหนก็ต้องส่งกลับให้แก้ได้ตอนนั้น
+    if (!can(req.user, "reviewExpense") && !can(req.user, "approveExpense")) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์ตีกลับใบเบิก" });
+    }
     const doc = await loadVisible(req, res);
     if (!doc) return;
-    if (doc.status !== "pending") return res.status(409).json({ message: "ตีกลับได้เฉพาะใบที่รออนุมัติเท่านั้น" });
+    if (!["pending", "reviewed"].includes(doc.status)) {
+      return res.status(409).json({ message: "ตีกลับได้เฉพาะใบที่รอตรวจสอบหรือรออนุมัติเท่านั้น" });
+    }
     const reason = String(req.body?.reason || "").trim().slice(0, 500);
     if (!reason) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ตีกลับ เพื่อให้ผู้เบิกแก้ได้ถูกจุด" });
 
     const me = actor(req);
+    // ⚠️ ใบถูกตีกลับ = เนื้อหาจะถูกแก้ ผลตรวจสอบเดิมใช้ไม่ได้อีก ต้องล้างทั้งชื่อผู้ตรวจและลายเซ็น
+    // ไม่งั้นใบที่แก้ยอดใหม่จะยังมีลายเซ็นผู้ตรวจสอบของเนื้อหาชุดเก่าค้างอยู่
+    if (doc.status === "reviewed") {
+      doc.reviewedBy = { userId: "", name: "" };
+      doc.reviewedAt = null;
+      doc.set("signatures.reviewer", { userId: "", name: "", position: "", signedAt: null, hash: "" });
+    }
     doc.status = "rejected";
     doc.rejectedBy = { userId: me.userId, name: me.name };
     doc.rejectedAt = new Date();
@@ -1468,7 +1551,7 @@ router.post("/:id/cancel", verifyToken, async (req, res) => {
     if (!doc) return;
     const approver = can(req.user, "approveExpense");
     const ownerCan = isOwner(req, doc) && EDITABLE.includes(doc.status);
-    const approverCan = approver && [...EDITABLE, "approved"].includes(doc.status);
+    const approverCan = approver && [...EDITABLE, "reviewed", "approved"].includes(doc.status);
     if (!ownerCan && !approverCan) {
       const msg = doc.kind === "advance" && ["paid", "clearing"].includes(doc.status)
         ? "ใบ Advance ที่จ่ายเงินแล้วยกเลิกไม่ได้ — ต้องเคลียร์ด้วยใบเคลม (ถ้าไม่ได้ใช้เงิน ให้ออกใบเคลมยอด 0 เพื่อคืนเงินทั้งหมด)"

@@ -27,7 +27,7 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 123;
+const EXPECTED_TOTAL = 124;
 const EXPECTED_PER_PREFIX = {
   // ✅ +1 = PUT /reorder (จัดลำดับการ์ดงานในวันเดียวกันบนปฏิทิน)
   "/api/events": 32,
@@ -35,7 +35,7 @@ const EXPECTED_PER_PREFIX = {
   // ✅ ใบมอบหมายงานข้ามแผนก — แทน /api/workorder เดิมที่ไม่เคยถูกใช้จริงเลย (0 document)
   "/api/dispatch": 15,
   // ✅ เบิก Advance / เคลม / สำรองจ่าย — path ตายตัว 9 ตัว (summary/report/people/jobs/suggest/list/advances/claims/reimbursements) + /:id 9 ตัว
-  "/api/expenses": 25,
+  "/api/expenses": 26,
   // ✅ ลายเซ็นอิเล็กทรอนิกส์: GET/PUT/DELETE /me + GET /status
   "/api/signatures": 4,
   "/api/auth": 9,

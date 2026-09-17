@@ -46,7 +46,9 @@ const EXPECTED = {
   viewServiceCalendar: ["admin", "manager", "sale"],
   // ✅ ระบบเบิก Advance / Claim — ช่างเบิกของตัวเอง หัวหน้าเบิกแทน/อนุมัติ/ดูรายงานทั้งบริษัท
   requestExpense: ["admin", "manager", "technician"],
+  reviewExpense: ["admin", "manager"],
   approveExpense: ["admin", "manager"],
+  approveOwnReview: ["manager"],
   viewAllExpenses: ["admin", "manager"],
 };
 
