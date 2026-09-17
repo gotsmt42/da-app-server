@@ -15,7 +15,7 @@ const upload = multer({ storage, fileFilter, limits });
 const checkFile = require("../middleware/checkFile");
 
 // 🔒 ตารางสิทธิ์กลางของระบบ — ใช้ requireCap แทนการเช็ค role เขียนสดตามที่ config/roles.js กำหนดไว้
-const { requireCap, ALL_ROLES, ROLES, can, normalizeRole } = require("../config/roles");
+const { requireCap, ALL_ROLES, ROLES, can, normalizeRole, canAssignRole, canManageUserOfRole, ROLE_LABEL } = require("../config/roles");
 
 router.post("/validate-password", verifyToken, async (req, res) => {
   try {
@@ -156,6 +156,13 @@ router.post("/signup", verifyToken, requireCap("manageAll"), async (req, res) =>
         err: `role ไม่ถูกต้อง — ต้องเป็นหนึ่งใน: ${ALL_ROLES.join(", ")}`,
       });
     }
+    // 🔒 กฎข้อ 1 (ลำดับชั้น): สร้างบัญชีที่มีสิทธิ์สูงกว่าตัวเองไม่ได้ — แอดมินสร้างผู้จัดการไม่ได้
+    // ⚠️ ถ้าไม่กันตรงนี้ กฎ "แอดมินตั้งใครเป็นผู้จัดการไม่ได้" จะถูกข้ามได้ง่ายๆ ด้วยการสร้างบัญชีใหม่แทน
+    if (!canAssignRole(req.user, wantedRole)) {
+      return res.status(403).json({
+        err: `คุณไม่มีสิทธิ์สร้างบัญชีระดับ${ROLE_LABEL[wantedRole] || wantedRole} — ต้องให้ผู้จัดการเป็นคนสร้าง`,
+      });
+    }
 
     const user = new User({
       username,
@@ -286,6 +293,14 @@ router.put(
           if (!ALL_ROLES.includes(wantedRole)) {
             return res.status(400).json({ message: `สิทธิ์ไม่ถูกต้อง — ต้องเป็นหนึ่งใน: ${ALL_ROLES.join(", ")}` });
           }
+          // 🔒 กฎข้อ 2: แตะบัญชีที่ระดับสูงกว่าตัวเองไม่ได้ (แอดมินถอด/เปลี่ยนสิทธิ์ผู้จัดการไม่ได้)
+          if (!canManageUserOfRole(req.user, currentRole)) {
+            return res.status(403).json({ message: `คุณไม่มีสิทธิ์แก้ไขสิทธิ์ของ${ROLE_LABEL[currentRole] || currentRole} — ต้องให้ผู้จัดการเป็นคนแก้` });
+          }
+          // 🔒 กฎข้อ 1: ตั้งสิทธิ์ที่สูงกว่าระดับตัวเองไม่ได้ (แอดมินตั้งใครเป็นผู้จัดการไม่ได้)
+          if (!canAssignRole(req.user, wantedRole)) {
+            return res.status(403).json({ message: `คุณไม่มีสิทธิ์ตั้งใครเป็น${ROLE_LABEL[wantedRole] || wantedRole} — ต้องให้ผู้จัดการเป็นคนตั้ง` });
+          }
           // 🔒 กันระบบไม่มีแอดมินเหลือเลย — ถ้าถอดสิทธิ์แอดมินคนสุดท้าย จะไม่มีใครเข้าไปแก้อะไรได้อีก
           // (รวมถึงตั้งสิทธิ์คืน) ต้องกู้ด้วยการแก้ฐานข้อมูลตรงๆ เท่านั้น
           if (currentRole === ROLES.ADMIN) {
@@ -343,9 +358,13 @@ router.delete("/user/:id", verifyToken, requireCap("manageAll"), async (req, res
       return res.status(400).json({ message: "ลบบัญชีของตัวเองไม่ได้" });
     }
 
-    // 🔒 เหตุผลเดียวกับการถอดสิทธิ์: ระบบต้องเหลือแอดมินอย่างน้อย 1 คนเสมอ
     const target = await User.findById(userId).select("role").lean();
     if (!target) return res.status(404).json({ message: "ไม่พบผู้ใช้ที่ต้องการลบ" });
+    // 🔒 กฎข้อ 2 (ลำดับชั้น): ลบบัญชีที่ระดับสูงกว่าตัวเองไม่ได้ — แอดมินลบผู้จัดการไม่ได้
+    if (!canManageUserOfRole(req.user, target.role)) {
+      return res.status(403).json({ message: `คุณไม่มีสิทธิ์ลบบัญชีของ${ROLE_LABEL[normalizeRole(target.role)] || target.role} — ต้องให้ผู้จัดการเป็นคนลบ` });
+    }
+    // 🔒 ระบบต้องเหลือแอดมินอย่างน้อย 1 คนเสมอ (เหตุผลเดียวกับการถอดสิทธิ์)
     if (normalizeRole(target.role) === ROLES.ADMIN) {
       const admins = await User.countDocuments({ role: ROLES.ADMIN });
       if (admins <= 1) {

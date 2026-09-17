@@ -467,10 +467,10 @@ router.get("/report", verifyToken, async (req, res) => {
       .select("-activityLog -attachments")
       .sort({ docDate: -1, createdAt: -1 })
       .lean();
-    res.json({
-      advances: advances.map((a) => ({ ...a, claim: claimByAdvance.get(String(a._id)) || null })),
-      reimbursements,
-    });
+    // ✅ เติมชื่อ-นามสกุลให้ครบเหมือนหน้าอื่น — รายงาน/ไฟล์ Excel ต้องไม่โชว์ชื่อต้นอย่างเดียว
+    const rows = advances.map((a) => ({ ...a, claim: claimByAdvance.get(String(a._id)) || null }));
+    await withFullNames([...rows, ...rows.map((r) => r.claim).filter(Boolean), ...reimbursements]);
+    res.json({ advances: rows, reimbursements });
   } catch (err) {
     console.error("❌ ดึงรายงานการเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงรายงานไม่สำเร็จ" });

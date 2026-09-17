@@ -214,6 +214,43 @@ const normalizeRole = (who) => {
 };
 
 /**
+ * ── ลำดับชั้นของสิทธิ์ (ใครแก้สิทธิ์ใครได้) ────────────────────────────────────
+ *
+ * ✅ ผู้ใช้สั่ง: "ผู้จัดการสูงสุด · แอดมินไม่ให้แก้ไขตัวเองและคนอื่นเป็นผู้จัดการได้ · ผู้จัดการทำได้หมด"
+ *
+ *   ผู้จัดการ (3)  — สูงสุด ตั้งสิทธิ์ให้ใครเป็นอะไรก็ได้ รวมถึงตั้งผู้จัดการคนใหม่
+ *   แอดมิน   (2)  — จัดการระบบได้ทุกอย่าง แต่ "ตั้งใครเป็นผู้จัดการไม่ได้" และ "แตะสิทธิ์ผู้จัดการไม่ได้"
+ *   ช่าง/เซล/ผู้ใช้ (1) — ไม่มีสิทธิ์จัดการผู้ใช้เลย
+ *
+ * กติกา 3 ข้อที่ใช้ทุกจุดที่แตะสิทธิ์ผู้ใช้ (เพิ่มผู้ใช้ / เปลี่ยน role / ลบผู้ใช้):
+ *   1. ตั้งสิทธิ์ที่ "สูงกว่าระดับตัวเอง" ไม่ได้        → แอดมินตั้งผู้จัดการไม่ได้ (canAssignRole)
+ *   2. แตะบัญชีที่ "ระดับสูงกว่าตัวเอง" ไม่ได้        → แอดมินถอดสิทธิ์/ลบผู้จัดการไม่ได้ (canManageUserOfRole)
+ *   3. เปลี่ยนสิทธิ์ของตัวเองไม่ได้ (ทุกระดับ)        → กันยกระดับตัวเองและกันล็อกตัวเองออกจากระบบ
+ *
+ * ⚠️ ฝั่งหน้าจอมีคู่แฝดที่ da-app/src/shared/utils/roles.js — ต้องตรงกันเป๊ะ (หน้าจอไว้ซ่อนปุ่ม
+ * ส่วนขอบเขตจริงบังคับที่ server เสมอ)
+ */
+const ROLE_LEVEL = {
+  [ROLES.MANAGER]: 3,
+  [ROLES.ADMIN]: 2,
+  [ROLES.TECHNICIAN]: 1,
+  [ROLES.SALE]: 1,
+  [ROLES.USER]: 1,
+};
+
+/** ระดับของผู้ใช้/role (role ที่ระบบไม่รู้จัก = 0 ทำอะไรไม่ได้เลย) */
+const roleLevel = (who) => ROLE_LEVEL[normalizeRole(who)] || 0;
+
+/** ตั้ง role นี้ให้คนอื่นได้ไหม — ต้องมีสิทธิ์จัดการผู้ใช้ก่อน และห้ามตั้งสิทธิ์ที่สูงกว่าระดับตัวเอง (กฎข้อ 1) */
+const canAssignRole = (actor, role) =>
+  can(actor, "manageAll") && roleLevel(role) > 0 && roleLevel(role) <= roleLevel(actor);
+
+/** แตะบัญชีที่มี role นี้ได้ไหม (เปลี่ยนสิทธิ์/ลบ) — ต้องมีสิทธิ์จัดการผู้ใช้ และห้ามแตะคนที่ระดับสูงกว่าตัวเอง (กฎข้อ 2) */
+const canManageUserOfRole = (actor, targetRole) =>
+  can(actor, "manageAll") && roleLevel(actor) >= roleLevel(targetRole);
+
+
+/**
  * ✅ ตัวเดียวที่โค้ดที่อื่นควรเรียก
  * @param {object|string} who   user object / req.user / สตริง role
  * @param {string} capability   ชื่อจาก CAPABILITIES
@@ -259,6 +296,10 @@ module.exports = {
   CAPABILITIES,
   ALL_CAPABILITIES,
   SUPERVISOR_ROLES,
+  ROLE_LEVEL,
+  roleLevel,
+  canAssignRole,
+  canManageUserOfRole,
   normalizeRole,
   can,
   departmentOf,
