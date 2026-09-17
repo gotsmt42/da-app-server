@@ -422,8 +422,32 @@ router.get("/summary", verifyToken, async (req, res) => {
       Expense.countDocuments({ ...mine, kind: "advance", status: "rejected" }),
       Expense.countDocuments({ ...mine, kind: "claim", status: "rejected" }),
     ]);
+    /**
+     * ✅ ตัวเลขสำหรับ "ป้ายแจ้งเตือน" — ต้องนับเฉพาะใบที่ผู้ใช้คนนี้กดทำรายการได้จริง (ผู้ใช้แจ้งว่าป้ายแปลก)
+     * ⚠️ คนละชุดกับตัวเลขบนการ์ดสรุปของหน้า (pending/reviewing ด้านบน) ซึ่งเป็นภาพรวมของขอบเขตที่มองเห็น
+     *   • inboxPending   : รอตรวจสอบ — เฉพาะคนที่ตรวจสอบได้ และไม่นับใบตัวเองถ้าตรวจใบตัวเองไม่ได้
+     *   • inboxReviewing : รออนุมัติ — เฉพาะคนที่อนุมัติได้ ไม่นับใบที่ตัวเองตรวจไปแล้ว (ถ้าอนุมัติต่อเองไม่ได้)
+     *     และไม่นับใบตัวเอง (ถ้าอนุมัติใบตัวเองไม่ได้) — กฎเดียวกับ route /review และ /approve เป๊ะ
+     *   • awaitingClaimMine : ใบ Advance "ของฉัน" ที่รับเงินแล้วยังไม่เคลียร์ (ไม่ใช่ของทั้งบริษัท)
+     */
+    const uid = String(req.userId || "");
+    const notMine = can(req.user, "approveOwnExpense") ? {} : { "requester.userId": { $ne: uid } };
+    const [inboxPending, inboxReviewing, awaitingClaimMine] = await Promise.all([
+      can(req.user, "reviewExpense") ? Expense.countDocuments({ ...scope, ...notMine, status: "pending" }) : 0,
+      can(req.user, "approveExpense")
+        ? Expense.countDocuments({
+          ...scope,
+          ...notMine,
+          status: "reviewed",
+          ...(can(req.user, "approveOwnReview") ? {} : { "reviewedBy.userId": { $ne: uid } }),
+        })
+        : 0,
+      Expense.countDocuments({ "requester.userId": uid, kind: "advance", status: "paid" }),
+    ]);
+
     res.json({
       pending, reviewing, toPay, awaitingClaim, overdueClear, toSettle,
+      inboxPending, inboxReviewing, awaitingClaimMine,
       advanceRejectedMine, claimRejectedMine,
       outstandingAmount: money(outstanding[0]?.total || 0),
     });
