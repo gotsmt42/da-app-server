@@ -291,18 +291,18 @@ router.put(
             return res.status(403).json({ message: "เปลี่ยนสิทธิ์ผู้ใช้ได้เฉพาะแอดมิน/ผู้จัดการเท่านั้น" });
           }
           if (isSelf) {
-            return res.status(403).json({ message: "เปลี่ยนสิทธิ์ของตัวเองไม่ได้ — ให้แอดมิน/ผู้จัดการท่านอื่นเป็นคนเปลี่ยนให้" });
+            return res.status(403).json({ message: "เปลี่ยนสิทธิ์ของตัวเองไม่ได้ — ให้ผู้ที่มีสิทธิ์จัดการผู้ใช้ท่านอื่นเป็นคนเปลี่ยนให้" });
           }
           if (!ALL_ROLES.includes(wantedRole)) {
             return res.status(400).json({ message: `สิทธิ์ไม่ถูกต้อง — ต้องเป็นหนึ่งใน: ${ALL_ROLES.join(", ")}` });
           }
           // 🔒 กฎข้อ 2: แตะบัญชีที่ระดับสูงกว่าตัวเองไม่ได้ (แอดมินถอด/เปลี่ยนสิทธิ์ผู้จัดการไม่ได้)
           if (!canManageUserOfRole(req.user, currentRole)) {
-            return res.status(403).json({ message: `คุณไม่มีสิทธิ์แก้ไขสิทธิ์ของ${ROLE_LABEL[currentRole] || currentRole} — ต้องให้ผู้จัดการเป็นคนแก้` });
+            return res.status(403).json({ message: `คุณไม่มีสิทธิ์แก้ไขสิทธิ์ของ${ROLE_LABEL[currentRole] || currentRole} — ต้องให้ผู้ที่มีสิทธิ์สูงกว่าเป็นคนแก้` });
           }
           // 🔒 กฎข้อ 1: ตั้งสิทธิ์ที่สูงกว่าระดับตัวเองไม่ได้ (แอดมินตั้งใครเป็นผู้จัดการไม่ได้)
           if (!canAssignRole(req.user, wantedRole)) {
-            return res.status(403).json({ message: `คุณไม่มีสิทธิ์ตั้งใครเป็น${ROLE_LABEL[wantedRole] || wantedRole} — ต้องให้ผู้จัดการเป็นคนตั้ง` });
+            return res.status(403).json({ message: `คุณไม่มีสิทธิ์ตั้งใครเป็น${ROLE_LABEL[wantedRole] || wantedRole} — ต้องให้ผู้ที่มีสิทธิ์ระดับนั้นขึ้นไปเป็นคนตั้ง` });
           }
           /**
            * 🔒 ยืนยันตัวตนซ้ำด้วยรหัสผ่านของ "คนที่กดเปลี่ยน" (ผู้ใช้สั่ง)
@@ -384,7 +384,7 @@ router.delete("/user/:id", verifyToken, requireCap("manageAll"), async (req, res
     if (!target) return res.status(404).json({ message: "ไม่พบผู้ใช้ที่ต้องการลบ" });
     // 🔒 กฎข้อ 2 (ลำดับชั้น): ลบบัญชีที่ระดับสูงกว่าตัวเองไม่ได้ — แอดมินลบผู้จัดการไม่ได้
     if (!canManageUserOfRole(req.user, target.role)) {
-      return res.status(403).json({ message: `คุณไม่มีสิทธิ์ลบบัญชีของ${ROLE_LABEL[normalizeRole(target.role)] || target.role} — ต้องให้ผู้จัดการเป็นคนลบ` });
+      return res.status(403).json({ message: `คุณไม่มีสิทธิ์ลบบัญชีของ${ROLE_LABEL[normalizeRole(target.role)] || target.role} — ต้องให้ผู้ที่มีสิทธิ์สูงกว่าเป็นคนลบ` });
     }
     // 🔒 ระบบต้องเหลือแอดมินอย่างน้อย 1 คนเสมอ (เหตุผลเดียวกับการถอดสิทธิ์)
     if (normalizeRole(target.role) === ROLES.ADMIN) {

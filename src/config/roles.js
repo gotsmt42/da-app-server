@@ -16,6 +16,8 @@
  */
 
 const ROLES = {
+  /** กรรมการผู้จัดการ — ✅ ผู้ใช้ขอเพิ่ม: ระดับสูงสุดของบริษัท มีทุกสิทธิ์ในระบบ */
+  DIRECTOR: "director",
   ADMIN: "admin",
   MANAGER: "manager",
   TECHNICIAN: "technician",
@@ -29,6 +31,7 @@ const ALL_ROLES = Object.values(ROLES);
 
 /** ชื่อภาษาไทยสำหรับแสดงผล — ทั้งแอปเป็นภาษาไทย ห้ามโชว์ค่าดิบอย่าง "technician" ให้ผู้ใช้เห็น */
 const ROLE_LABEL = {
+  [ROLES.DIRECTOR]: "กรรมการผู้จัดการ",
   [ROLES.ADMIN]: "แอดมินช่าง",
   [ROLES.MANAGER]: "ผู้จัดการแผนกช่าง",
   [ROLES.TECH_LEAD]: "หัวหน้าช่างเทคนิค",
@@ -76,20 +79,20 @@ const CAPABILITIES = {
    * ⚠️ ข้อจำกัดที่ยังอยู่เหมือนเดิมกับทุก role: เปลี่ยนสิทธิ์ของตัวเองไม่ได้ และถอดสิทธิ์/ลบแอดมิน
    * คนสุดท้ายไม่ได้ (ดู routes/auth.js) — กันระบบล็อกตัวเองจนไม่มีใครเข้าไปแก้ได้
    */
-  manageAll: [ROLES.ADMIN, ROLES.MANAGER],
+  manageAll: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /** อนุมัติงาน / อนุมัติคำขอปิดงาน */
-  approveJobs: [ROLES.ADMIN, ROLES.MANAGER],
+  approveJobs: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /** เห็นงานทุกงานในระบบ (ไม่ถูกกรองเหลือแค่งานตัวเอง) */
-  viewAllJobs: [ROLES.ADMIN, ROLES.MANAGER],
+  viewAllJobs: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /**
    * แก้/ลบงานของคนอื่น และแก้งานที่ปิดไปแล้ว — "สิทธิ์หัวหน้า" ที่ข้ามข้อจำกัดความเป็นเจ้าของ
    * ⚠️ แยกจาก viewAllJobs โดยตั้งใจ: "เห็นทุกงาน" กับ "แก้ทุกงาน" เป็นคนละเรื่อง และมีโอกาสสูงที่
    * แผนกใหม่ในอนาคต (เช่น หัวหน้าเซล) จะได้อย่างแรกแต่ไม่ได้อย่างหลัง
    */
-  editAnyJob: [ROLES.ADMIN, ROLES.MANAGER],
+  editAnyJob: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /**
    * แก้ข้อมูลในหน้า "การดำเนินงาน" (สถานะเอกสาร/ไฟล์แนบ ฯลฯ)
@@ -97,45 +100,45 @@ const CAPABILITIES = {
    * OperationBoard.js ที่คงไว้เป๊ะ ไม่ได้แก้ไปพร้อมกับการรวมศูนย์สิทธิ์ครั้งนี้
    * (ถ้าจะแก้ให้ช่างแก้ได้ ต้องเป็นการตัดสินใจแยกต่างหากที่ตั้งใจ ไม่ใช่ผลข้างเคียง)
    */
-  editOperation: [ROLES.ADMIN, ROLES.MANAGER, ROLES.USER],
+  editOperation: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.USER],
 
   /** เข้าหน้าติดตามใบเสนอราคา — ⚠️ ไม่รวม user ตามพฤติกรรมเดิมของ QuotationTracking.js */
   // ⚠️ ฝ่ายขายถูกตัดออกตามที่ผู้ใช้สั่ง — การติดตามใบเสนอราคาในระบบนี้ผูกกับ "งานของช่าง"
   // (ใบเสนอราคาของงานที่ลงตารางแล้ว) ไม่ใช่ดีลที่เซลกำลังปิด เซลเปิดเข้าไปก็ไม่มีของตัวเอง
-  viewQuotations: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
+  viewQuotations: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
 
   /** แก้/ลบทะเบียนเอกสารที่ระบบออก (ใบส่งของ ฯลฯ) */
-  editDocuments: [ROLES.ADMIN, ROLES.MANAGER],
+  editDocuments: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /** เข้าหน้าการเงิน/ใบเสนอราคาได้ (ขอบเขตข้อมูลกรองที่ server อีกชั้น) */
   // ⚠️ ฝ่ายขายถูกตัดออก — หน้าการเงินคือการวางบิล/รับเงินของงานช่าง ไม่ใช่ยอดขายของเซล
-  viewFinance: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD, ROLES.USER],
+  viewFinance: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD, ROLES.USER],
 
   /** แก้ข้อมูลการเงินระดับสัญญา (มูลค่างาน/จำนวนครั้ง) */
-  editFinance: [ROLES.ADMIN, ROLES.MANAGER],
+  editFinance: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /** เข้าหน้า "ภาพรวมงาน" (/contracts) */
-  viewContracts: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
+  viewContracts: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
 
   /** แก้ข้อมูลสัญญาในหน้าภาพรวมงาน */
-  editContracts: [ROLES.ADMIN, ROLES.MANAGER],
+  editContracts: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /** จัดการข้อมูลหลัก (ลูกค้า/พนักงาน) */
-  manageMasterData: [ROLES.ADMIN, ROLES.MANAGER],
+  manageMasterData: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   // ── ฝ่ายขาย ───────────────────────────────────────────────────────────
   /** สร้าง/แก้ ดีลและนัดหมายของฝ่ายขาย */
-  createSalesPlan: [ROLES.ADMIN, ROLES.MANAGER, ROLES.SALE],
+  createSalesPlan: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.SALE],
 
   /** เห็นท่อขายของทุกคน (เซลเห็นเฉพาะของตัวเอง — กรองที่ server) */
-  viewAllSales: [ROLES.ADMIN, ROLES.MANAGER],
+  viewAllSales: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   // ── ใบมอบหมายงานข้ามแผนก ─────────────────────────────────────────────
   /** ส่งคำขอมอบหมายงานให้แผนกอื่น */
-  requestDispatch: [ROLES.ADMIN, ROLES.MANAGER, ROLES.SALE],
+  requestDispatch: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.SALE],
 
   /** มอบหมายใบสั่งงานให้คน = จ่ายงาน */
-  assignDispatch: [ROLES.ADMIN, ROLES.MANAGER],
+  assignDispatch: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /** เป็นผู้รับงานได้ (ขยายเพิ่มเมื่อมีแผนกใหม่) */
   receiveDispatch: [ROLES.TECHNICIAN, ROLES.TECH_LEAD],
@@ -149,11 +152,11 @@ const CAPABILITIES = {
    * ⚠️ admin/manager มีอยู่แล้วโดยปริยาย (เห็นฝ่ายบริการเป็นค่าเริ่มต้น) ใส่ไว้เพื่อให้ตารางอ่านแล้ว
    * ตอบคำถาม "ใครดูตารางช่างได้บ้าง" ได้ครบในบรรทัดเดียว
    */
-  viewServiceCalendar: [ROLES.ADMIN, ROLES.MANAGER, ROLES.SALE],
+  viewServiceCalendar: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.SALE],
 
   // ── เบิกเงินล่วงหน้า (Advance) / เคลียร์ค่าใช้จ่าย (Claim) ───────────────
   /** ออกใบ Advance / ใบเคลมของตัวเองได้ */
-  requestExpense: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
+  requestExpense: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
 
   /**
    * ── การอนุมัติใบเบิกเป็น 2 ขั้น (ผู้ใช้สั่ง: แอดมินตรวจสอบก่อน แล้วผู้จัดการอนุมัติอีกที) ──
@@ -164,13 +167,13 @@ const CAPABILITIES = {
    * **คนเดียวกันกดทั้งสองขั้นในใบเดียวไม่ได้** — ไม่งั้นการแยกเป็น 2 ขั้นก็ไม่เหลือความหมาย
    * ⚠️ อนุมัติ/ตรวจสอบใบของตัวเองไม่ได้ทั้งคู่ (บังคับที่ route เช่นกัน)
    */
-  reviewExpense: [ROLES.ADMIN, ROLES.MANAGER],
+  reviewExpense: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /**
    * อนุมัติขั้นสุดท้าย / ตีกลับ / บันทึกจ่ายเงิน / ปิดส่วนต่าง
    * ⚠️ อนุมัติได้เฉพาะใบที่ "ผ่านการตรวจสอบแล้ว" เสมอ (ข้ามขั้นไม่ได้)
    */
-  approveExpense: [ROLES.ADMIN, ROLES.MANAGER],
+  approveExpense: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /**
    * กดครบทั้งสองขั้นในใบเดียวกันเองได้ (ตรวจสอบเอง → อนุมัติเอง)
@@ -181,7 +184,7 @@ const CAPABILITIES = {
    * ชื่อ/ลายเซ็นคนเดียวกันทั้งช่องผู้ตรวจสอบและผู้อนุมัติ ตรวจย้อนหลังได้ว่าใบไหนทำคนเดียว
    * ⚠️ ไม่ให้แอดมิน — แอดมินคือ "ผู้ตรวจสอบ" ตามการออกแบบ ถ้าให้ด้วยก็ไม่เหลือการสอบทานเลยทั้งระบบ
    */
-  approveOwnReview: [ROLES.MANAGER],
+  approveOwnReview: [ROLES.DIRECTOR, ROLES.MANAGER],
 
   /**
    * ตรวจสอบ/อนุมัติ "ใบของตัวเอง" ได้ — ข้อยกเว้นของหลักควบคุมภายในพื้นฐาน
@@ -192,10 +195,10 @@ const CAPABILITIES = {
    * เป็นคนละเรื่อง ต้องเปิด/ปิดแยกกันได้ (เช่นวันหลังอยากคุมเข้มเฉพาะเรื่องเงิน ก็ถอดตรงนี้จุดเดียว)
    * ⚠️ ใบที่อนุมัติเองจะมีชื่อ/ลายเซ็นคนเดียวกันทั้งช่องผู้เบิก ผู้ตรวจสอบ และผู้อนุมัติ — ตรวจย้อนหลังได้
    */
-  approveOwnExpense: [ROLES.ADMIN, ROLES.MANAGER],
+  approveOwnExpense: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /** เห็นใบของทุกคน + เบิกแทนคนอื่นได้ + ดูรายงานทั้งบริษัท (คนอื่นเห็นเฉพาะของตัวเอง — กรองที่ server) */
-  viewAllExpenses: [ROLES.ADMIN, ROLES.MANAGER],
+  viewAllExpenses: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 };
 
 const ALL_CAPABILITIES = Object.keys(CAPABILITIES);
@@ -212,7 +215,7 @@ const ALL_CAPABILITIES = Object.keys(CAPABILITIES);
  */
 const TECHNICIAN_ROLES = [ROLES.TECHNICIAN, ROLES.TECH_LEAD];
 
-const SUPERVISOR_ROLES = [ROLES.ADMIN, ROLES.MANAGER];
+const SUPERVISOR_ROLES = [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER];
 
 /**
  * รับได้ทั้ง user object ({ role }), req.user, หรือสตริง role ตรงๆ
@@ -229,7 +232,8 @@ const normalizeRole = (who) => {
  *
  * ✅ ผู้ใช้สั่ง: "ผู้จัดการสูงสุด · แอดมินไม่ให้แก้ไขตัวเองและคนอื่นเป็นผู้จัดการได้ · ผู้จัดการทำได้หมด"
  *
- *   ผู้จัดการ (3)  — สูงสุด ตั้งสิทธิ์ให้ใครเป็นอะไรก็ได้ รวมถึงตั้งผู้จัดการคนใหม่
+ *   กรรมการผู้จัดการ (4) — สูงสุดของบริษัท ตั้ง/ถอดสิทธิ์ได้ทุกระดับ รวมถึงตั้งกรรมการผู้จัดการคนใหม่
+ *   ผู้จัดการแผนกช่าง (3) — ตั้งสิทธิ์ได้ถึงระดับตัวเอง (ตั้งกรรมการผู้จัดการไม่ได้)
  *   แอดมิน   (2)  — จัดการระบบได้ทุกอย่าง แต่ "ตั้งใครเป็นผู้จัดการไม่ได้" และ "แตะสิทธิ์ผู้จัดการไม่ได้"
  *   ช่าง/เซล/ผู้ใช้ (1) — ไม่มีสิทธิ์จัดการผู้ใช้เลย
  *
@@ -242,6 +246,7 @@ const normalizeRole = (who) => {
  * ส่วนขอบเขตจริงบังคับที่ server เสมอ)
  */
 const ROLE_LEVEL = {
+  [ROLES.DIRECTOR]: 4,
   [ROLES.MANAGER]: 3,
   [ROLES.ADMIN]: 2,
   [ROLES.TECHNICIAN]: 1,
@@ -284,7 +289,7 @@ const departmentOf = (who) => ROLE_DEPARTMENT[normalizeRole(who)] || null;
 const isRole = (who, ...roles) => roles.map((r) => String(r).toLowerCase()).includes(normalizeRole(who));
 
 /** ทางลัดที่ใช้บ่อยที่สุดในระบบเดิม — มีไว้ให้การย้ายโค้ดเก่าอ่านง่ายขึ้น */
-const isAdminOrManager = (who) => isRole(who, ROLES.ADMIN, ROLES.MANAGER);
+const isAdminOrManager = (who) => isRole(who, ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER);
 
 /**
  * Express middleware — กันทั้ง route ด้วยสิทธิ์เดียว
