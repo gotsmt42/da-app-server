@@ -19,6 +19,8 @@ const multer = require("multer");
 const streamifier = require("streamifier");
 
 const Expense = require("../models/Expense");
+const BankAccount = require("../models/BankAccount");
+const { BANKS, bankByCode, digitsOnly, validateAccount } = require("../config/banks");
 const User = require("../models/User");
 const CalendarEvent = require("../models/Events");
 const DocCounter = require("../models/DocCounter");
@@ -559,6 +561,166 @@ router.get("/job-advance/:eventId", verifyToken, async (req, res) => {
   }
 });
 
+// ══ บัญชีรับเงินของผู้เบิก (ใบ Advance / ใบเคลม) ═══════════════════════════════
+// ✅ ผู้ใช้ขอ: "ใบเคลมให้สามารถเพิ่ม และเลือกบัญชีธนาคารให้กับผู้เบิกได้ให้สมบูรณ์"
+//    และต่อมา "ทำในใบ advance ด้วยนะ" — ใบ Advance ก็โอนเงินให้ผู้เบิกเหมือนกัน ดู models/BankAccount.js
+// ⚠️ ลำดับ route: GET /bank-accounts ต้องอยู่ก่อน GET /:id (ไม่งั้นถูกตีความเป็นใบเลขที่ "bank-accounts")
+
+const EMPTY_PAY_TO = { accountId: "", bankCode: "", bankName: "", accountNo: "", accountName: "" };
+
+/**
+ * 🔒 ใครจัดการบัญชีของใครได้ — เจ้าของบัญชีเอง (คนที่ใช้ระบบเบิกได้) หรือแอดมิน/ผู้จัดการ (ออกใบแทนคนอื่นได้อยู่แล้ว)
+ * ⚠️ ช่างคนหนึ่งดู/แก้เลขบัญชีของช่างอีกคนไม่ได้เด็ดขาด — เลขบัญชีเป็นข้อมูลส่วนตัว และถ้าแก้ได้ = เปลี่ยนปลายทางเงินได้
+ */
+const canManageBankOf = (req, userId) => {
+  const uid = String(userId || "");
+  if (!uid) return false;
+  if (can(req.user, "viewAllExpenses")) return true;
+  return uid === String(req.userId || "") && can(req.user, "requestExpense");
+};
+
+const bankAccountView = (a) => ({
+  _id: String(a._id),
+  userId: a.userId,
+  bankCode: a.bankCode,
+  bankName: bankByCode(a.bankCode)?.name || a.bankCode,
+  accountNo: a.accountNo,
+  accountName: a.accountName,
+  isDefault: Boolean(a.isDefault),
+  updatedAt: a.updatedAt,
+});
+
+/**
+ * แปลง payToAccountId จาก client เป็นสำเนาบัญชีสำหรับเก็บในใบ
+ * @returns {{payTo: object} | {error: string}}
+ * ⚠️ บัญชีต้องเป็นของ "ผู้เบิกของใบ" เท่านั้น — ไม่งั้นใครแก้ request ก็ส่งเงินจ่ายคืนเข้าบัญชีตัวเองได้
+ */
+const resolvePayTo = async (accountId, requesterUserId) => {
+  const id = String(accountId || "").trim();
+  if (!id) return { payTo: { ...EMPTY_PAY_TO } };
+  if (!/^[a-f0-9]{24}$/i.test(id)) return { error: "บัญชีรับเงินไม่ถูกต้อง" };
+  const acc = await BankAccount.findById(id).lean();
+  if (!acc) return { error: "ไม่พบบัญชีรับเงินที่เลือก — อาจถูกลบไปแล้ว กรุณาเลือกใหม่" };
+  if (String(acc.userId) !== String(requesterUserId || "")) return { error: "บัญชีรับเงินต้องเป็นบัญชีของผู้เบิกเท่านั้น" };
+  return {
+    payTo: {
+      accountId: String(acc._id),
+      bankCode: acc.bankCode,
+      bankName: bankByCode(acc.bankCode)?.name || acc.bankCode,
+      accountNo: acc.accountNo,
+      accountName: acc.accountName,
+    },
+  };
+};
+
+/** ตั้งบัญชีนี้เป็นบัญชีหลัก = ปลดบัญชีหลักอื่นของคนเดียวกันออก (มีบัญชีหลักได้บัญชีเดียว) */
+const makeDefault = async (userId, accountId) => {
+  await BankAccount.updateMany({ userId, _id: { $ne: accountId } }, { $set: { isDefault: false } });
+  await BankAccount.updateOne({ _id: accountId }, { $set: { isDefault: true } });
+};
+
+router.get("/bank-accounts", verifyToken, async (req, res) => {
+  try {
+    const userId = String(req.query.userId || req.userId || "");
+    if (!canManageBankOf(req, userId)) return res.status(403).json({ message: "คุณไม่มีสิทธิ์ดูบัญชีของพนักงานคนนี้" });
+    const rows = await BankAccount.find({ userId }).sort({ isDefault: -1, updatedAt: -1 }).lean();
+    res.json({ accounts: rows.map(bankAccountView), banks: BANKS.map(({ code, name, digits }) => ({ code, name, digits })) });
+  } catch (err) {
+    console.error("❌ ดึงบัญชีรับเงินไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ดึงบัญชีรับเงินไม่สำเร็จ" });
+  }
+});
+
+router.post("/bank-accounts", verifyToken, async (req, res) => {
+  try {
+    const userId = String(req.body.userId || req.userId || "");
+    if (!canManageBankOf(req, userId)) return res.status(403).json({ message: "คุณไม่มีสิทธิ์เพิ่มบัญชีให้พนักงานคนนี้" });
+    const owner = /^[a-f0-9]{24}$/i.test(userId) ? await User.findById(userId).select("_id").lean() : null;
+    if (!owner) return res.status(400).json({ message: "ไม่พบพนักงานเจ้าของบัญชี" });
+
+    const bankCode = String(req.body.bankCode || "").trim().toUpperCase();
+    const accountNo = digitsOnly(req.body.accountNo);
+    const accountName = String(req.body.accountName || "").trim().slice(0, 120);
+    const invalid = validateAccount(bankCode, accountNo);
+    if (invalid) return res.status(400).json({ message: invalid });
+    if (!accountName) return res.status(400).json({ message: "กรุณากรอกชื่อบัญชี" });
+
+    const me = actor(req);
+    const hasAny = await BankAccount.exists({ userId });
+    let acc;
+    try {
+      acc = await BankAccount.create({
+        userId, bankCode, accountNo, accountName,
+        // ✅ บัญชีแรกของคนนั้นเป็นบัญชีหลักให้อัตโนมัติ — ใบถัดไปเลือกให้เองไม่ต้องกด
+        isDefault: !hasAny || Boolean(req.body.isDefault),
+        createdBy: { userId: me.userId, name: me.name },
+      });
+    } catch (e) {
+      if (e?.code === 11000) return res.status(409).json({ message: "มีบัญชีนี้อยู่ในรายการแล้ว" });
+      throw e;
+    }
+    if (acc.isDefault) await makeDefault(userId, acc._id);
+    res.status(201).json({ account: bankAccountView(await BankAccount.findById(acc._id).lean()) });
+  } catch (err) {
+    console.error("❌ เพิ่มบัญชีรับเงินไม่สำเร็จ:", err);
+    res.status(500).json({ message: "เพิ่มบัญชีรับเงินไม่สำเร็จ" });
+  }
+});
+
+router.put("/bank-accounts/:accountId", verifyToken, async (req, res) => {
+  try {
+    const id = String(req.params.accountId || "");
+    const acc = /^[a-f0-9]{24}$/i.test(id) ? await BankAccount.findById(id) : null;
+    if (!acc) return res.status(404).json({ message: "ไม่พบบัญชีนี้" });
+    if (!canManageBankOf(req, acc.userId)) return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขบัญชีนี้" });
+
+    if (req.body.bankCode !== undefined || req.body.accountNo !== undefined) {
+      const bankCode = String(req.body.bankCode ?? acc.bankCode).trim().toUpperCase();
+      const accountNo = digitsOnly(req.body.accountNo ?? acc.accountNo);
+      const invalid = validateAccount(bankCode, accountNo);
+      if (invalid) return res.status(400).json({ message: invalid });
+      acc.bankCode = bankCode;
+      acc.accountNo = accountNo;
+    }
+    if (req.body.accountName !== undefined) {
+      const accountName = String(req.body.accountName || "").trim().slice(0, 120);
+      if (!accountName) return res.status(400).json({ message: "กรุณากรอกชื่อบัญชี" });
+      acc.accountName = accountName;
+    }
+    try {
+      await acc.save();
+    } catch (e) {
+      if (e?.code === 11000) return res.status(409).json({ message: "มีบัญชีนี้อยู่ในรายการแล้ว" });
+      throw e;
+    }
+    if (req.body.isDefault === true) await makeDefault(acc.userId, acc._id);
+    res.json({ account: bankAccountView(await BankAccount.findById(acc._id).lean()) });
+  } catch (err) {
+    console.error("❌ แก้ไขบัญชีรับเงินไม่สำเร็จ:", err);
+    res.status(500).json({ message: "แก้ไขบัญชีรับเงินไม่สำเร็จ" });
+  }
+});
+
+router.delete("/bank-accounts/:accountId", verifyToken, async (req, res) => {
+  try {
+    const id = String(req.params.accountId || "");
+    const acc = /^[a-f0-9]{24}$/i.test(id) ? await BankAccount.findById(id).lean() : null;
+    if (!acc) return res.status(404).json({ message: "ไม่พบบัญชีนี้" });
+    if (!canManageBankOf(req, acc.userId)) return res.status(403).json({ message: "คุณไม่มีสิทธิ์ลบบัญชีนี้" });
+    await BankAccount.deleteOne({ _id: acc._id });
+    // ✅ ลบบัญชีหลักทิ้ง — เลื่อนบัญชีที่ใช้ล่าสุดขึ้นเป็นบัญชีหลักแทน ไม่ปล่อยให้คนนั้นไม่มีบัญชีหลักเลย
+    if (acc.isDefault) {
+      const next = await BankAccount.findOne({ userId: acc.userId }).sort({ updatedAt: -1 }).lean();
+      if (next) await makeDefault(acc.userId, next._id);
+    }
+    // ⚠️ ใบเคลมที่เคยเลือกบัญชีนี้ไว้ไม่ถูกแตะ — ใบเก็บสำเนาเลขบัญชีไว้แล้ว (Expense.payTo)
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("❌ ลบบัญชีรับเงินไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ลบบัญชีรับเงินไม่สำเร็จ" });
+  }
+});
+
 /** ค่าที่เคยกรอก — ช่อง "ถึง" ใช้ชื่อผู้มีอำนาจคนเดิมซ้ำเกือบทุกใบ ไม่ควรต้องพิมพ์ใหม่ทุกครั้ง */
 router.get("/suggest", verifyToken, async (req, res) => {
   try {
@@ -655,8 +817,13 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
       return res.status(409).json({ message: duplicateAdvanceMessage(existing), advance: { _id: existing._id, docNo: existing.docNo, status: existing.status } });
     }
 
+    // ✅ บัญชีที่บริษัทจะโอนเงินล่วงหน้าให้ (ผู้ใช้ขอ "ทำในใบ advance ด้วย") — ต้องเป็นบัญชีของผู้เบิกเท่านั้น
+    const payToResult = await resolvePayTo(req.body.payToAccountId, requesterUser._id);
+    if (payToResult.error) return res.status(400).json({ message: payToResult.error });
+
     const expense = new Expense({
       kind: "advance",
+      payTo: payToResult.payTo,
       docNo: await nextDocNo("advance"),
       status: "pending",
       docDate: parseDay(req.body.docDate) || todayNoonUtc(),
@@ -744,8 +911,13 @@ router.post("/claims", verifyToken, upload.array("files", 15), async (req, res) 
       return res.status(400).json({ message: "กรุณาเพิ่มรายการที่ใช้จริง หรือระบุหมายเหตุหากไม่ได้ใช้เงินเลย" });
     }
 
+    // ✅ บัญชีรับเงิน (ส่วนต่างที่บริษัทจ่ายเพิ่ม) — ต้องเป็นบัญชีของผู้เบิกของใบ Advance
+    const payToResult = await resolvePayTo(req.body.payToAccountId, advance.requester.userId);
+    if (payToResult.error) return res.status(400).json({ message: payToResult.error });
+
     const claim = new Expense({
       kind: "claim",
+      payTo: payToResult.payTo,
       docNo: await nextDocNo("claim"),
       status: "pending",
       docDate: parseDay(req.body.docDate) || todayNoonUtc(),
@@ -836,9 +1008,14 @@ router.post("/reimbursements", verifyToken, upload.array("files", 15), async (re
     const linked = await resolveJob(req.body.eventId);
     if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
 
+    // ✅ บัญชีรับเงินคืนค่าสำรองจ่าย — ต้องเป็นบัญชีของผู้เบิก (คนที่สำรองจ่าย) เท่านั้น
+    const payToResult = await resolvePayTo(req.body.payToAccountId, requesterUser._id);
+    if (payToResult.error) return res.status(400).json({ message: payToResult.error });
+
     const claim = new Expense({
       kind: "claim",
       claimType: "reimburse",
+      payTo: payToResult.payTo,
       docNo: await nextDocNo("reimburse"),
       status: "pending",
       docDate: parseDay(req.body.docDate) || todayNoonUtc(),
@@ -938,6 +1115,7 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
     }
     const me = actor(req);
     const wasRejected = doc.status === "rejected";
+    const requesterBefore = String(doc.requester?.userId || "");
 
     if (req.body.subject !== undefined) {
       const subject = String(req.body.subject || "").trim().slice(0, 300);
@@ -992,6 +1170,19 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
         const u = /^[a-f0-9]{24}$/i.test(requesterId) ? await User.findById(requesterId).lean() : null;
         if (!u) return res.status(400).json({ message: "ไม่พบผู้เบิกที่เลือก" });
         doc.requester = { userId: String(u._id), name: personName(u), position: String(req.body.position || "").trim() || positionOf(u) };
+      }
+    }
+
+    // ✅ บัญชีรับเงินของผู้เบิก (ทั้งใบ Advance และใบเคลม) — ส่ง payToAccountId เฉพาะตอนผู้ใช้เปลี่ยน
+    // (ไม่ส่ง = คงสำเนาเดิมไว้ เช่นบัญชีนั้นถูกลบจากทะเบียนไปแล้ว ใบเดิมต้องยังแก้ช่องอื่นได้)
+    // ⚠️ ผู้เบิกเปลี่ยน (แอดมินเปลี่ยนคน) แต่บัญชีเดิมเป็นของคนเก่า → ล้างทิ้ง กันโอนเงินผิดคน
+    {
+      if (req.body.payToAccountId !== undefined) {
+        const r = await resolvePayTo(req.body.payToAccountId, doc.requester.userId);
+        if (r.error) return res.status(400).json({ message: r.error });
+        doc.payTo = r.payTo;
+      } else if (doc.requester.userId !== requesterBefore && doc.payTo?.accountId) {
+        doc.payTo = { ...EMPTY_PAY_TO };
       }
     }
 

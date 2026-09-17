@@ -182,6 +182,20 @@ const expenseSchema = new mongoose.Schema(
     total: { type: Number, default: 0, min: 0 },
 
     // ── เฉพาะ Claim ──────────────────────────────────────────────────────
+    /**
+     * บัญชีรับเงินของผู้เบิก — ใบ Advance ใช้เป็นบัญชีที่บริษัทโอนเงินล่วงหน้าให้
+     * ส่วนใบเคลมใช้เป็นบัญชีรับส่วนต่างที่ต้องจ่ายเพิ่ม/เงินคืนค่าสำรองจ่าย
+     * ✅ เป็น "สำเนา" ของบัญชีในทะเบียน (models/BankAccount.js) ตอนบันทึกใบ — แก้/ลบบัญชีในทะเบียนทีหลัง
+     * ใบที่ออกไปแล้วต้องไม่เปลี่ยนตาม ⚠️ ค่าทุกช่องมาจากฐานข้อมูลผ่าน resolvePayTo เท่านั้น ไม่เชื่อค่าจาก client
+     * ⚠️ ว่างได้ (accountId = "") = ไม่ระบุ/รับเป็นเงินสด
+     */
+    payTo: {
+      accountId: { type: String, default: "" },
+      bankCode: { type: String, default: "" },
+      bankName: { type: String, default: "" },
+      accountNo: { type: String, default: "" },
+      accountName: { type: String, default: "" },
+    },
     /** ⚠️ ใบ advance ไม่ใช้ฟิลด์นี้ (ค่าจะเป็น "clear" ตาม default เฉยๆ) — อ่านค่าเมื่อ kind = "claim" เท่านั้น */
     claimType: { type: String, enum: CLAIM_TYPES, default: "clear", index: true },
     advanceId: { type: String, default: "", index: true },
