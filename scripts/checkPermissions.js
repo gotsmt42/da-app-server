@@ -24,7 +24,7 @@ const { CAPABILITIES, ROLES, ALL_ROLES, ROLE_LABEL } = require("../src/config/ro
  * ที่มองเห็นได้ใน diff เสมอ ไม่ใช่ผลข้างเคียงของการแก้อย่างอื่น
  */
 const EXPECTED = {
-  manageAll: ["admin"],
+  manageAll: ["admin", "manager"],
   approveJobs: ["admin", "manager"],
   viewAllJobs: ["admin", "manager"],
   editAnyJob: ["admin", "manager"],
@@ -49,6 +49,7 @@ const EXPECTED = {
   reviewExpense: ["admin", "manager"],
   approveExpense: ["admin", "manager"],
   approveOwnReview: ["manager"],
+  approveOwnExpense: ["admin", "manager"],
   viewAllExpenses: ["admin", "manager"],
 };
 

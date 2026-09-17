@@ -238,11 +238,13 @@ const canEdit = (req, doc) =>
   EDITABLE.includes(doc.status) && (isOwner(req, doc) || can(req.user, "viewAllExpenses"));
 
 /**
- * ⚠️ อนุมัติใบของตัวเองไม่ได้ — หลักควบคุมภายในพื้นฐานของเอกสารการเงิน
- * ยกเว้นแอดมิน (manageAll) ซึ่งเป็นระดับสูงสุดของบริษัท ไม่มีใครเหนือกว่าให้อนุมัติแทนได้
+ * ⚠️ ตรวจสอบ/อนุมัติใบของตัวเองไม่ได้ — หลักควบคุมภายในพื้นฐานของเอกสารการเงิน
+ * ยกเว้นผู้ที่มีสิทธิ์ approveOwnExpense (แอดมิน) ซึ่งไม่มีใครเหนือกว่าให้อนุมัติแทนได้
+ * ⚠️ เช็คด้วยสิทธิ์นี้ ไม่ใช่ manageAll — ดูเหตุผลที่ config/roles.js (สิทธิ์ตั้งค่าระบบกับสิทธิ์
+ * อนุมัติเงินให้ตัวเองเป็นคนละเรื่องกัน ต้องเปิด/ปิดแยกกันได้)
  */
 const blockSelfApproval = (req, doc) =>
-  String(doc?.requester?.userId || "") === String(req.userId || "") && !can(req.user, "manageAll");
+  String(doc?.requester?.userId || "") === String(req.userId || "") && !can(req.user, "approveOwnExpense");
 
 /** ผู้ใช้ติ๊กเลือกว่าจะลงลายเซ็นอิเล็กทรอนิกส์ในใบนี้ไหม (ไม่ส่งมา = ใช้ ตามค่าเริ่มต้นเดิม) */
 const wantsSignature = (req) => {
