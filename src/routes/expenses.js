@@ -180,7 +180,10 @@ const withFullNames = async (docs) => {
   const list = (Array.isArray(docs) ? docs : [docs]).filter(Boolean);
   const all = [];
   list.forEach((d) => { all.push(d); if (d.advanceDoc) all.push(d.advanceDoc); if (d.claim) all.push(d.claim); });
-  const refsOf = (d) => [d.requester, d.approvedBy, d.createdBy, ...(d.items || []).map((it) => it.person)]
+  // ⚠️ ต้องครบทุกคนที่ชื่อไปโผล่บนเอกสาร/หน้าจอ — ตกคนไหนคนนั้นจะได้ชื่อต้นอย่างเดียว
+  // 🐛 ที่ผู้ใช้เจอ: ช่อง "ผู้ตรวจสอบ" ในใบ PDF ขึ้นแค่ "( admin )" เพราะ reviewedBy ไม่ได้อยู่ในลิสต์นี้
+  const refsOf = (d) => [d.requester, d.reviewedBy, d.approvedBy, d.rejectedBy, d.cancelledBy, d.createdBy, d.payment?.by,
+    ...(d.items || []).map((it) => it.person)]
     .filter((p) => p && /^[a-f0-9]{24}$/i.test(String(p.userId || "")));
   const ids = [...new Set(all.flatMap((d) => refsOf(d).map((p) => String(p.userId))))];
   if (!ids.length) return docs;
