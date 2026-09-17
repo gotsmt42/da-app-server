@@ -320,13 +320,15 @@ router.put(
         console.log("⚠️ ไม่มีไฟล์ใหม่ถูกอัปโหลด");
       }
 
-      // ✅ เปลี่ยน role เมื่อไหร่ ให้เพิ่ม sessionVersion เพื่อบังคับ token เก่าให้หมดอายุทันที
-      // (ผู้ใช้จะถูกเตะออกจากระบบในการเรียก API ครั้งถัดไป และต้อง login ใหม่เพื่อรับสิทธิ์ล่าสุด)
+      /**
+       * 🐛 ที่แก้ (ผู้ใช้แจ้ง "ตอนนี้ยังต้อง logout ออกใหม่ตลอด"):
+       * เดิมเปลี่ยน role แล้ว +1 sessionVersion → token เดิมหมดอายุ → เจ้าตัวถูกเตะออกกลางทาง
+       * ✅ ไม่จำเป็นเลย เพราะ middleware/auth.js โหลด User จากฐานข้อมูลใหม่ "ทุก request" อยู่แล้ว
+       * สิทธิ์จริงจึงเปลี่ยนทันทีตั้งแต่คำขอถัดไป ส่วนเมนู/ป้ายบนหน้าจอฝั่งเบราว์เซอร์รีเฟรชเอง
+       * (ดู AuthContext.refreshUserData ฝั่งแอป)
+       * ⚠️ sessionVersion ยังใช้อยู่สำหรับกรณีที่ต้อง "บังคับออกจากระบบ" จริงๆ เท่านั้น
+       */
       const update = { $set: newUser };
-      // เปลี่ยน role เมื่อไหร่ ให้เพิ่ม sessionVersion เพื่อบังคับ token เก่าหมดอายุทันที
-      if (newUser.role !== undefined && newUser.role !== existingUser.role) {
-        update.$inc = { sessionVersion: 1 };
-      }
 
       const updatedUser = await User.findByIdAndUpdate(
         userId,

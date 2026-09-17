@@ -274,7 +274,7 @@ const log = (doc, action, detail, me) => {
   doc.activityLog.push({ action, detail, userId: me.userId, userName: me.name, timestamp: new Date() });
 };
 
-const uploadToCloud = async (file, folder, uploadedBy = "", kind = "other") => {
+const uploadToCloud = async (file, folder, uploadedBy = "", kind = "other", stage = "") => {
   const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
   const sanitized = originalName.replace(/[^\w\-.]/g, "_");
   const isImage = ["image/jpeg", "image/png", "image/webp"].includes(file.mimetype);
@@ -292,6 +292,8 @@ const uploadToCloud = async (file, folder, uploadedBy = "", kind = "other") => {
   });
   return {
     kind: Expense.FILE_KINDS.includes(kind) ? kind : "other",
+    // ✅ ขั้นตอนที่แนบ — กำหนดจาก route ที่เรียก ไม่ใช่ค่าจาก client (client ปลอมได้)
+    stage: Expense.FILE_STAGES.includes(stage) ? stage : "",
     fileName: originalName,
     fileUrl: result.secure_url,
     fileType: file.mimetype,
@@ -307,9 +309,13 @@ const fileKindAt = (req, i, fallback) => {
   return arr[i] || fallback;
 };
 
-const attachUploads = async (req, doc, me, fallbackKind) => {
+/**
+ * @param {string} stage  ขั้นตอนที่แนบไฟล์ (ดู FILE_STAGES ใน models/Expense.js)
+ * ⚠️ ทุก route ที่รับไฟล์ต้องส่ง stage ของตัวเองเสมอ — ไม่งั้นไฟล์จะไปกองรวมใน "ไม่ระบุขั้นตอน"
+ */
+const attachUploads = async (req, doc, me, fallbackKind, stage = "") => {
   for (const [i, f] of (req.files || []).entries()) {
-    doc.attachments.push(await uploadToCloud(f, `expenses/${doc._id}`, me.name, fileKindAt(req, i, fallbackKind)));
+    doc.attachments.push(await uploadToCloud(f, `expenses/${doc._id}`, me.name, fileKindAt(req, i, fallbackKind), stage));
   }
 };
 
@@ -873,7 +879,7 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
     });
 
     await sealRequester(req, expense);
-    await attachUploads(req, expense, me, "other");
+    await attachUploads(req, expense, me, "other", "created");
     const onBehalf = String(requesterUser._id) !== me.userId;
     log(expense, "created", `ออกใบเบิก Advance ${fullBaht(total)}${onBehalf ? ` แทน ${expense.requester.name}` : ""}`, me);
     await saveWithDocNo(expense, "advance");
@@ -971,7 +977,7 @@ router.post("/claims", verifyToken, upload.array("files", 15), async (req, res) 
     });
 
     await sealRequester(req, claim);
-    await attachUploads(req, claim, me, "receipt");
+    await attachUploads(req, claim, me, "receipt", "created");
     log(claim, "created", `ออกใบเคลมอ้าง ${advance.docNo} · ใช้จริง ${fullBaht(total)}`, me);
     // ⚠️ บันทึกใบเคลมก่อน — เลขที่อาจถูกขยับตอนกันเลขชน ใบ Advance ต้องจำเลขที่ "ที่ได้จริง"
     await saveWithDocNo(claim, "claim");
@@ -1069,7 +1075,7 @@ router.post("/reimbursements", verifyToken, upload.array("files", 15), async (re
     });
 
     await sealRequester(req, claim);
-    await attachUploads(req, claim, me, "receipt");
+    await attachUploads(req, claim, me, "receipt", "created");
     const onBehalf = String(requesterUser._id) !== me.userId;
     log(claim, "created", `ออกใบเบิกค่าใช้จ่าย (สำรองจ่ายเอง) ${fullBaht(total)}${onBehalf ? ` แทน ${claim.requester.name}` : ""}`, me);
     await saveWithDocNo(claim, "reimburse");
@@ -1247,7 +1253,8 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
       }
     }
 
-    await attachUploads(req, doc, me, doc.kind === "claim" ? "receipt" : "other");
+    // ⚠️ ส่งใหม่หลังถูกตีกลับ = ไฟล์ของรอบ "ส่งใหม่" ไม่ใช่รอบออกใบครั้งแรก
+    await attachUploads(req, doc, me, doc.kind === "claim" ? "receipt" : "other", wasRejected ? "resubmitted" : "created");
 
     // ⚠️ เปลี่ยนผู้เบิก = ลายเซ็นของคนเดิมต้องหลุดออกจากใบทันที (เหตุผลเดียวกับบัญชีรับเงิน)
     if (doc.requester.userId !== requesterBefore && doc.signatures?.requester?.hash) {
@@ -1488,7 +1495,7 @@ router.post("/:id/pay", verifyToken, upload.array("files", 5), async (req, res) 
     const due = parseDay(req.body?.dueClearAt);
     if (due) doc.dueClearAt = due;
     else if (!doc.dueClearAt) doc.dueClearAt = moment(doc.payment.at).add(DEFAULT_CLEAR_DAYS, "days").toDate();
-    await attachUploads(req, doc, me, "transfer_slip");
+    await attachUploads(req, doc, me, "transfer_slip", "pay");
     log(doc, "paid", `จ่ายเงิน ${fullBaht(doc.total)} (${PAYMENT_LABEL[doc.payment.method]}${doc.payment.ref ? ` ${doc.payment.ref}` : ""})`, me);
     await doc.save();
 
@@ -1517,7 +1524,7 @@ router.post("/:id/settle", verifyToken, upload.array("files", 5), async (req, re
     const me = actor(req);
     doc.payment = readPayment(req, me);
     doc.status = "settled";
-    await attachUploads(req, doc, me, "transfer_slip");
+    await attachUploads(req, doc, me, "transfer_slip", "settle");
     const diffText = isReimburse(doc)
       ? `จ่ายคืนค่าสำรองจ่าย ${fullBaht(doc.difference)}`
       : doc.difference > 0 ? `จ่ายเพิ่ม ${fullBaht(doc.difference)}` : `รับคืน ${fullBaht(-doc.difference)}`;
@@ -1676,7 +1683,7 @@ router.post("/:id/files", verifyToken, upload.array("files", 10), async (req, re
     }
     if (!req.files?.length) return res.status(400).json({ message: "กรุณาเลือกไฟล์" });
     const me = actor(req);
-    await attachUploads(req, doc, me, doc.kind === "claim" ? "receipt" : "other");
+    await attachUploads(req, doc, me, doc.kind === "claim" ? "receipt" : "other", "added");
     log(doc, "files_added", `แนบไฟล์ ${req.files.length} ไฟล์`, me);
     await doc.save();
     res.json({ expense: await withFullNames(doc.toObject()) });

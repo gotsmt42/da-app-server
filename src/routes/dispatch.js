@@ -22,7 +22,7 @@ const SystemType = require("../models/SystemType");
 const Customer = require("../models/Customer");
 const DocCounter = require("../models/DocCounter");
 const verifyToken = require("../middleware/auth");
-const { can, SUPERVISOR_ROLES, DEPARTMENT, ROLES } = require("../config/roles");
+const { can, SUPERVISOR_ROLES, DEPARTMENT, TECHNICIAN_ROLES } = require("../config/roles");
 const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers, sendPushToRoles } = require("../services/PushNotify");
@@ -273,7 +273,7 @@ router.get("/assignable", verifyToken, async (req, res) => {
       return res.status(403).json({ message: "เฉพาะแอดมิน/ผู้จัดการเท่านั้นที่มอบหมายงานได้" });
     }
     // ⚠️ ตอนนี้มีแค่แผนกบริการ (ช่าง) — เพิ่มแผนกใหม่ให้เพิ่ม role ที่ receiveDispatch ใน config/roles.js
-    const users = await User.find({ role: ROLES.TECHNICIAN })
+    const users = await User.find({ role: { $in: TECHNICIAN_ROLES } })
       .select("fname lname username role imageUrl").lean();
     res.json({ users });
   } catch (err) {

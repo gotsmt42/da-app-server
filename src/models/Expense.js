@@ -99,9 +99,18 @@ const itemSchema = new mongoose.Schema(
   { _id: true }
 );
 
+/**
+ * ขั้นตอนที่ไฟล์ถูกแนบเข้ามา
+ * ✅ ผู้ใช้ขอให้รู้ว่า "ไฟล์นี้แนบมาจากขั้นตอนไหน" — ชนิดไฟล์ (kind) บอกแค่ว่าเป็นอะไร (ใบเสร็จ/สลิป)
+ * แต่ไม่บอกว่ามาจากตอนออกใบ ตอนจ่ายเงิน หรือตอนปิดส่วนต่าง ซึ่งเป็นคนละเรื่องเวลาตรวจสอบย้อนหลัง
+ * ⚠️ ไฟล์เก่าที่แนบก่อนมีฟิลด์นี้จะเป็น "" — หน้าจอต้องรองรับ (จัดเข้ากลุ่ม "ไม่ระบุขั้นตอน")
+ */
+const FILE_STAGES = ["created", "resubmitted", "review", "approve", "pay", "settle", "added"];
+
 const fileSchema = new mongoose.Schema(
   {
     kind: { type: String, enum: FILE_KINDS, default: "other" },
+    stage: { type: String, enum: [...FILE_STAGES, ""], default: "" },
     fileName: String,
     fileUrl: String,
     fileType: String,
@@ -298,6 +307,7 @@ Expense.CLAIM_TYPES = CLAIM_TYPES;
 Expense.STATUS = STATUS;
 Expense.CATEGORIES = CATEGORIES;
 Expense.FILE_KINDS = FILE_KINDS;
+Expense.FILE_STAGES = FILE_STAGES;
 Expense.PAYMENT_METHODS = PAYMENT_METHODS;
 
 module.exports = Expense;

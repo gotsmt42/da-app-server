@@ -19,6 +19,8 @@ const ROLES = {
   ADMIN: "admin",
   MANAGER: "manager",
   TECHNICIAN: "technician",
+  /** หัวหน้าช่างเทคนิค — ✅ ผู้ใช้ขอเพิ่ม: ตอนนี้ให้สิทธิ์เท่าช่างเทคนิคทุกอย่างก่อน */
+  TECH_LEAD: "techlead",
   SALE: "sale",
   USER: "user",
 };
@@ -27,9 +29,10 @@ const ALL_ROLES = Object.values(ROLES);
 
 /** ชื่อภาษาไทยสำหรับแสดงผล — ทั้งแอปเป็นภาษาไทย ห้ามโชว์ค่าดิบอย่าง "technician" ให้ผู้ใช้เห็น */
 const ROLE_LABEL = {
-  [ROLES.ADMIN]: "แอดมิน",
-  [ROLES.MANAGER]: "ผู้จัดการ",
-  [ROLES.TECHNICIAN]: "ช่าง",
+  [ROLES.ADMIN]: "แอดมินช่าง",
+  [ROLES.MANAGER]: "ผู้จัดการแผนกช่าง",
+  [ROLES.TECH_LEAD]: "หัวหน้าช่างเทคนิค",
+  [ROLES.TECHNICIAN]: "ช่างเทคนิค",
   [ROLES.SALE]: "เซล",
   [ROLES.USER]: "ผู้ใช้ทั่วไป",
 };
@@ -53,6 +56,7 @@ const DEPARTMENT_LABEL = {
 // admin/manager/user ไม่สังกัดแผนกไหนโดยเฉพาะ (คุมภาพรวมทั้งหมด) จึงเป็น null
 const ROLE_DEPARTMENT = {
   [ROLES.TECHNICIAN]: DEPARTMENT.SERVICE,
+  [ROLES.TECH_LEAD]: DEPARTMENT.SERVICE,
   [ROLES.SALE]: DEPARTMENT.SALES,
 };
 
@@ -98,20 +102,20 @@ const CAPABILITIES = {
   /** เข้าหน้าติดตามใบเสนอราคา — ⚠️ ไม่รวม user ตามพฤติกรรมเดิมของ QuotationTracking.js */
   // ⚠️ ฝ่ายขายถูกตัดออกตามที่ผู้ใช้สั่ง — การติดตามใบเสนอราคาในระบบนี้ผูกกับ "งานของช่าง"
   // (ใบเสนอราคาของงานที่ลงตารางแล้ว) ไม่ใช่ดีลที่เซลกำลังปิด เซลเปิดเข้าไปก็ไม่มีของตัวเอง
-  viewQuotations: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN],
+  viewQuotations: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
 
   /** แก้/ลบทะเบียนเอกสารที่ระบบออก (ใบส่งของ ฯลฯ) */
   editDocuments: [ROLES.ADMIN, ROLES.MANAGER],
 
   /** เข้าหน้าการเงิน/ใบเสนอราคาได้ (ขอบเขตข้อมูลกรองที่ server อีกชั้น) */
   // ⚠️ ฝ่ายขายถูกตัดออก — หน้าการเงินคือการวางบิล/รับเงินของงานช่าง ไม่ใช่ยอดขายของเซล
-  viewFinance: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.USER],
+  viewFinance: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD, ROLES.USER],
 
   /** แก้ข้อมูลการเงินระดับสัญญา (มูลค่างาน/จำนวนครั้ง) */
   editFinance: [ROLES.ADMIN, ROLES.MANAGER],
 
   /** เข้าหน้า "ภาพรวมงาน" (/contracts) */
-  viewContracts: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN],
+  viewContracts: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
 
   /** แก้ข้อมูลสัญญาในหน้าภาพรวมงาน */
   editContracts: [ROLES.ADMIN, ROLES.MANAGER],
@@ -134,7 +138,7 @@ const CAPABILITIES = {
   assignDispatch: [ROLES.ADMIN, ROLES.MANAGER],
 
   /** เป็นผู้รับงานได้ (ขยายเพิ่มเมื่อมีแผนกใหม่) */
-  receiveDispatch: [ROLES.TECHNICIAN],
+  receiveDispatch: [ROLES.TECHNICIAN, ROLES.TECH_LEAD],
 
   /**
    * เปิดดู "ตารางงานช่าง" ได้ทั้งแผนก แม้ตัวเองไม่ได้อยู่ในงานเลย — อ่านอย่างเดียวเท่านั้น
@@ -149,7 +153,7 @@ const CAPABILITIES = {
 
   // ── เบิกเงินล่วงหน้า (Advance) / เคลียร์ค่าใช้จ่าย (Claim) ───────────────
   /** ออกใบ Advance / ใบเคลมของตัวเองได้ */
-  requestExpense: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN],
+  requestExpense: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
 
   /**
    * ── การอนุมัติใบเบิกเป็น 2 ขั้น (ผู้ใช้สั่ง: แอดมินตรวจสอบก่อน แล้วผู้จัดการอนุมัติอีกที) ──
@@ -201,6 +205,13 @@ const ALL_CAPABILITIES = Object.keys(CAPABILITIES);
  * ⚠️ คนละเรื่องกับ CAPABILITIES โดยตั้งใจ: อันนั้นตอบว่า "ทำได้ไหม" อันนี้ตอบว่า "ส่งหาใคร"
  * ถ้าเอามาปนกันจะเกิดกรณีที่เพิ่มสิทธิ์ให้ role ใหม่แล้วมันได้รับแจ้งเตือนพ่วงไปด้วยโดยไม่ตั้งใจ
  */
+/**
+ * ช่างหน้างานทั้งหมด (ช่างเทคนิค + หัวหน้าช่างเทคนิค)
+ * ✅ ใช้ทุกที่ที่ถามว่า "คนนี้เป็นช่างไหม" — เพิ่ม role ช่างแบบใหม่ในอนาคตก็แก้ที่นี่ที่เดียว
+ * ⚠️ อย่าเทียบ role === "technician" ตรงๆ อีก ไม่งั้นหัวหน้าช่างจะหลุดจากรายชื่อ/เมนูของช่างเงียบๆ
+ */
+const TECHNICIAN_ROLES = [ROLES.TECHNICIAN, ROLES.TECH_LEAD];
+
 const SUPERVISOR_ROLES = [ROLES.ADMIN, ROLES.MANAGER];
 
 /**
@@ -234,6 +245,7 @@ const ROLE_LEVEL = {
   [ROLES.MANAGER]: 3,
   [ROLES.ADMIN]: 2,
   [ROLES.TECHNICIAN]: 1,
+  [ROLES.TECH_LEAD]: 1,
   [ROLES.SALE]: 1,
   [ROLES.USER]: 1,
 };
@@ -296,6 +308,7 @@ module.exports = {
   CAPABILITIES,
   ALL_CAPABILITIES,
   SUPERVISOR_ROLES,
+  TECHNICIAN_ROLES,
   ROLE_LEVEL,
   roleLevel,
   canAssignRole,
