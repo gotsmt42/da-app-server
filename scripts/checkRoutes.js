@@ -27,7 +27,7 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 124;
+const EXPECTED_TOTAL = 125;
 const EXPECTED_PER_PREFIX = {
   // ✅ +1 = PUT /reorder (จัดลำดับการ์ดงานในวันเดียวกันบนปฏิทิน)
   "/api/events": 32,
@@ -49,6 +49,8 @@ const EXPECTED_PER_PREFIX = {
   "/api/stockproduct": 3,
   "/api/doc-number": 2,
   "/api/holidays": 1,
+  // ✅ ช่องสัญญาณอัปเดตหน้าจอแบบเรียลไทม์ (GET /stream)
+  "/api/realtime": 1,
 };
 
 const decode = (re) => {

@@ -24,6 +24,9 @@ const dispatchRouter = require("./dispatch");
 const expensesRouter = require("./expenses");
 // ✅ ลายเซ็นอิเล็กทรอนิกส์ของพนักงาน (ตั้งค่าเอง แล้วระบบผนึกลงเอกสาร PDF ที่คนนั้นออก/อนุมัติ)
 const signaturesRouter = require("./signatures");
+// ✅ อัปเดตหน้าจอแบบเรียลไทม์ — ช่องสัญญาณ + ตัวประกาศหลังข้อมูลเปลี่ยน (services/realtime.js)
+const realtimeRouter = require("./realtime");
+const { publishMutations } = require("../services/realtime");
 
 /**
  * รวมการ mount router ของ API ทั้งหมดไว้ที่เดียว — เดิมกระจายอยู่ใน index.js ปนกับการตั้งค่า
@@ -33,6 +36,10 @@ const signaturesRouter = require("./signatures");
  * ตอนนี้แต่ละตัวมี prefix ไม่ทับกันจึงสลับลำดับได้ แต่ถ้าจะเพิ่มตัวใหม่ให้ระวังจุดนี้
  */
 const router = express.Router();
+
+// ⚠️ ต้องอยู่ก่อน router ย่อยทุกตัว — ดักทุกคำสั่งที่เปลี่ยนข้อมูลแล้วประกาศให้หน้าจอที่เปิดอยู่ดึงใหม่
+router.use(publishMutations);
+router.use("/realtime", realtimeRouter);
 
 router.use("/auth", authRouter);
 router.use("/signatures", signaturesRouter);
