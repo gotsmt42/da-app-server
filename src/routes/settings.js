@@ -46,6 +46,24 @@ const TEXT_FIELDS = {
 /** รูปของแต่ละช่อง — คีย์ที่หน้าจอส่งมา → ฟิลด์ในฐานข้อมูล */
 const IMAGE_SLOTS = { app: "logoUrl", letterhead: "letterheadUrl", stamp: "stampUrl" };
 
+/**
+ * รูปที่ "ติดมากับแอป" — เลือกใช้ได้เลยโดยไม่ต้องอัปโหลด (✅ ผู้ใช้สั่ง: "วางชุดเดิมไว้ด้วย หรือให้เลือกได้")
+ * ⚠️ เป็นไวต์ลิสต์โดยตั้งใจ — ห้ามรับ URL อิสระจาก client เด็ดขาด ไม่งั้นจะมีคนยัดรูปจากเว็บภายนอก
+ * มาแปะบนหัวกระดาษเอกสารที่ส่งให้ลูกค้าได้ (และรูปจะหายไปเมื่อเว็บนั้นลบ)
+ */
+const BUILTIN_IMAGES = {
+  app: [
+    { key: "planngan", label: "PlanNgan (โลโก้แอป)", url: "/app-wordmark-light.png", isAppDefault: true },
+    { key: "doall", label: "DO ALL (ชุดเดิม)", url: "/logo-dark-2.png" },
+  ],
+  letterhead: [
+    { key: "doall", label: "DO ALL (ชุดเดิม)", url: "/logo-letterhead.png", isAppDefault: true },
+  ],
+  stamp: [
+    { key: "doall", label: "DO ALL (ชุดเดิม)", url: "/stamp.png", isAppDefault: true },
+  ],
+};
+
 const publicShape = (s) => ({
   nameTh: s.nameTh, nameEn: s.nameEn, address: s.address, taxId: s.taxId,
   tel: s.tel || "", email: s.email || "", website: s.website || "",
@@ -65,7 +83,8 @@ const publicShape = (s) => ({
  */
 router.get("/", async (req, res) => {
   try {
-    res.json({ settings: publicShape(await OrgSetting.current()) });
+    // builtinImages = รูปที่เลือกได้ทันทีโดยไม่ต้องอัปโหลด (หน้าจอจะได้ไม่ต้องจำพาธไฟล์เอง)
+    res.json({ settings: publicShape(await OrgSetting.current()), builtinImages: BUILTIN_IMAGES });
   } catch (err) {
     console.error("❌ ดึงตั้งค่าองค์กรไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงการตั้งค่าไม่สำเร็จ" });
@@ -88,8 +107,15 @@ router.put("/", verifyToken, requireCap("manageSystem"), async (req, res) => {
       update.advanceClearDays = days;
     }
     // ✅ ล้างรูปออก (กลับไปใช้โลโก้ที่ติดมากับแอป) — ส่งค่าว่างมาที่ช่องรูปได้
+    // ✅ หรือเลือกรูปที่ติดมากับแอป (preset_<slot>) — ชุดเดิมที่เคยใช้อยู่ก็กลับมาได้ทุกเมื่อ
     Object.entries(IMAGE_SLOTS).forEach(([slot, field]) => {
       if (req.body[`clear_${slot}`]) update[field] = "";
+      const presetKey = String(req.body[`preset_${slot}`] || "").trim();
+      if (!presetKey) return;
+      const hit = (BUILTIN_IMAGES[slot] || []).find((b) => b.key === presetKey);
+      if (!hit) return res.status(400).json({ message: "ไม่รู้จักรูปที่เลือก" });
+      update[field] = hit.url;
+      return undefined;
     });
     if (!Object.keys(update).length) return res.status(400).json({ message: "ไม่มีข้อมูลที่จะบันทึก" });
 
