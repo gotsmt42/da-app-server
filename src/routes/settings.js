@@ -13,8 +13,9 @@ const streamifier = require("streamifier");
 const OrgSetting = require("../models/OrgSetting");
 const verifyToken = require("../middleware/auth");
 const {
-  requireCap, ALL_ROLES, ROLE_LABEL, CAPABILITIES, EDITABLE_CAPABILITIES, LOCKED_ROLES,
-  setCapabilityOverrides, effectiveCapabilities, normalizeRole,
+  requireCap, ALL_ROLES, CAPABILITIES, EDITABLE_CAPABILITIES, LOCKED_ROLES,
+  setCapabilityOverrides, effectiveCapabilities, rankLabelOf, setRankLabels, getRankLabelOverrides,
+  ALL_SYSTEM_ROLES, SYSTEM_ROLE_LABEL, SYSTEM_ROLE_DESC, SYSTEM_CAPABILITIES, DEFAULT_SYSTEM_ROLE,
 } = require("../config/roles");
 const { cloudinary } = require("../config/cloudinary");
 
@@ -50,6 +51,8 @@ const publicShape = (s) => ({
   tel: s.tel || "", email: s.email || "", website: s.website || "",
   logoUrl: s.logoUrl || "", letterheadUrl: s.letterheadUrl || "", stampUrl: s.stampUrl || "",
   advanceClearDays: s.advanceClearDays || OrgSetting.DEFAULTS.advanceClearDays,
+  // ✅ ชื่อ Rank (ตำแหน่งในองค์กร) ที่ตั้งเอง — หน้าจอทุกหน้าใช้แสดง (ไม่ใช่ความลับ)
+  rankLabels: s.rankLabels || {},
   updatedAt: s.updatedAt || null,
   updatedBy: s.updatedBy?.name || "",
 });
@@ -70,7 +73,7 @@ router.get("/", async (req, res) => {
 });
 
 /** แก้ไขข้อมูลบริษัท/ค่าตั้งต้น */
-router.put("/", verifyToken, requireCap("manageAll"), async (req, res) => {
+router.put("/", verifyToken, requireCap("manageSystem"), async (req, res) => {
   try {
     const update = {};
     Object.entries(TEXT_FIELDS).forEach(([field, max]) => {
@@ -106,7 +109,7 @@ router.put("/", verifyToken, requireCap("manageAll"), async (req, res) => {
 });
 
 /** อัปโหลดรูป 1 ช่อง (โลโก้แอป / โลโก้หัวกระดาษ / ตราประทับ) */
-router.post("/image/:slot", verifyToken, requireCap("manageAll"), upload.single("file"), async (req, res) => {
+router.post("/image/:slot", verifyToken, requireCap("manageSystem"), upload.single("file"), async (req, res) => {
   try {
     const field = IMAGE_SLOTS[String(req.params.slot || "")];
     if (!field) return res.status(400).json({ message: "ไม่รู้จักช่องรูปนี้" });
@@ -150,11 +153,26 @@ router.post("/image/:slot", verifyToken, requireCap("manageAll"), upload.single(
  *   3. ปิด "จัดการระบบ" (manageAll) ของ role ตัวเองไม่ได้ — กันเผลอตัดสิทธิ์ตัวเองแล้วเข้ามาแก้คืนไม่ได้
  *   4. ปรับได้เฉพาะสิทธิ์ในรายการ EDITABLE_CAPABILITIES (ที่เหลือเป็นกฎควบคุมภายใน ตายตัวในโค้ด)
  */
-router.get("/permissions", verifyToken, requireCap("manageAll"), async (req, res) => {
+router.get("/permissions", verifyToken, requireCap("manageSystem"), async (req, res) => {
   try {
     const doc = await OrgSetting.current({ fresh: true });
     res.json({
-      roles: ALL_ROLES.map((r) => ({ role: r, label: ROLE_LABEL[r] || r, locked: LOCKED_ROLES.includes(r) })),
+      // ── Role = ตำแหน่งในระบบ (Super Admin / Admin / Member) — คงที่ เปลี่ยนชื่อไม่ได้
+      // ค่าของแต่ละชั้นอยู่ใต้คีย์ systemRole เพราะเป็นค่าที่หน้าจอส่งกลับมาลงที่ user.systemRole ตรงๆ
+      roles: ALL_SYSTEM_ROLES.map((r) => ({
+        systemRole: r,
+        label: SYSTEM_ROLE_LABEL[r],
+        desc: SYSTEM_ROLE_DESC[r],
+        capabilities: Object.entries(SYSTEM_CAPABILITIES).filter(([, list]) => list.includes(r)).map(([cap]) => cap),
+      })),
+      // ── Rank = ตำแหน่งในองค์กร — เปลี่ยนชื่อได้ และติ๊กสิทธิ์งานได้เอง
+      ranks: ALL_ROLES.map((r) => ({
+        rank: r,
+        label: rankLabelOf(r),
+        locked: LOCKED_ROLES.includes(r),
+        defaultSystemRole: DEFAULT_SYSTEM_ROLE[r],
+      })),
+      rankLabels: getRankLabelOverrides(),
       capabilities: EDITABLE_CAPABILITIES,
       defaults: Object.fromEntries(EDITABLE_CAPABILITIES.map((c) => [c, CAPABILITIES[c] || []])),
       overrides: doc?.capabilityOverrides || {},
@@ -166,21 +184,25 @@ router.get("/permissions", verifyToken, requireCap("manageAll"), async (req, res
   }
 });
 
-router.put("/permissions", verifyToken, requireCap("manageAll"), async (req, res) => {
+router.put("/permissions", verifyToken, requireCap("manageSystem"), async (req, res) => {
   try {
-    const role = String(req.body?.role || "").toLowerCase();
+    // ✅ ตารางนี้คือสิทธิ์ของ "Rank" (ตำแหน่งในองค์กร) — รับคีย์เก่า role ด้วยเพื่อหน้าจอรุ่นเก่า
+    const role = String(req.body?.rank || req.body?.role || "").toLowerCase();
     const capability = String(req.body?.capability || "");
     const allowed = req.body?.allowed;
 
-    if (!ALL_ROLES.includes(role)) return res.status(400).json({ message: "ไม่รู้จักสิทธิ์ผู้ใช้นี้" });
+    if (!ALL_ROLES.includes(role)) return res.status(400).json({ message: "ไม่รู้จักตำแหน่ง (Rank) นี้" });
     if (LOCKED_ROLES.includes(role)) {
-      return res.status(403).json({ message: `${ROLE_LABEL[role] || role} ต้องมีสิทธิ์เต็มเสมอ — แก้ไม่ได้ (กันไม่ให้ไม่เหลือใครเข้าหน้าตั้งค่า)` });
+      return res.status(403).json({ message: `${rankLabelOf(role)} ต้องมีสิทธิ์เต็มเสมอ — แก้ไม่ได้ (กันไม่ให้ไม่เหลือใครเข้าหน้าตั้งค่า)` });
     }
-    if (!EDITABLE_CAPABILITIES.includes(capability)) return res.status(400).json({ message: "สิทธิ์นี้ปรับจากหน้าตั้งค่าไม่ได้" });
+    if (!EDITABLE_CAPABILITIES.includes(capability)) {
+      // ⚠️ สิทธิ์ระดับระบบ (จัดการผู้ใช้/ตั้งค่าระบบ) ไม่ได้อยู่ในตารางนี้ — ตั้งที่ "สิทธิ์ในระบบ" ของผู้ใช้รายคนแทน
+      const hint = Object.prototype.hasOwnProperty.call(SYSTEM_CAPABILITIES, capability)
+        ? " — สิทธิ์นี้เป็นสิทธิ์ระดับระบบ ตั้งได้ที่ Role ของผู้ใช้รายคน"
+        : "";
+      return res.status(400).json({ message: `สิทธิ์นี้ปรับจากตารางนี้ไม่ได้${hint}` });
+    }
     if (typeof allowed !== "boolean") return res.status(400).json({ message: "ค่าที่ส่งมาไม่ถูกต้อง" });
-    if (capability === "manageAll" && !allowed && normalizeRole(req.user) === role) {
-      return res.status(403).json({ message: "ปิดสิทธิ์จัดการระบบของสิทธิ์ตัวเองไม่ได้ — จะเข้ามาแก้คืนไม่ได้อีก" });
-    }
 
     const doc = await OrgSetting.current({ fresh: true });
     const overrides = { ...(doc?.capabilityOverrides || {}) };
@@ -212,6 +234,44 @@ router.put("/permissions", verifyToken, requireCap("manageAll"), async (req, res
  */
 router.get("/permissions/effective", verifyToken, (req, res) => {
   res.json({ effective: effectiveCapabilities() });
+});
+
+/**
+ * เปลี่ยน "ชื่อที่แสดง" ของตำแหน่งในองค์กร — ✅ ผู้ใช้ขอ: "ในองค์กรให้สามารถเปลี่ยนชื่อได้"
+ * ⚠️ เปลี่ยนแค่ชื่อ ไม่ใช่คีย์ — คีย์ (admin/manager/...) ถูกอ้างในบัญชีผู้ใช้ทุกคนและในตารางสิทธิ์
+ * ⚠️ ส่งชื่อว่างมา = กลับไปใช้ชื่อเริ่มต้นของระบบ
+ */
+router.put("/rank-labels", verifyToken, requireCap("manageSystem"), async (req, res) => {
+  try {
+    const input = req.body?.labels;
+    if (!input || typeof input !== "object") return res.status(400).json({ message: "ไม่มีข้อมูลที่จะบันทึก" });
+
+    const doc = await OrgSetting.current({ fresh: true });
+    const labels = { ...(doc?.rankLabels || {}) };
+    for (const [rawRole, rawLabel] of Object.entries(input)) {
+      const role = String(rawRole || "").toLowerCase();
+      if (!ALL_ROLES.includes(role)) return res.status(400).json({ message: `ไม่รู้จักตำแหน่ง (Rank) "${rawRole}"` });
+      const label = String(rawLabel ?? "").trim().slice(0, 60);
+      if (label) labels[role] = label;
+      else delete labels[role];
+    }
+    // ⚠️ ชื่อซ้ำกันสองตำแหน่ง = คนอ่านแยกไม่ออกว่าใครเป็นใครในทุกหน้าจอ/ทุกเอกสาร
+    const effectiveLabels = ALL_ROLES.map((r) => labels[r] || rankLabelOf(r));
+    const dup = effectiveLabels.find((l, i) => effectiveLabels.indexOf(l) !== i);
+    if (dup) return res.status(400).json({ message: `ชื่อ "${dup}" ซ้ำกับตำแหน่งอื่น — ตั้งชื่อให้ไม่ซ้ำกัน` });
+
+    await OrgSetting.updateOne(
+      { key: "org" },
+      { $set: { rankLabels: labels, updatedBy: { userId: String(req.userId || ""), name: req.user?.fname || "" } } },
+      { upsert: true }
+    );
+    OrgSetting.clearCache();
+    setRankLabels(labels);
+    res.json({ rankLabels: labels, ranks: ALL_ROLES.map((r) => ({ rank: r, label: rankLabelOf(r) })) });
+  } catch (err) {
+    console.error("❌ เปลี่ยนชื่อตำแหน่งไม่สำเร็จ:", err);
+    res.status(500).json({ message: "เปลี่ยนชื่อตำแหน่งไม่สำเร็จ" });
+  }
 });
 
 module.exports = router;

@@ -15,7 +15,10 @@ const upload = multer({ storage, fileFilter, limits });
 const checkFile = require("../middleware/checkFile");
 
 // 🔒 ตารางสิทธิ์กลางของระบบ — ใช้ requireCap แทนการเช็ค role เขียนสดตามที่ config/roles.js กำหนดไว้
-const { requireCap, ALL_ROLES, ROLES, can, normalizeRole, canAssignRole, canManageUserOfRole, ROLE_LABEL } = require("../config/roles");
+const {
+  requireCap, ALL_ROLES, ROLES, can, normalizeRole, canAssignRole, canManageUserOfRole, rankLabelOf, titleOf,
+  ALL_SYSTEM_ROLES, SYSTEM_ROLES, SYSTEM_ROLE_LABEL, systemRoleOf,
+} = require("../config/roles");
 
 router.post("/validate-password", verifyToken, async (req, res) => {
   try {
@@ -88,13 +91,13 @@ router.get("/alluser", verifyToken, async (req, res) => {
  */
 router.get("/staff-directory", verifyToken, async (req, res) => {
   try {
-    // ⚠️ ฟิลด์ตำแหน่งในฐานข้อมูลชื่อ "rank" ไม่ใช่ "position" — เลือกผิดชื่อทำให้ได้ค่าว่างทุกคนแบบเงียบๆ
-    const users = await User.find({}).select("_id fname lname rank role tel imageUrl").sort({ fname: 1 }).lean();
+    // ⚠️ ตำแหน่งที่พิมพ์ใต้ชื่อเก็บที่ jobTitle (ข้อมูลเก่าอยู่ที่ rank) — ดึงมาทั้งสองช่อง ไม่งั้นคนเก่าจะได้ค่าว่าง
+    const users = await User.find({}).select("_id fname lname rank jobTitle role tel imageUrl").sort({ fname: 1 }).lean();
     res.json({
       users: users.map((u) => ({
         userId: String(u._id),
         name: [u.fname, u.lname].filter(Boolean).join(" ").trim() || u.fname || "",
-        position: u.rank || "",
+        position: titleOf(u),
         tel: u.tel || "",
         role: u.role || "",
         imageUrl: u.imageUrl || "",
@@ -148,8 +151,9 @@ const bcrypt = require("bcryptjs");
  */
 router.post("/signup", verifyToken, requireCap("manageAll"), async (req, res) => {
   try {
-    const { username, password, email, fname, lname, tel, role, rank } =
-      req.body;
+    const { username, password, email, fname, lname, tel, role } = req.body;
+    // ✅ ตำแหน่งเฉพาะบุคคล — หน้าจอใหม่ส่ง jobTitle, ของเก่าส่ง rank (รับทั้งคู่)
+    const jobTitle = String(req.body?.jobTitle ?? req.body?.rank ?? "").trim().slice(0, 80);
 
     const wantedRole = normalizeRole(role);
     if (!ALL_ROLES.includes(wantedRole)) {
@@ -161,7 +165,7 @@ router.post("/signup", verifyToken, requireCap("manageAll"), async (req, res) =>
     // ⚠️ ถ้าไม่กันตรงนี้ กฎ "แอดมินตั้งใครเป็นผู้จัดการไม่ได้" จะถูกข้ามได้ง่ายๆ ด้วยการสร้างบัญชีใหม่แทน
     if (!canAssignRole(req.user, wantedRole)) {
       return res.status(403).json({
-        err: `คุณไม่มีสิทธิ์สร้างบัญชีระดับ${ROLE_LABEL[wantedRole] || wantedRole} — ต้องให้ผู้จัดการเป็นคนสร้าง`,
+        err: `คุณไม่มีสิทธิ์สร้างบัญชีระดับ${rankLabelOf(wantedRole)} — ต้องให้ผู้จัดการเป็นคนสร้าง`,
       });
     }
 
@@ -172,8 +176,8 @@ router.post("/signup", verifyToken, requireCap("manageAll"), async (req, res) =>
       fname,
       lname,
       tel,
-      role: wantedRole,
-      rank,
+      role: wantedRole,   // Rank — ตำแหน่งในองค์กร (คีย์เดิม)
+      jobTitle,
     });
 
     await user.save();
@@ -215,8 +219,11 @@ router.post("/login", async (req, res) => {
       lname: user.lname,
       tel: user.tel,
       username: user.username,
-      rank: user.rank,
-      role: user.role,
+      rank: user.rank,                       // ⚠️ ชื่อเก่าของตำแหน่งเฉพาะบุคคล (คงไว้ให้แอปรุ่นเก่าไม่พัง)
+      jobTitle: titleOf(user),               // ตำแหน่งที่ใช้พิมพ์จริง
+      role: user.role,                       // Rank — ตำแหน่งในองค์กร (คีย์เดิม)
+      // ✅ ชั้นในระบบ (ผู้ดูแลระบบ/สูงสุด) — แยกจากตำแหน่งในองค์กร หน้าจอใช้ตัดสินว่าจะโชว์เมนูตั้งค่าระบบไหม
+      systemRole: user.systemRole || "",
       imageUrl: user.imageUrl, // ✅ เพิ่มตรงนี้
       sessionVersion: user.sessionVersion || 0,
     };
@@ -268,8 +275,10 @@ router.put(
       if (fname !== undefined) newUser.fname = fname;
       if (lname !== undefined) newUser.lname = lname;
       if (tel !== undefined) newUser.tel = tel;
-      // ✅ ตำแหน่ง (rank) แก้ไขได้จากหน้าบัญชีของตัวเอง — ใช้พิมพ์ใต้ชื่อในเอกสารที่ออกจากระบบ
-      if (req.body.rank !== undefined) newUser.rank = String(req.body.rank || "").trim().slice(0, 80);
+      // ✅ ตำแหน่งเฉพาะบุคคล (jobTitle) แก้ไขได้จากหน้าบัญชีของตัวเอง — ใช้พิมพ์ใต้ชื่อในเอกสาร
+      // ⚠️ คนละเรื่องกับ Rank (ตำแหน่งในองค์กร = role) และ Role (ในระบบ = systemRole) — ช่องนี้ไม่ให้สิทธิ์อะไรเลย
+      const jobTitleInput = req.body.jobTitle !== undefined ? req.body.jobTitle : req.body.rank;
+      if (jobTitleInput !== undefined) newUser.jobTitle = String(jobTitleInput || "").trim().slice(0, 80);
 
       const existingUser = await User.findById(userId);
       if (!existingUser) {
@@ -298,11 +307,11 @@ router.put(
           }
           // 🔒 กฎข้อ 2: แตะบัญชีที่ระดับสูงกว่าตัวเองไม่ได้ (แอดมินถอด/เปลี่ยนสิทธิ์ผู้จัดการไม่ได้)
           if (!canManageUserOfRole(req.user, currentRole)) {
-            return res.status(403).json({ message: `คุณไม่มีสิทธิ์แก้ไขสิทธิ์ของ${ROLE_LABEL[currentRole] || currentRole} — ต้องให้ผู้ที่มีสิทธิ์สูงกว่าเป็นคนแก้` });
+            return res.status(403).json({ message: `คุณไม่มีสิทธิ์แก้ไขสิทธิ์ของ${rankLabelOf(currentRole)} — ต้องให้ผู้ที่มีสิทธิ์สูงกว่าเป็นคนแก้` });
           }
           // 🔒 กฎข้อ 1: ตั้งสิทธิ์ที่สูงกว่าระดับตัวเองไม่ได้ (แอดมินตั้งใครเป็นผู้จัดการไม่ได้)
           if (!canAssignRole(req.user, wantedRole)) {
-            return res.status(403).json({ message: `คุณไม่มีสิทธิ์ตั้งใครเป็น${ROLE_LABEL[wantedRole] || wantedRole} — ต้องให้ผู้ที่มีสิทธิ์ระดับนั้นขึ้นไปเป็นคนตั้ง` });
+            return res.status(403).json({ message: `คุณไม่มีสิทธิ์ตั้งใครเป็น${rankLabelOf(wantedRole)} — ต้องให้ผู้ที่มีสิทธิ์ระดับนั้นขึ้นไปเป็นคนตั้ง` });
           }
           /**
            * 🔒 ยืนยันตัวตนซ้ำด้วยรหัสผ่านของ "คนที่กดเปลี่ยน" (ผู้ใช้สั่ง)
@@ -330,6 +339,47 @@ router.put(
             }
           }
           newUser.role = wantedRole;
+        }
+      }
+
+      /**
+       * ── ชั้นสิทธิ์ "ในระบบ" (ผู้ดูแลระบบสูงสุด / ผู้ดูแลระบบ / ผู้ใช้งาน) ─────────────────
+       * ✅ ผู้ใช้สั่งให้แยกสิทธิ์ในระบบออกจากตำแหน่งในองค์กร — ตั้งคนละช่อง คนละกติกา
+       * 🔒 ตั้งได้เฉพาะผู้ดูแลระบบสูงสุด (manageSystem) · ยืนยันรหัสผ่านเหมือนการเปลี่ยนสิทธิ์ ·
+       * เปลี่ยนของตัวเองไม่ได้ · และต้องเหลือผู้ดูแลระบบสูงสุดอย่างน้อย 1 คนเสมอ
+       */
+      if (req.body.systemRole !== undefined) {
+        const wanted = String(req.body.systemRole || "").trim().toLowerCase();
+        const currentSystemRole = systemRoleOf(existingUser);
+        if (wanted !== currentSystemRole) {
+          if (!can(req.user, "manageSystem")) {
+            return res.status(403).json({ message: `ตั้งสิทธิ์ในระบบได้เฉพาะ ${SYSTEM_ROLE_LABEL[SYSTEM_ROLES.SUPER]} เท่านั้น` });
+          }
+          if (isSelf) {
+            return res.status(403).json({ message: "เปลี่ยนสิทธิ์ในระบบของตัวเองไม่ได้ — ให้ผู้ดูแลระบบสูงสุดท่านอื่นเป็นคนเปลี่ยนให้" });
+          }
+          if (!ALL_SYSTEM_ROLES.includes(wanted)) {
+            return res.status(400).json({ message: `สิทธิ์ในระบบไม่ถูกต้อง — ต้องเป็นหนึ่งใน: ${ALL_SYSTEM_ROLES.join(", ")}` });
+          }
+          const confirmPassword = String(req.body.confirmPassword || "").trim();
+          if (!confirmPassword) {
+            return res.status(400).json({ message: "การเปลี่ยนสิทธิ์ในระบบต้องยืนยันด้วยรหัสผ่านของคุณ" });
+          }
+          const actor = await User.findById(req.userId).select("+password").lean();
+          const ok = actor?.password ? await bcrypt.compare(confirmPassword, actor.password) : false;
+          if (!ok) return res.status(401).json({ message: "รหัสผ่านไม่ถูกต้อง — เปลี่ยนสิทธิ์ในระบบไม่สำเร็จ" });
+
+          // 🔒 ต้องเหลือผู้ดูแลระบบสูงสุดอย่างน้อย 1 คน ไม่งั้นไม่มีใครเข้าหน้าตั้งค่าระบบได้อีกเลย
+          if (currentSystemRole === SYSTEM_ROLES.SUPER && wanted !== SYSTEM_ROLES.SUPER) {
+            const all = await User.find({}).select("role systemRole").lean();
+            const supers = all.filter((u) => systemRoleOf(u) === SYSTEM_ROLES.SUPER);
+            if (supers.length <= 1) {
+              return res.status(409).json({
+                message: `ลดชั้น ${SYSTEM_ROLE_LABEL[SYSTEM_ROLES.SUPER]} คนสุดท้ายไม่ได้ — ต้องมีอย่างน้อย 1 คนในระบบ`,
+              });
+            }
+          }
+          newUser.systemRole = wanted;
         }
       }
 
@@ -384,7 +434,7 @@ router.delete("/user/:id", verifyToken, requireCap("manageAll"), async (req, res
     if (!target) return res.status(404).json({ message: "ไม่พบผู้ใช้ที่ต้องการลบ" });
     // 🔒 กฎข้อ 2 (ลำดับชั้น): ลบบัญชีที่ระดับสูงกว่าตัวเองไม่ได้ — แอดมินลบผู้จัดการไม่ได้
     if (!canManageUserOfRole(req.user, target.role)) {
-      return res.status(403).json({ message: `คุณไม่มีสิทธิ์ลบบัญชีของ${ROLE_LABEL[normalizeRole(target.role)] || target.role} — ต้องให้ผู้ที่มีสิทธิ์สูงกว่าเป็นคนลบ` });
+      return res.status(403).json({ message: `คุณไม่มีสิทธิ์ลบบัญชีของ${rankLabelOf(target.role)} — ต้องให้ผู้ที่มีสิทธิ์สูงกว่าเป็นคนลบ` });
     }
     // 🔒 ระบบต้องเหลือแอดมินอย่างน้อย 1 คนเสมอ (เหตุผลเดียวกับการถอดสิทธิ์)
     if (normalizeRole(target.role) === ROLES.ADMIN) {

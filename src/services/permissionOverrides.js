@@ -9,14 +9,17 @@
  * ⚠️ โหลดไม่สำเร็จ = ใช้ตารางค่าเริ่มต้นในโค้ดต่อไป (ไม่ใช่เปิดสิทธิ์ทุกอย่าง) — ปลอดภัยไว้ก่อนเสมอ
  */
 const OrgSetting = require("../models/OrgSetting");
-const { setCapabilityOverrides } = require("../config/roles");
+const { setCapabilityOverrides, setRankLabels } = require("../config/roles");
 
 const REFRESH_MS = 60_000;
 let timer = null;
 
 async function refreshPermissionOverrides() {
   try {
-    const doc = await OrgSetting.findOne({ key: "org" }).select("capabilityOverrides").lean();
+    const doc = await OrgSetting.findOne({ key: "org" }).select("capabilityOverrides rankLabels roleLabels").lean();
+    // ✅ ชื่อ Rank ที่ตั้งเองต้องมาพร้อมกัน — ข้อความแจ้งเตือน/ข้อความตอบกลับใช้ชื่อนี้
+    // ⚠️ roleLabels = ชื่อฟิลด์เก่าก่อนแยก Role/Rank — อ่านต่อไปเพื่อชื่อที่ตั้งไว้แล้วไม่หาย
+    setRankLabels(doc?.rankLabels || doc?.roleLabels || {});
     return setCapabilityOverrides(doc?.capabilityOverrides || {});
   } catch (err) {
     console.error("❌ โหลดสิทธิ์ที่ปรับเองไม่สำเร็จ (ใช้ค่าเริ่มต้นต่อไป):", err.message);

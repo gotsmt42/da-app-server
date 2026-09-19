@@ -29,7 +29,7 @@ const OrgSetting = require("../models/OrgSetting");
 const CalendarEvent = require("../models/Events");
 const DocCounter = require("../models/DocCounter");
 const verifyToken = require("../middleware/auth");
-const { can, ROLE_LABEL, CAPABILITIES, DEPARTMENT } = require("../config/roles");
+const { can, rankLabelOf, titleOf, CAPABILITIES, DEPARTMENT } = require("../config/roles");
 const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers } = require("../services/PushNotify");
@@ -54,9 +54,8 @@ const actor = (req) => ({
   role: String(req.user?.role || ""),
 });
 
-/** ตำแหน่งเริ่มต้น = ตำแหน่งในทะเบียนพนักงาน (rank) ถ้าไม่มีใช้ชื่อบทบาทภาษาไทย */
-const positionOf = (u) =>
-  String(u?.rank || "").trim() || ROLE_LABEL[String(u?.role || "").toLowerCase()] || "";
+/** ตำแหน่งที่พิมพ์ใต้ชื่อ = ตำแหน่งเฉพาะบุคคล (jobTitle) ถ้าไม่มีใช้ชื่อ Rank — กติกาเดียวกันทั้งระบบ (titleOf) */
+const positionOf = (u) => titleOf(u);
 
 const buddhistYear = () => new Date().getFullYear() + 543;
 
@@ -409,7 +408,7 @@ const STEP_OF_STATUS = { pending: "review", reviewed: "approve", approved: "disb
 const PROCESS_CAPS = Object.values(STEP).map((s) => s.cap);
 
 /** ชื่อ role ที่ทำขั้นนั้นได้ — ใช้ในข้อความตอบกลับ ("ขั้นนี้เป็นของ ผู้จัดการแผนกช่าง / กรรมการผู้จัดการ") */
-const stepOwnersLabel = (step) => (CAPABILITIES[STEP[step].cap] || []).map((r) => ROLE_LABEL[r]).filter(Boolean).join(" / ");
+const stepOwnersLabel = (step) => (CAPABILITIES[STEP[step].cap] || []).map((r) => rankLabelOf(r)).filter(Boolean).join(" / ");
 
 /** มีสิทธิ์ดำเนินการใบเบิกขั้นใดขั้นหนึ่งไหม (ตรวจสอบ / อนุมัติ / อนุมัติเบิกจ่าย) */
 const isProcessor = (req) => PROCESS_CAPS.some((cap) => can(req.user, cap));
@@ -636,7 +635,7 @@ router.get("/people", verifyToken, async (req, res) => {
     if (!can(req.user, "viewAllExpenses") && !can(req.user, "requestExpense")) {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์ใช้งานระบบเบิก" });
     }
-    const users = await User.find({}).select("fname lname username role rank imageUrl").sort({ fname: 1 }).lean();
+    const users = await User.find({}).select("fname lname username role rank jobTitle imageUrl").sort({ fname: 1 }).lean();
     res.json({
       users: users.map((u) => ({
         userId: String(u._id),

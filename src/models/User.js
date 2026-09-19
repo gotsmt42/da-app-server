@@ -9,8 +9,23 @@ const userSchema = new mongoose.Schema({
   lname: { type: String },
   tel: String,
   imageUrl: { type: String, default: "asset/image/userDefault-2.jpg" },
+  /**
+   * ⚠️ ฟิลด์เก่า — ข้อความตำแหน่งที่พิมพ์ใต้ชื่อในเอกสาร ย้ายไปอยู่ที่ jobTitle แล้ว
+   * (หลังแยก Role/Rank คำว่า "rank" ถูกจองไว้ให้หมายถึง "ตำแหน่งในองค์กร" เท่านั้น)
+   * เก็บไว้เพื่ออ่านข้อมูลเก่าได้ — โค้ดใหม่ให้เขียนที่ jobTitle เท่านั้น (อ่านผ่าน titleOf() ใน config/roles.js)
+   */
   rank: { type: String},
+  /** ตำแหน่งเฉพาะบุคคล — พิมพ์ใต้ชื่อในเอกสาร เว้นว่าง = ใช้ชื่อ Rank ของตำแหน่ง */
+  jobTitle: { type: String, default: "" },
+  /** Rank — ตำแหน่งในองค์กร (แอดมินช่าง/ผู้จัดการแผนกช่าง/ช่างเทคนิค ...) — คีย์คงเดิม ชื่อที่แสดงเปลี่ยนได้จากหน้าตั้งค่า */
   role: { type: String},
+  /**
+   * ชั้นสิทธิ์ "ในระบบ" — แยกจากตำแหน่งในองค์กรโดยสิ้นเชิง (ผู้ใช้สั่งให้แยกกัน)
+   *   superadmin = ผู้ดูแลระบบสูงสุด · admin = ผู้ดูแลระบบ · member = ผู้ใช้งาน
+   * ⚠️ ว่าง = ยังไม่เคยตั้ง → ระบบเดาจากตำแหน่งในองค์กรให้ (DEFAULT_SYSTEM_ROLE ใน config/roles.js)
+   * ผู้ใช้เดิมทุกคนจึงทำงานต่อได้ทันทีโดยไม่ต้องย้ายข้อมูล
+   */
+  systemRole: { type: String, enum: ["superadmin", "admin", "member", ""], default: "" },
   sessionVersion: { type: Number, default: 0 },
 }, { timestamps: true });
 

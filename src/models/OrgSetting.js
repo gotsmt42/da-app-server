@@ -11,14 +11,22 @@
  */
 const mongoose = require("mongoose");
 
+/**
+ * ค่าตั้งต้นขององค์กร — ✅ ผู้ใช้สั่ง: "ทำให้ระบบนี้ไปรันและใช้กับองค์กรอื่นๆ ได้ด้วย"
+ * อ่านจาก environment ก่อน — บริษัทใหม่ที่ติดตั้งระบบจึงขึ้นมาเป็น "ตัวเอง" ตั้งแต่วันแรก
+ * โดยไม่ต้องแก้โค้ด (ดู .env.example) · ไม่ตั้งก็กรอกทีหลังที่หน้า "ตั้งค่าองค์กร" ได้
+ * ⚠️ มีผลเฉพาะตอนสร้างเอกสารครั้งแรก — องค์กรที่ตั้งค่าไปแล้ว ค่าในฐานข้อมูลชนะเสมอ
+ */
+const env = (key, fallback = "") => String(process.env[key] || "").trim() || fallback;
+
 const DEFAULTS = {
-  nameTh: "บริษัท ดู ออล อาคิเทค แอนด์ เอ็นจิเนียริ่ง จำกัด",
-  nameEn: "DO ALL ARCHITECT AND ENGINEERING CO.,LTD.",
-  address: "สำนักงานใหญ่ : 68/155 หมู่ 3 ถนนชัยพฤกษ์ ตำบลคลองพระอุดม อำเภอปากเกร็ด จังหวัดนนทบุรี 11120",
-  taxId: "เลขประจำตัวผู้เสียภาษี 0125563014222",
-  tel: "",
-  email: "",
-  website: "",
+  nameTh: env("ORG_NAME_TH", "องค์กรของคุณ"),
+  nameEn: env("ORG_NAME_EN", "YOUR ORGANIZATION"),
+  address: env("ORG_ADDRESS", ""),
+  taxId: env("ORG_TAX_ID", ""),
+  tel: env("ORG_TEL", ""),
+  email: env("ORG_EMAIL", ""),
+  website: env("ORG_WEBSITE", ""),
   // ว่าง = ใช้ไฟล์ที่ติดมากับแอป (public/logo-dark-2.png ฯลฯ) — ดู shared/services/OrgSettingService.js
   logoUrl: "",
   letterheadUrl: "",
@@ -54,6 +62,12 @@ const orgSettingSchema = new mongoose.Schema(
      * ⚠️ ตัวตัดสินจริงอยู่ที่ can() ใน config/roles.js ซึ่งอ่านค่าชุดนี้จากหน่วยความจำ (services/permissionOverrides.js)
      */
     capabilityOverrides: { type: mongoose.Schema.Types.Mixed, default: {} },
+    /**
+     * ชื่อ Rank (ตำแหน่งในองค์กร) ที่ตั้งเอง { rank: "ชื่อที่อยากให้แสดง" } — ✅ ผู้ใช้ขอให้เปลี่ยนชื่อได้
+     * ⚠️ เปลี่ยนแค่ชื่อที่แสดง คีย์ของ Rank คงเดิมเสมอ (ผู้ใช้ทุกคนและตารางสิทธิ์อ้างคีย์นี้อยู่)
+     * ⚠️ Role (Super Admin/Admin/Member) ไม่อยู่ที่นี่ — เป็นศัพท์ของระบบ เปลี่ยนชื่อไม่ได้
+     */
+    rankLabels: { type: mongoose.Schema.Types.Mixed, default: {} },
     updatedBy: { userId: { type: String, default: "" }, name: { type: String, default: "" } },
   },
   { timestamps: true, collection: "orgsettings" }

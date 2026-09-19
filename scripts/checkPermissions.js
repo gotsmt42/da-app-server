@@ -1,5 +1,5 @@
 /**
- * ตรวจตารางสิทธิ์ (role × capability) — รันได้โดยไม่ต้องมีฐานข้อมูลจริง จึงใช้ใน CI ได้
+ * ตรวจตารางสิทธิ์ (Rank × capability) — รันได้โดยไม่ต้องมีฐานข้อมูลจริง จึงใช้ใน CI ได้
  *
  *   npm run check:perms
  *
@@ -15,7 +15,7 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { CAPABILITIES, ROLES, ALL_ROLES, ROLE_LABEL } = require("../src/config/roles");
+const { CAPABILITIES, ROLES, ALL_ROLES, RANK_LABEL } = require("../src/config/roles");
 
 /**
  * ── snapshot ที่คาดไว้ ────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ const { CAPABILITIES, ROLES, ALL_ROLES, ROLE_LABEL } = require("../src/config/ro
  * ที่มองเห็นได้ใน diff เสมอ ไม่ใช่ผลข้างเคียงของการแก้อย่างอื่น
  */
 const EXPECTED = {
-  manageAll: ["admin", "manager", "director"],
+  // ⚠️ manageAll / manageSystem ย้ายไปเป็น "สิทธิ์ในระบบ" (ผู้ดูแลระบบ/สูงสุด) ไม่ได้อยู่ในตารางตำแหน่งองค์กรแล้ว
   approveJobs: ["admin", "manager", "director"],
   viewAllJobs: ["admin", "manager", "director"],
   editAnyJob: ["admin", "manager", "director"],
@@ -134,8 +134,8 @@ if (!fs.existsSync(FRONTEND_ROLES_FILE)) {
 const pad = (s, n) => s + " ".repeat(Math.max(0, n - [...s].length));
 const COL = 18;
 
-console.log("\n📋 ตารางสิทธิ์ (role × capability)\n");
-console.log("   " + pad("", 20) + ALL_ROLES.map((r) => pad(ROLE_LABEL[r], COL)).join(""));
+console.log("\n📋 ตารางสิทธิ์ (Rank × capability)\n");
+console.log("   " + pad("", 20) + ALL_ROLES.map((r) => pad(RANK_LABEL[r], COL)).join(""));
 capsInCode.forEach((c) => {
   const row = ALL_ROLES.map((r) => pad(CAPABILITIES[c].includes(r) ? "     ✓" : "     ·", COL)).join("");
   console.log("   " + pad(c, 20) + row);
@@ -148,4 +148,4 @@ if (problems.length) {
   console.error("");
   process.exit(1);
 }
-console.log(`✅ ตารางสิทธิ์ปกติ — ${capsInCode.length} สิทธิ์ · ${ALL_ROLES.length} role · ตรงกันทั้งสองฝั่ง\n`);
+console.log(`✅ ตารางสิทธิ์ปกติ — ${capsInCode.length} สิทธิ์ · ${ALL_ROLES.length} Rank · ตรงกันทั้งสองฝั่ง\n`);

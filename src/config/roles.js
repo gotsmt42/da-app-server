@@ -13,16 +13,30 @@
  * ถ้าแก้ที่นี่ต้องแก้อีกฝั่งด้วยเสมอ (ทำตามแบบแผนเดิมของโปรเจกต์ที่ contractRounds/contractVisits
  * และ OverdueReminder ใช้อยู่: ตรรกะเล็กๆ ที่ต้องใช้ทั้งสองฝั่ง ก๊อปได้ แต่ห้ามให้ต่างกัน)
  * ⚠️ ฝั่งหน้าจอใช้ "ซ่อนเมนู/ปุ่ม" เท่านั้น ขอบเขตความปลอดภัยจริงอยู่ที่ฝั่ง server เสมอ
+ *
+ * ── คำศัพท์สองคำที่ต้องแยกจากกันให้ขาด (✅ ผู้ใช้สั่ง: "Role คือตำแหน่งในระบบ Rank คือในองค์กร") ──
+ *
+ *   Role  = ตำแหน่ง "ในระบบ"  → Super Admin / Admin / Member
+ *           เก็บที่ user.systemRole · ชื่อเป็นภาษาอังกฤษ เปลี่ยนชื่อไม่ได้ · ให้สิทธิ์ manageAll / manageSystem
+ *   Rank  = ตำแหน่ง "ในองค์กร" → กรรมการผู้จัดการ / ผู้จัดการแผนกช่าง / แอดมินช่าง / ช่างเทคนิค ...
+ *           เก็บที่ user.role (คีย์เดิม ห้ามเปลี่ยน) · "ชื่อ" เปลี่ยนได้จากหน้าตั้งค่า · ให้สิทธิ์งานทั้งหมดที่เหลือ
+ *   ตำแหน่งเฉพาะบุคคล = user.jobTitle — ข้อความอิสระที่พิมพ์ใต้ชื่อในเอกสาร เว้นว่างแล้วใช้ชื่อ Rank
+ *           (ห้ามสับสนกับ Rank — ฟิลด์เก่าชื่อ user.rank ยังอ่านได้เพื่อข้อมูลเก่า ดู titleOf)
  */
 
+/**
+ * Rank — ตำแหน่งในองค์กร
+ * ⚠️ ลำดับในก้อนนี้คือ "มากไปน้อยตามสิทธิ์การใช้งาน" (✅ ผู้ใช้สั่ง) — ALL_ROLES ใช้ลำดับนี้
+ * จึงมีผลกับลำดับคอลัมน์ในตารางสิทธิ์ ตัวเลือกตอนเพิ่ม/แก้ผู้ใช้ และรายงานทุกใบ — เพิ่มตำแหน่งใหม่ต้องใส่ให้ถูกที่
+ */
 const ROLES = {
   /** กรรมการผู้จัดการ — ✅ ผู้ใช้ขอเพิ่ม: ระดับสูงสุดของบริษัท มีทุกสิทธิ์ในระบบ */
   DIRECTOR: "director",
-  ADMIN: "admin",
   MANAGER: "manager",
-  TECHNICIAN: "technician",
+  ADMIN: "admin",
   /** หัวหน้าช่างเทคนิค — ✅ ผู้ใช้ขอเพิ่ม: ตอนนี้ให้สิทธิ์เท่าช่างเทคนิคทุกอย่างก่อน */
   TECH_LEAD: "techlead",
+  TECHNICIAN: "technician",
   SALE: "sale",
   USER: "user",
 };
@@ -30,7 +44,7 @@ const ROLES = {
 const ALL_ROLES = Object.values(ROLES);
 
 /** ชื่อภาษาไทยสำหรับแสดงผล — ทั้งแอปเป็นภาษาไทย ห้ามโชว์ค่าดิบอย่าง "technician" ให้ผู้ใช้เห็น */
-const ROLE_LABEL = {
+const RANK_LABEL = {
   [ROLES.DIRECTOR]: "กรรมการผู้จัดการ",
   [ROLES.ADMIN]: "แอดมินช่าง",
   [ROLES.MANAGER]: "ผู้จัดการแผนกช่าง",
@@ -72,14 +86,10 @@ const ROLE_DEPARTMENT = {
  */
 const CAPABILITIES = {
   /**
-   * จัดการระบบทั้งหมด (ทะเบียนสินค้า/ประเภทงาน/ผู้ใช้/ตั้งค่าระบบ) — เดิมคือ AdminRoute
-   *
-   * ✅ ผู้ใช้สั่ง: "ให้สิทธิ์ manager สูงสุดด้วย ให้ตั้งค่าอะไรได้หมด" — ผู้จัดการจึงเท่าแอดมินทุกอย่าง
-   * (เพิ่ม/แก้/ลบผู้ใช้ · ทะเบียนสินค้า/สต็อก · ประเภทงาน/ระบบ · ลูกค้าของทุกคน)
-   * ⚠️ ข้อจำกัดที่ยังอยู่เหมือนเดิมกับทุก role: เปลี่ยนสิทธิ์ของตัวเองไม่ได้ และถอดสิทธิ์/ลบแอดมิน
-   * คนสุดท้ายไม่ได้ (ดู routes/auth.js) — กันระบบล็อกตัวเองจนไม่มีใครเข้าไปแก้ได้
+   * ⚠️ "manageAll" กับ "manageSystem" ไม่ได้อยู่ในตารางนี้แล้ว — ย้ายไปเป็น "สิทธิ์ในระบบ" (SYSTEM_CAPABILITIES)
+   * ✅ ผู้ใช้สั่งให้แยก "สิทธิ์ในระบบ" (ผู้ดูแลระบบ/ผู้ดูแลระบบสูงสุด) ออกจาก "ตำแหน่งในองค์กร"
+   * (แอดมินช่าง/ผู้จัดการแผนกช่าง/ช่างเทคนิค ฯลฯ) — ตารางนี้เหลือเฉพาะ "สิ่งที่ตำแหน่งในองค์กรทำได้"
    */
-  manageAll: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /** อนุมัติงาน / อนุมัติคำขอปิดงาน */
   approveJobs: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
@@ -220,6 +230,67 @@ const CAPABILITIES = {
   viewAllExpenses: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 };
 
+/**
+ * ── สิทธิ์ในระบบ (แยกจากตำแหน่งในองค์กร) ──────────────────────────────────────
+ * ✅ ผู้ใช้สั่ง: "ทำสิทธิ์ในระบบ และสิทธิ์ในองค์กรแยกกัน เช่นในระบบ Admin / Super Admin"
+ *
+ *   Super Admin  — ตั้งค่าองค์กร · ตารางสิทธิ์ · ตั้งผู้ดูแลระบบคนอื่น (ทำได้ทุกอย่าง)
+ *   Admin        — จัดการผู้ใช้/ข้อมูลหลักได้ แต่แตะตั้งค่าระบบและตารางสิทธิ์ไม่ได้
+ *   Member       — ไม่มีสิทธิ์ระดับระบบ (ใช้สิทธิ์จากตำแหน่งในองค์กรล้วนๆ)
+ *
+ * ⚠️ ชื่อสามชั้นนี้เป็น "ภาษาอังกฤษและเปลี่ยนชื่อไม่ได้" โดยตั้งใจ (ผู้ใช้สั่ง) — เป็นศัพท์ของระบบ
+ * ไม่ใช่ตำแหน่งในบริษัท และกันสับสนกับตำแหน่ง "แอดมินช่าง" ซึ่งเป็นคนละเรื่องกัน
+ * (ส่วนตำแหน่งในองค์กรเปลี่ยนชื่อได้จากหน้าตั้งค่า — ดู setRankLabels)
+ */
+const SYSTEM_ROLES = { SUPER: "superadmin", ADMIN: "admin", MEMBER: "member" };
+const ALL_SYSTEM_ROLES = Object.values(SYSTEM_ROLES);
+const SYSTEM_ROLE_LABEL = {
+  [SYSTEM_ROLES.SUPER]: "Super Admin",
+  [SYSTEM_ROLES.ADMIN]: "Admin",
+  [SYSTEM_ROLES.MEMBER]: "Member",
+};
+/** คำอธิบายเป็นภาษาไทย — ชื่อชั้นเป็นอังกฤษ แต่คำอธิบายต้องอ่านเข้าใจทันทีว่าทำอะไรได้ */
+const SYSTEM_ROLE_DESC = {
+  [SYSTEM_ROLES.SUPER]: "ตั้งค่าองค์กร · ตารางสิทธิ์ · ตั้งผู้ดูแลระบบ · จัดการผู้ใช้ทั้งหมด",
+  [SYSTEM_ROLES.ADMIN]: "จัดการผู้ใช้และข้อมูลหลัก (ลูกค้า/ประเภทงาน) — แตะตั้งค่าระบบและตารางสิทธิ์ไม่ได้",
+  [SYSTEM_ROLES.MEMBER]: "ใช้งานตามตำแหน่งในองค์กรเท่านั้น",
+};
+
+/** สิทธิ์ที่ตัดสินด้วย "ชั้นในระบบ" ไม่ใช่ตำแหน่งในองค์กร */
+const SYSTEM_CAPABILITIES = {
+  /** จัดการผู้ใช้ · ข้อมูลหลัก · ทะเบียนต่างๆ (เดิมคือ AdminRoute) */
+  manageAll: [SYSTEM_ROLES.SUPER, SYSTEM_ROLES.ADMIN],
+  /** ตั้งค่าองค์กร · ตารางสิทธิ์ · เปลี่ยนชื่อตำแหน่ง · ตั้งชั้นผู้ดูแลระบบให้คนอื่น */
+  manageSystem: [SYSTEM_ROLES.SUPER],
+};
+
+/**
+ * ผู้ใช้เก่าที่ยังไม่เคยตั้ง "ชั้นในระบบ" ให้เดาจากตำแหน่งในองค์กร — ระบบเดิมทำงานต่อได้ทันทีโดยไม่ต้องย้ายข้อมูล
+ * ⚠️ ผู้จัดการแผนกช่างได้ superadmin เพราะเดิมผู้ใช้กำหนดให้ "ตั้งค่าอะไรได้หมด" (ถ้าลดชั้นตรงนี้
+ * คนที่ดูแลระบบอยู่จริงจะเข้าหน้าตั้งค่าไม่ได้ทันทีที่ deploy)
+ */
+const DEFAULT_SYSTEM_ROLE = {
+  [ROLES.DIRECTOR]: SYSTEM_ROLES.SUPER,
+  [ROLES.MANAGER]: SYSTEM_ROLES.SUPER,
+  [ROLES.ADMIN]: SYSTEM_ROLES.ADMIN,
+  [ROLES.TECH_LEAD]: SYSTEM_ROLES.MEMBER,
+  [ROLES.TECHNICIAN]: SYSTEM_ROLES.MEMBER,
+  [ROLES.SALE]: SYSTEM_ROLES.MEMBER,
+  [ROLES.USER]: SYSTEM_ROLES.MEMBER,
+};
+
+/**
+ * ชั้นในระบบของผู้ใช้คนนี้
+ * @param {object|string} who  user object (ใช้ systemRole ถ้ามี) หรือสตริงตำแหน่งในองค์กร (ของเก่า)
+ */
+const systemRoleOf = (who) => {
+  const explicit = typeof who === "object" && who ? String(who.systemRole || "").trim().toLowerCase() : "";
+  if (ALL_SYSTEM_ROLES.includes(explicit)) return explicit;
+  return DEFAULT_SYSTEM_ROLE[normalizeRole(who)] || SYSTEM_ROLES.MEMBER;
+};
+
+const isSystemCapability = (capability) => Object.prototype.hasOwnProperty.call(SYSTEM_CAPABILITIES, capability);
+
 const ALL_CAPABILITIES = Object.keys(CAPABILITIES);
 
 /**
@@ -252,7 +323,6 @@ const EDITABLE_CAPABILITIES = [
   "approveExpense",
   "disburseExpense",
   "viewAllExpenses",
-  "manageAll",
 ];
 
 /**
@@ -284,6 +354,33 @@ const setCapabilityOverrides = (map) => {
 };
 
 const getCapabilityOverrides = () => OVERRIDES;
+
+/**
+ * ── ชื่อตำแหน่งในองค์กรที่ตั้งเองได้ ──────────────────────────────────────────
+ * ✅ ผู้ใช้สั่ง: "ในองค์กรให้สามารถเปลี่ยนชื่อได้"
+ * ⚠️ เปลี่ยนได้แค่ "ชื่อที่แสดง" — คีย์ของตำแหน่ง (admin/manager/technician...) ต้องคงเดิมตลอดไป
+ * เพราะถูกอ้างในฐานข้อมูลของผู้ใช้ทุกคน ในตารางสิทธิ์ และในเอกสารที่ออกไปแล้ว
+ */
+let RANK_LABEL_OVERRIDES = {};
+
+const setRankLabels = (map) => {
+  const clean = {};
+  Object.entries(map || {}).forEach(([role, label]) => {
+    const r = String(role || "").toLowerCase();
+    const text = String(label || "").trim().slice(0, 60);
+    if (ALL_ROLES.includes(r) && text) clean[r] = text;
+  });
+  RANK_LABEL_OVERRIDES = clean;
+  return RANK_LABEL_OVERRIDES;
+};
+
+const getRankLabelOverrides = () => RANK_LABEL_OVERRIDES;
+
+/** ชื่อตำแหน่งที่ใช้แสดงจริง (ชื่อที่ตั้งเอง > ชื่อเริ่มต้น) */
+const rankLabelOf = (who) => {
+  const r = normalizeRole(who);
+  return RANK_LABEL_OVERRIDES[r] || RANK_LABEL[r] || r;
+};
 
 /** ตารางสิทธิ์ที่ "ใช้จริง" ตอนนี้ (ค่าเริ่มต้น + ส่วนต่าง) — ใช้ส่งให้หน้าจอวาดเมนู */
 const effectiveCapabilities = () => Object.fromEntries(
@@ -363,6 +460,8 @@ const canManageUserOfRole = (actor, targetRole) =>
  * @param {string} capability   ชื่อจาก CAPABILITIES
  */
 const can = (who, capability) => {
+  // ✅ สิทธิ์ระดับระบบ (จัดการผู้ใช้/ตั้งค่าระบบ) ตัดสินด้วย "ชั้นในระบบ" ไม่เกี่ยวกับตำแหน่งในองค์กร
+  if (isSystemCapability(capability)) return SYSTEM_CAPABILITIES[capability].includes(systemRoleOf(who));
   const allowed = CAPABILITIES[capability];
   // ⚠️ พิมพ์ชื่อสิทธิ์ผิด = ปฏิเสธเสมอ (ปลอดภัยไว้ก่อน) แต่ต้องส่งเสียงดังพอให้เห็นตอน dev
   // ไม่งั้นจะกลายเป็นบั๊กเงียบแบบเดียวกับที่ไฟล์นี้ตั้งใจจะกำจัด
@@ -397,10 +496,30 @@ const requireCap = (capability) => (req, res, next) => {
   next();
 };
 
+/**
+ * ── นามแฝง Rank ──
+ * คีย์ในฐานข้อมูลยังชื่อ user.role เหมือนเดิม (ข้อมูลผู้ใช้ทุกคนอ้างคีย์นี้อยู่)
+ * แต่โค้ดที่เขียนใหม่ให้เรียกผ่านชื่อนี้ จะได้อ่านโค้ดแล้วตรงกับคำที่ผู้ใช้เห็นบนหน้าจอ
+ */
+const RANKS = ROLES;
+const ALL_RANKS = ALL_ROLES;
+const rankOf = (who) => normalizeRole(who);
+
+/**
+ * ชื่อตำแหน่งที่ใช้พิมพ์ใต้ชื่อคนในเอกสาร/ใบเบิก
+ * ลำดับ: ตำแหน่งเฉพาะบุคคล (jobTitle) > ค่าเก่าในฐานข้อมูล (rank) > ชื่อ Rank ของตำแหน่ง
+ * ⚠️ อ่าน user.rank ต่อไปด้วย เพราะผู้ใช้ที่กรอกไว้ก่อนเปลี่ยนชื่อฟิลด์ ต้องไม่หายไปจากเอกสาร
+ */
+const titleOf = (user) => String(user?.jobTitle || user?.rank || "").trim() || rankLabelOf(user?.role || user) || "";
+
 module.exports = {
   ROLES,
   ALL_ROLES,
-  ROLE_LABEL,
+  RANKS,
+  ALL_RANKS,
+  rankOf,
+  titleOf,
+  RANK_LABEL,
   DEPARTMENT,
   DEPARTMENT_LABEL,
   ROLE_DEPARTMENT,
@@ -408,6 +527,17 @@ module.exports = {
   ALL_CAPABILITIES,
   EDITABLE_CAPABILITIES,
   LOCKED_ROLES,
+  SYSTEM_ROLES,
+  ALL_SYSTEM_ROLES,
+  SYSTEM_ROLE_LABEL,
+  SYSTEM_ROLE_DESC,
+  SYSTEM_CAPABILITIES,
+  DEFAULT_SYSTEM_ROLE,
+  systemRoleOf,
+  isSystemCapability,
+  setRankLabels,
+  getRankLabelOverrides,
+  rankLabelOf,
   setCapabilityOverrides,
   getCapabilityOverrides,
   effectiveCapabilities,
