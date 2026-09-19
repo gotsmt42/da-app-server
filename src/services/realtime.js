@@ -125,6 +125,7 @@ const TOPICS_BY_BASE = {
   "issued-documents": ["documents"],
   dispatch: ["dispatch", "events"],
   expenses: ["expenses"],
+  settings: ["settings"],
 };
 
 /** คำสั่งที่ไม่ได้เปลี่ยนข้อมูลที่ใครเห็น — ไม่ต้องปลุกทุกหน้าจอให้ดึงใหม่ */

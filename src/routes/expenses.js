@@ -25,6 +25,7 @@ const Expense = require("../models/Expense");
 const BankAccount = require("../models/BankAccount");
 const { BANKS, bankByCode, digitsOnly, validateAccount } = require("../config/banks");
 const User = require("../models/User");
+const OrgSetting = require("../models/OrgSetting");
 const CalendarEvent = require("../models/Events");
 const DocCounter = require("../models/DocCounter");
 const verifyToken = require("../middleware/auth");
@@ -501,7 +502,18 @@ const notifyNextStep = async (step, doc, me, { lead = "", prevBy = "" } = {}) =>
   }
 };
 
+/**
+ * กำหนดเคลียร์ Advance เริ่มต้น (วัน)
+ * ✅ ตั้งค่าได้เองจากหน้าตั้งค่าองค์กรแล้ว (models/OrgSetting.js) — ค่าตรงนี้เป็นตัวสำรองเมื่ออ่านค่าไม่ได้
+ */
 const DEFAULT_CLEAR_DAYS = 7;
+const clearDays = async () => {
+  try {
+    return (await OrgSetting.current())?.advanceClearDays || DEFAULT_CLEAR_DAYS;
+  } catch {
+    return DEFAULT_CLEAR_DAYS;
+  }
+};
 
 // ══ path ตายตัว (ต้องมาก่อน /:id) ══════════════════════════════════════════
 
@@ -1659,7 +1671,7 @@ router.post("/:id/pay", verifyToken, upload.array("files", 5), async (req, res) 
     // ✅ กำหนดเคลียร์: ใช้ค่าที่ระบุ ถ้าไม่ระบุและใบยังไม่มี = วันจ่าย + 7 วัน (ใช้ยิงเตือนรายวัน)
     const due = parseDay(req.body?.dueClearAt);
     if (due) doc.dueClearAt = due;
-    else if (!doc.dueClearAt) doc.dueClearAt = moment(doc.payment.at).add(DEFAULT_CLEAR_DAYS, "days").toDate();
+    else if (!doc.dueClearAt) doc.dueClearAt = moment(doc.payment.at).add(await clearDays(), "days").toDate();
     await attachUploads(req, doc, me, "transfer_slip", "pay");
     log(doc, "paid", `อนุมัติเบิกจ่าย · จ่ายเงิน ${fullBaht(doc.total)} (${PAYMENT_LABEL[doc.payment.method]}${doc.payment.ref ? ` ${doc.payment.ref}` : ""})`, me);
     await doc.save();

@@ -26,6 +26,8 @@ const expensesRouter = require("./expenses");
 const signaturesRouter = require("./signatures");
 // ✅ อัปเดตหน้าจอแบบเรียลไทม์ — ช่องสัญญาณ + ตัวประกาศหลังข้อมูลเปลี่ยน (services/realtime.js)
 const realtimeRouter = require("./realtime");
+// ✅ ตั้งค่าองค์กร (โลโก้/ข้อมูลบริษัท/ค่าตั้งต้นเอกสาร) — ผู้ใช้ขอให้แก้เองได้จากหน้าตั้งค่า
+const settingsRouter = require("./settings");
 const { publishMutations } = require("../services/realtime");
 
 /**
@@ -41,6 +43,7 @@ const router = express.Router();
 router.use(publishMutations);
 router.use("/realtime", realtimeRouter);
 
+router.use("/settings", settingsRouter);
 router.use("/auth", authRouter);
 router.use("/signatures", signaturesRouter);
 router.use("/customer", customerRouter);
