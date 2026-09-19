@@ -47,6 +47,13 @@ const orgSettingSchema = new mongoose.Schema(
      * ⚠️ ใช้ตอนบันทึกจ่ายเงินเมื่อผู้อนุมัติเบิกจ่ายไม่ได้ระบุวันเอง และใช้ยิงเตือนรายวัน
      */
     advanceClearDays: { type: Number, default: DEFAULTS.advanceClearDays, min: 1, max: 90 },
+    /**
+     * ส่วนต่างของตารางสิทธิ์ที่ผู้ดูแลปรับเอง { role: { capability: true|false } }
+     * ✅ ผู้ใช้สั่ง: "ตั้งค่ากำหนดสิทธิ์ได้ว่าใครมองเห็นเมนูอะไร จัดการอะไรได้บ้าง"
+     * ⚠️ เก็บเฉพาะ "ส่วนต่าง" ไม่ใช่ทั้งตาราง — เพิ่มสิทธิ์ใหม่ในโค้ดวันหลังจะได้ค่าเริ่มต้นอัตโนมัติ
+     * ⚠️ ตัวตัดสินจริงอยู่ที่ can() ใน config/roles.js ซึ่งอ่านค่าชุดนี้จากหน่วยความจำ (services/permissionOverrides.js)
+     */
+    capabilityOverrides: { type: mongoose.Schema.Types.Mixed, default: {} },
     updatedBy: { userId: { type: String, default: "" }, name: { type: String, default: "" } },
   },
   { timestamps: true, collection: "orgsettings" }

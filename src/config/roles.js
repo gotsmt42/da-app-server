@@ -223,6 +223,77 @@ const CAPABILITIES = {
 const ALL_CAPABILITIES = Object.keys(CAPABILITIES);
 
 /**
+ * ── สิทธิ์ที่ "ปรับเองได้จากหน้าตั้งค่า" ──────────────────────────────────────
+ * ✅ ผู้ใช้สั่ง: "อยากให้ตั้งค่ากำหนดสิทธิ์ได้ด้วยว่าอยากให้ใครมองเห็นเมนูอะไร และจัดการอะไรได้บ้าง เอาพอสังเขป"
+ *
+ * ⚠️ เปิดให้ปรับเฉพาะรายการที่ "อธิบายเป็นภาษาคนได้" และไม่ทำให้ระบบพังถ้าปิด — ส่วนที่เหลือของตาราง
+ * (เช่น approveOwnExpense / approveOwnReview ซึ่งเป็นกฎควบคุมภายในของเอกสารการเงิน) ยังตายตัวในโค้ด
+ * ⚠️ ค่าที่ปรับเก็บเป็น "ส่วนต่างจากค่าเริ่มต้น" ในฐานข้อมูล ไม่ได้ทับทั้งตาราง — เพิ่มสิทธิ์ใหม่ในโค้ด
+ * วันหลัง role เดิมจะได้ค่าเริ่มต้นของสิทธิ์นั้นทันทีโดยไม่ต้องไปตั้งใหม่ทีละอัน
+ */
+const EDITABLE_CAPABILITIES = [
+  "viewAllJobs",
+  "viewServiceCalendar",
+  "editOperation",
+  "approveJobs",
+  "editAnyJob",
+  "requestDispatch",
+  "assignDispatch",
+  "receiveDispatch",
+  "viewFinance",
+  "editFinance",
+  "viewContracts",
+  "editContracts",
+  "editDocuments",
+  "createSalesPlan",
+  "manageMasterData",
+  "requestExpense",
+  "reviewExpense",
+  "approveExpense",
+  "disburseExpense",
+  "viewAllExpenses",
+  "manageAll",
+];
+
+/**
+ * role ที่ "ห้ามแก้สิทธิ์" — กรรมการผู้จัดการต้องมีสิทธิ์เต็มเสมอ
+ * 🔒 นี่คือกันล็อกตัวเองออกจากระบบ: ถ้าเผลอปิด manageAll ของทุก role จะไม่เหลือใครเข้าหน้าตั้งค่าสิทธิ์ได้อีกเลย
+ */
+const LOCKED_ROLES = [ROLES.DIRECTOR];
+
+/**
+ * ตารางส่วนต่างที่ผู้ดูแลปรับไว้ { role: { capability: true|false } }
+ * ⚠️ เก็บในหน่วยความจำเพื่อให้ can() ยังเป็นฟังก์ชัน "sync" เหมือนเดิม (ถูกเรียกหลายร้อยจุดทั่วระบบ)
+ * โหลดจากฐานข้อมูลตอนบูตและรีเฟรชเป็นระยะ — ดู services/permissionOverrides.js
+ */
+let OVERRIDES = {};
+
+const setCapabilityOverrides = (map) => {
+  const clean = {};
+  Object.entries(map || {}).forEach(([role, caps]) => {
+    const r = String(role || "").toLowerCase();
+    if (!ALL_ROLES.includes(r) || LOCKED_ROLES.includes(r)) return;
+    Object.entries(caps || {}).forEach(([cap, value]) => {
+      if (!EDITABLE_CAPABILITIES.includes(cap) || typeof value !== "boolean") return;
+      clean[r] = clean[r] || {};
+      clean[r][cap] = value;
+    });
+  });
+  OVERRIDES = clean;
+  return OVERRIDES;
+};
+
+const getCapabilityOverrides = () => OVERRIDES;
+
+/** ตารางสิทธิ์ที่ "ใช้จริง" ตอนนี้ (ค่าเริ่มต้น + ส่วนต่าง) — ใช้ส่งให้หน้าจอวาดเมนู */
+const effectiveCapabilities = () => Object.fromEntries(
+  Object.entries(CAPABILITIES).map(([cap, roles]) => [
+    cap,
+    ALL_ROLES.filter((r) => (typeof OVERRIDES[r]?.[cap] === "boolean" ? OVERRIDES[r][cap] : roles.includes(r))),
+  ])
+);
+
+/**
  * รายชื่อ role ที่เป็น "หัวหน้า" — ใช้เป็น **ผู้รับแจ้งเตือน** (sendPushToRoles) เท่านั้น
  * ⚠️ คนละเรื่องกับ CAPABILITIES โดยตั้งใจ: อันนั้นตอบว่า "ทำได้ไหม" อันนี้ตอบว่า "ส่งหาใคร"
  * ถ้าเอามาปนกันจะเกิดกรณีที่เพิ่มสิทธิ์ให้ role ใหม่แล้วมันได้รับแจ้งเตือนพ่วงไปด้วยโดยไม่ตั้งใจ
@@ -299,7 +370,11 @@ const can = (who, capability) => {
     console.error(`❌ can(): ไม่รู้จักสิทธิ์ "${capability}" — ตรวจชื่อใน src/config/roles.js`);
     return false;
   }
-  return allowed.includes(normalizeRole(who));
+  const role = normalizeRole(who);
+  // ✅ ค่าที่ผู้ดูแลปรับเองจากหน้าตั้งค่าสิทธิ์ (ถ้ามี) ชนะตารางค่าเริ่มต้น
+  const override = OVERRIDES[role]?.[capability];
+  if (typeof override === "boolean") return override;
+  return allowed.includes(role);
 };
 
 /** แผนกที่ role นี้สังกัด (null = ไม่ผูกแผนกใดเป็นพิเศษ) */
@@ -331,6 +406,11 @@ module.exports = {
   ROLE_DEPARTMENT,
   CAPABILITIES,
   ALL_CAPABILITIES,
+  EDITABLE_CAPABILITIES,
+  LOCKED_ROLES,
+  setCapabilityOverrides,
+  getCapabilityOverrides,
+  effectiveCapabilities,
   SUPERVISOR_ROLES,
   TECHNICIAN_ROLES,
   ROLE_LEVEL,

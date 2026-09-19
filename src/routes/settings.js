@@ -12,7 +12,10 @@ const streamifier = require("streamifier");
 
 const OrgSetting = require("../models/OrgSetting");
 const verifyToken = require("../middleware/auth");
-const { requireCap } = require("../config/roles");
+const {
+  requireCap, ALL_ROLES, ROLE_LABEL, CAPABILITIES, EDITABLE_CAPABILITIES, LOCKED_ROLES,
+  setCapabilityOverrides, effectiveCapabilities, normalizeRole,
+} = require("../config/roles");
 const { cloudinary } = require("../config/cloudinary");
 
 const router = express.Router();
@@ -135,6 +138,80 @@ router.post("/image/:slot", verifyToken, requireCap("manageAll"), upload.single(
     console.error("❌ อัปโหลดรูปองค์กรไม่สำเร็จ:", err);
     res.status(500).json({ message: err.message || "อัปโหลดรูปไม่สำเร็จ" });
   }
+});
+
+// ══ ตั้งค่าสิทธิ์ (ใครเห็นเมนูอะไร / จัดการอะไรได้) ══════════════════════════
+/**
+ * ✅ ผู้ใช้สั่ง: "อยากให้ตั้งค่ากำหนดสิทธิ์ได้ด้วยว่าอยากให้ใครมองเห็นเมนูอะไร และจัดการอะไรได้บ้าง เอาพอสังเขป"
+ *
+ * 🔒 กติกากันล็อกตัวเอง/กันยกระดับตัวเอง (บังคับที่ server เสมอ ไม่ใช่แค่ซ่อนปุ่ม):
+ *   1. แก้ได้เฉพาะผู้มีสิทธิ์ manageAll
+ *   2. กรรมการผู้จัดการ (LOCKED_ROLES) แก้ไม่ได้ — ต้องเหลือทางกลับเข้าหน้านี้เสมอ
+ *   3. ปิด "จัดการระบบ" (manageAll) ของ role ตัวเองไม่ได้ — กันเผลอตัดสิทธิ์ตัวเองแล้วเข้ามาแก้คืนไม่ได้
+ *   4. ปรับได้เฉพาะสิทธิ์ในรายการ EDITABLE_CAPABILITIES (ที่เหลือเป็นกฎควบคุมภายใน ตายตัวในโค้ด)
+ */
+router.get("/permissions", verifyToken, requireCap("manageAll"), async (req, res) => {
+  try {
+    const doc = await OrgSetting.current({ fresh: true });
+    res.json({
+      roles: ALL_ROLES.map((r) => ({ role: r, label: ROLE_LABEL[r] || r, locked: LOCKED_ROLES.includes(r) })),
+      capabilities: EDITABLE_CAPABILITIES,
+      defaults: Object.fromEntries(EDITABLE_CAPABILITIES.map((c) => [c, CAPABILITIES[c] || []])),
+      overrides: doc?.capabilityOverrides || {},
+      effective: Object.fromEntries(EDITABLE_CAPABILITIES.map((c) => [c, effectiveCapabilities()[c]])),
+    });
+  } catch (err) {
+    console.error("❌ ดึงตารางสิทธิ์ไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ดึงตารางสิทธิ์ไม่สำเร็จ" });
+  }
+});
+
+router.put("/permissions", verifyToken, requireCap("manageAll"), async (req, res) => {
+  try {
+    const role = String(req.body?.role || "").toLowerCase();
+    const capability = String(req.body?.capability || "");
+    const allowed = req.body?.allowed;
+
+    if (!ALL_ROLES.includes(role)) return res.status(400).json({ message: "ไม่รู้จักสิทธิ์ผู้ใช้นี้" });
+    if (LOCKED_ROLES.includes(role)) {
+      return res.status(403).json({ message: `${ROLE_LABEL[role] || role} ต้องมีสิทธิ์เต็มเสมอ — แก้ไม่ได้ (กันไม่ให้ไม่เหลือใครเข้าหน้าตั้งค่า)` });
+    }
+    if (!EDITABLE_CAPABILITIES.includes(capability)) return res.status(400).json({ message: "สิทธิ์นี้ปรับจากหน้าตั้งค่าไม่ได้" });
+    if (typeof allowed !== "boolean") return res.status(400).json({ message: "ค่าที่ส่งมาไม่ถูกต้อง" });
+    if (capability === "manageAll" && !allowed && normalizeRole(req.user) === role) {
+      return res.status(403).json({ message: "ปิดสิทธิ์จัดการระบบของสิทธิ์ตัวเองไม่ได้ — จะเข้ามาแก้คืนไม่ได้อีก" });
+    }
+
+    const doc = await OrgSetting.current({ fresh: true });
+    const overrides = { ...(doc?.capabilityOverrides || {}) };
+    const forRole = { ...(overrides[role] || {}) };
+    // ✅ ตรงกับค่าเริ่มต้นอยู่แล้ว = ลบส่วนต่างทิ้ง (ตารางจะได้ไม่บวมด้วยค่าที่ไม่ได้ต่างอะไร)
+    if ((CAPABILITIES[capability] || []).includes(role) === allowed) delete forRole[capability];
+    else forRole[capability] = allowed;
+
+    if (Object.keys(forRole).length) overrides[role] = forRole;
+    else delete overrides[role];
+
+    await OrgSetting.updateOne(
+      { key: "org" },
+      { $set: { capabilityOverrides: overrides, updatedBy: { userId: String(req.userId || ""), name: req.user?.fname || "" } } },
+      { upsert: true }
+    );
+    OrgSetting.clearCache();
+    setCapabilityOverrides(overrides); // มีผลกับคำขอถัดไปทันที ไม่ต้องรอรอบรีเฟรช
+    res.json({ overrides, effective: Object.fromEntries(EDITABLE_CAPABILITIES.map((c) => [c, effectiveCapabilities()[c]])) });
+  } catch (err) {
+    console.error("❌ บันทึกตารางสิทธิ์ไม่สำเร็จ:", err);
+    res.status(500).json({ message: "บันทึกตารางสิทธิ์ไม่สำเร็จ" });
+  }
+});
+
+/**
+ * ตารางสิทธิ์ที่ "ใช้จริง" สำหรับฝั่งหน้าจอ — ทุกคนที่ล็อกอินอ่านได้ (ใช้วาดเมนูของตัวเอง)
+ * ⚠️ เป็นแค่ข้อมูลว่า role ไหนทำอะไรได้ ไม่ใช่ความลับ — และ server ยังกันทุก route ด้วย can() เหมือนเดิม
+ */
+router.get("/permissions/effective", verifyToken, (req, res) => {
+  res.json({ effective: effectiveCapabilities() });
 });
 
 module.exports = router;
