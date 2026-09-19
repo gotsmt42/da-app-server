@@ -66,9 +66,9 @@ async function checkAndNotifyOverdueAdvances() {
  * ⚠️ ผู้รับอ่านจาก CAPABILITIES ของขั้นนั้น — ตรงกับคนที่กดได้จริงเสมอ
  */
 const STALE_STEPS = [
-  { key: "expense-pending", status: "pending", since: "submittedAt", cap: "reviewExpense", head: "📝 ใบเบิกรอตรวจสอบค้างอยู่", step: "ขั้นที่ 2/4 ตรวจสอบ" },
-  { key: "expense-reviewed", status: "reviewed", since: "reviewedAt", cap: "approveExpense", head: "🔎 ใบเบิกรออนุมัติค้างอยู่", step: "ขั้นที่ 3/4 อนุมัติ" },
-  { key: "expense-approved", status: "approved", since: "approvedAt", cap: "disburseExpense", head: "✍️ ใบเบิกรออนุมัติเบิกจ่ายค้างอยู่", step: "ขั้นที่ 4/4 อนุมัติเบิกจ่าย" },
+  { key: "expense-pending", status: "pending", since: "submittedAt", cap: "reviewExpense", head: "📝 ใบเบิกรอตรวจสอบค้างอยู่", step: "ขั้นที่ 2/3 ตรวจสอบ (รอส่งต่อให้ผู้จัดการอนุมัติ)" },
+  { key: "expense-reviewed", status: "reviewed", since: "reviewedAt", cap: "approveExpense", head: "🔎 ใบเบิกรออนุมัติค้างอยู่", step: "ขั้นที่ 2/3 อนุมัติ (ตรวจสอบแล้ว)" },
+  { key: "expense-approved", status: "approved", since: "approvedAt", cap: "disburseExpense", head: "✍️ ใบเบิกรออนุมัติเบิกจ่ายค้างอยู่", step: "ขั้นที่ 3/3 อนุมัติเบิกจ่าย" },
 ];
 
 async function checkAndNotifyPendingExpenses() {
