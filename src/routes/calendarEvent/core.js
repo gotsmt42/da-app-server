@@ -184,6 +184,23 @@ module.exports = (router) => {
           eventData.end = dateOverride.end;
           eventData.date = dateOverride.date;
           if (dateOverride.time !== undefined) eventData.time = dateOverride.time;
+
+          /**
+           * ✅ ผู้ใช้สั่ง: "กำหนดหัวหน้างานและลูกทีมของแต่ละช่วงงานแยกกันได้ บางทีคนเข้าไม่ตรงกัน"
+           * ช่วงไหนไม่ได้ระบุ = ใช้คนเดียวกับงานหลัก (ค่าที่มาจาก allowedFields ด้านบน)
+           * ⚠️ "ผู้รับผิดชอบหลักของงาน" (responsiblePerson) ไม่แยกตามช่วง — ผู้ใช้ยืนยันว่า
+           * ยังเป็นคนเดิมทั้งงาน จึงตั้งเฉพาะ team/resPerson/teamMembers ที่เป็น "คนที่เข้าหน้างานช่วงนั้น"
+           */
+          const overrideTeam = String(dateOverride.team || "").trim();
+          if (overrideTeam) {
+            eventData.team = overrideTeam;
+            eventData.resPerson = String(dateOverride.resPerson || "").trim();
+          }
+          if (Array.isArray(dateOverride.teamMembers)) {
+            eventData.teamMembers = dateOverride.teamMembers
+              .map((m) => ({ userId: String(m?.userId || "").trim(), name: String(m?.name || "").trim() }))
+              .filter((m) => m.name);
+          }
         }
         if (jobGroupId) eventData.jobGroupId = jobGroupId;
         if (contractGroupId) eventData.contractGroupId = contractGroupId;

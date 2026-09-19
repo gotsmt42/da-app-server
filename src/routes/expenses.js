@@ -323,22 +323,42 @@ const attachUploads = async (req, doc, me, fallbackKind, stage = "") => {
 };
 
 /**
+ * ช่วงงานทั้งหมดของงานเดียวกัน เรียงตามวันที่ — ใช้บอกว่า event นี้เป็น "ช่วงที่เท่าไร จากกี่ช่วง"
+ * ✅ 1 document ในปฏิทิน = 1 ช่วงวันที่ (ดูฟอร์มสร้างงาน: ช่วงที่ 1 / ช่วงที่ 2 ...)
+ * ⚠️ งานที่ไม่ได้ผูก jobGroupId = งานช่วงเดียว คืน [] เพื่อไม่ต้องยิง query โดยไม่จำเป็น
+ */
+const rangesOfJob = async (jobGroupId) => {
+  if (!jobGroupId) return [];
+  return CalendarEvent.find({ jobGroupId })
+    .select("_id start end team teamMembers status").sort({ start: 1, _id: 1 }).lean();
+};
+
+/**
  * snapshot งานที่ผูก — ตรวจกับของจริงเสมอ ห้ามเชื่อชื่องานที่ client ส่งมา
- * ✅ คืน jobKey (กุญแจงานสำหรับกันออกใบ Advance ซ้ำ ดู models/Expense.js) มาด้วย
+ *
+ * ✅ ผูกกับ "ช่วงงาน" (1 event = 1 ช่วงวันที่) ไม่ใช่ทั้งงาน — ผู้ใช้สั่งให้แยกเบิกเป็นช่วงได้
+ * คืน jobKey (กุญแจกันออกใบซ้ำ = ช่วงนี้) และ jobGroupKey (ทั้งงาน) มาด้วย ดู models/Expense.js
  */
 const resolveJob = async (eventId) => {
   const id = String(eventId || "").trim();
-  if (!id) return { eventId: "", jobKey: "", job: { title: "", system: "", company: "", site: "", docNo: "", start: null, round: "", visitCount: 0 } };
+  const empty = { title: "", system: "", company: "", site: "", docNo: "", start: null, end: null, round: "", visitCount: 0, part: 0, partCount: 0 };
+  if (!id) return { eventId: "", jobKey: "", jobGroupKey: "", job: empty };
   if (!/^[a-f0-9]{24}$/i.test(id)) return null;
-  const ev = await CalendarEvent.findById(id).select("title system company site docNo start time visitCount jobGroupId").lean();
+  const ev = await CalendarEvent.findById(id).select("title system company site docNo start end time visitCount jobGroupId").lean();
   if (!ev) return null;
+
+  const ranges = await rangesOfJob(ev.jobGroupId);
+  const part = ranges.length > 1 ? ranges.findIndex((r) => String(r._id) === id) + 1 : 0;
+
   return {
     eventId: id,
-    jobKey: ev.jobGroupId || id,
+    jobKey: id,                              // 1 ช่วง = 1 ใบ
+    jobGroupKey: ev.jobGroupId || "",        // ทั้งงาน (ไว้ดูภาพรวม ไม่ได้ใช้กันซ้ำ)
     job: {
       title: ev.title || "", system: ev.system || "", company: ev.company || "", site: ev.site || "",
-      docNo: ev.docNo || "", start: ev.start || null,
+      docNo: ev.docNo || "", start: ev.start || null, end: ev.end || ev.start || null,
       round: ev.time === undefined || ev.time === null ? "" : String(ev.time), visitCount: Number(ev.visitCount) || 0,
+      part: part > 0 ? part : 0, partCount: ranges.length > 1 ? ranges.length : 0,
     },
   };
 };
@@ -349,28 +369,31 @@ const STATUS_TH = {
 };
 
 /**
- * ใบ Advance ที่ "ยังมีผล" ของงานนี้ (ทุกสถานะยกเว้นยกเลิก) — null = ออกใบใหม่ได้
- * ⚠️ ใบที่ถูกตีกลับยังนับ — ใบนั้นแก้แล้วส่งใหม่ได้ ถ้าปล่อยให้ออกใบใหม่ซ้อนจะมี 2 ใบของงานเดียวกัน
- * ⚠️ ตรวจทั้ง jobKey และ eventId ของทุกวันในกลุ่มงาน — ใบเก่าที่ออกก่อนมีฟิลด์ jobKey มีแค่ eventId
- * ของวันใดวันหนึ่ง ถ้าเทียบแค่ jobKey จะมองไม่เห็นใบพวกนั้นเลย
+ * ใบ Advance ที่ "ยังมีผล" ของ **ช่วงงานนี้** (ทุกสถานะยกเว้นยกเลิก) — null = ออกใบใหม่ได้
+ *
+ * ✅ ขอบเขตคือ "ช่วงเดียว" ไม่ใช่ทั้งงาน (ผู้ใช้สั่งให้แยกเบิกเป็นช่วง) — ช่วงอื่นของงานเดียวกัน
+ * ออกใบของตัวเองได้ตามปกติ
+ * ⚠️ ใบที่ถูกตีกลับยังนับ — ใบนั้นแก้แล้วส่งใหม่ได้ ถ้าปล่อยให้ออกใบใหม่ซ้อนจะมี 2 ใบของช่วงเดียวกัน
+ * ⚠️ ใบเก่า (ออกก่อนแยกช่วง) เก็บ jobKey = jobGroupId ของทั้งงาน จึงเทียบ eventId ควบคู่ไปด้วย —
+ * ใบเก่าจะไปชนเฉพาะ "ช่วงที่มันผูกไว้จริง" ช่วงอื่นไม่ถูกล็อกค้างไว้โดยไม่จำเป็น
  */
 const findActiveAdvanceForJob = async (linked, excludeId = null) => {
   if (!linked?.eventId) return null;
-  const groupIds = linked.jobKey && linked.jobKey !== linked.eventId
-    ? (await CalendarEvent.find({ jobGroupId: linked.jobKey }).select("_id").lean()).map((e) => String(e._id))
-    : [];
-  const eventIds = [...new Set([linked.eventId, ...groupIds])];
   const query = {
     kind: "advance",
     status: { $ne: "cancelled" },
-    $or: [{ jobKey: linked.jobKey }, { eventId: { $in: eventIds } }],
+    $or: [{ jobKey: linked.eventId }, { eventId: linked.eventId }],
   };
   if (excludeId) query._id = { $ne: excludeId };
-  return Expense.findOne(query).select("docNo status total requester createdBy").lean();
+  return Expense.findOne(query).select("docNo status total requester createdBy job").lean();
 };
 
-const duplicateAdvanceMessage = (adv) =>
-  `งานนี้มีใบเบิก Advance แล้ว (${adv.docNo} · ${STATUS_TH[adv.status] || adv.status}${adv.requester?.name ? ` · ${adv.requester.name}` : ""}) — 1 งานออกใบ Advance ได้ใบเดียว`;
+const duplicateAdvanceMessage = (adv) => {
+  const part = adv.job?.part && adv.job?.partCount ? `ช่วงที่ ${adv.job.part}/${adv.job.partCount} ของ` : "";
+  return `${part}งานนี้มีใบเบิก Advance แล้ว (${adv.docNo} · ${STATUS_TH[adv.status] || adv.status}`
+    + `${adv.requester?.name ? ` · ${adv.requester.name}` : ""}) — 1 ช่วงงานออกได้ 1 ใบ`
+    + " (ช่วงวันที่อื่นของงานเดียวกันยังเบิกแยกได้)";
+};
 
 /** ชนล็อก unique ของ activeAdvanceJob = มีคนออกใบ Advance ของงานเดียวกันไปพร้อมกันเสี้ยววินาทีก่อน */
 const isAdvanceLockConflict = (err) => err?.code === 11000 && Boolean(err?.keyPattern?.activeAdvanceJob);
@@ -683,29 +706,56 @@ router.get("/jobs", verifyToken, async (req, res) => {
       .limit(40)
       .lean();
 
-    // ✅ บอกหน้าจอว่างานไหนมีใบ Advance แล้ว — ช่องเลือกงานในฟอร์มจะได้ปิดตัวเลือกนั้นไว้ตั้งแต่แรก
-    // ไม่ต้องให้ผู้ใช้กรอกทั้งใบแล้วค่อยมาเจอว่าส่งไม่ได้ตอนกดส่ง (server ยังตรวจซ้ำตอนบันทึกเสมอ)
-    const keyOf = (j) => j.jobGroupId || String(j._id);
-    const byEvent = new Map(jobs.map((j) => [String(j._id), keyOf(j)]));
+    /**
+     * ✅ บอกหน้าจอว่า "ช่วงงานไหน" มีใบ Advance แล้ว — ช่องเลือกงานจะได้ปิดตัวเลือกนั้นไว้ตั้งแต่แรก
+     * ไม่ต้องให้ผู้ใช้กรอกทั้งใบแล้วค่อยมาเจอว่าส่งไม่ได้ตอนกดส่ง (server ยังตรวจซ้ำตอนบันทึกเสมอ)
+     * ⚠️ เทียบเป็นราย eventId (= 1 ช่วง) ไม่ใช่รายงาน — ใบเก่าที่ jobKey เป็นของทั้งงานจะจับคู่ด้วย
+     * eventId ที่มันผูกไว้จริง ช่วงอื่นจึงไม่ถูกขึ้นว่า "มีใบแล้ว" ทั้งที่ยังเบิกได้
+     */
+    const eventIds = jobs.map((j) => String(j._id));
     const advances = jobs.length
       ? await Expense.find({
         kind: "advance",
         status: { $ne: "cancelled" },
-        $or: [{ jobKey: { $in: jobs.map(keyOf) } }, { eventId: { $in: [...byEvent.keys()] } }],
+        $or: [{ jobKey: { $in: eventIds } }, { eventId: { $in: eventIds } }],
       }).select("docNo status jobKey eventId").lean()
       : [];
-    const advByKey = new Map();
+    const advByEvent = new Map();
     advances.forEach((a) => {
-      const key = a.jobKey || byEvent.get(String(a.eventId));
-      if (key && !advByKey.has(key)) advByKey.set(key, { _id: a._id, docNo: a.docNo, status: a.status });
+      const key = eventIds.includes(String(a.jobKey)) ? String(a.jobKey) : String(a.eventId);
+      if (key && !advByEvent.has(key)) advByEvent.set(key, { _id: a._id, docNo: a.docNo, status: a.status });
     });
+
+    /**
+     * ✅ งานเดียวกันที่เข้าหลายช่วง (jobGroupId เดียวกัน) ต้องบอกให้ชัดว่าแถวนี้คือ "ช่วงที่เท่าไร/กี่ช่วง"
+     * ไม่งั้นในรายการจะเห็นชื่องานซ้ำกันหลายบรรทัดโดยแยกไม่ออกว่าอันไหนคือรอบไหน (ผู้ใช้แจ้งปัญหานี้)
+     * ⚠️ ต้องนับจากทุกช่วงของงานนั้นจริงๆ ไม่ใช่นับเฉพาะที่ติดมากับผลค้นหา 40 แถวนี้
+     */
+    const groupIds = [...new Set(jobs.map((j) => j.jobGroupId).filter(Boolean))];
+    const partIndex = new Map();
+    if (groupIds.length) {
+      const siblings = await CalendarEvent.find({ jobGroupId: { $in: groupIds } })
+        .select("_id jobGroupId start").sort({ start: 1, _id: 1 }).lean();
+      const byGroup = new Map();
+      siblings.forEach((sv) => {
+        const list = byGroup.get(sv.jobGroupId) || [];
+        list.push(String(sv._id));
+        byGroup.set(sv.jobGroupId, list);
+      });
+      byGroup.forEach((list, gid) => {
+        if (list.length < 2) return;  // งานช่วงเดียว ไม่ต้องแสดงเลขช่วง
+        list.forEach((id, i) => partIndex.set(id, { part: i + 1, partCount: list.length, jobGroupId: gid }));
+      });
+    }
+
     res.json({
       jobs: jobs.map(({ jobGroupId, time, team, teamMembers, ...j }) => ({
         ...j,
         round: time === undefined || time === null ? "" : String(time),
-        // ✅ รายชื่อคนในงาน (หัวหน้าทีม + ลูกทีม) — ปุ่ม "เบี้ยเลี้ยงทีมงาน" ในฟอร์มใช้สร้างรายการให้ทีละคน
+        // ✅ รายชื่อคนที่เข้างาน "ช่วงนี้" (หัวหน้างาน + ลูกทีมของช่วง) — ปุ่ม "เบี้ยเลี้ยงทีมงาน" ใช้สร้างรายการให้ทีละคน
         teamNames: [...new Set([team, ...(teamMembers || []).map((m) => m?.name)].map((n) => String(n || "").trim()).filter(Boolean))],
-        advance: advByKey.get(jobGroupId || String(j._id)) || null,
+        ...(partIndex.get(String(j._id)) || {}),
+        advance: advByEvent.get(String(j._id)) || null,
       })),
     });
   } catch (err) {
@@ -727,6 +777,27 @@ router.get("/job-advance/:eventId", verifyToken, async (req, res) => {
     const linked = await resolveJob(req.params.eventId);
     if (!linked || !linked.eventId) return res.status(404).json({ message: "ไม่พบงานนี้" });
     const adv = await findActiveAdvanceForJob(linked);
+
+    // ✅ งานที่เข้าหลายช่วง: บอกด้วยว่านี่คือช่วงที่เท่าไร และทั้งงานเบิกไปแล้วกี่ช่วง
+    // เพื่อให้คนกดจากหน้าตารางงานรู้ว่า "ที่มีแล้วคือของช่วงอื่น ช่วงนี้ยังเบิกได้" ไม่ต้องเดา
+    let siblings = null;
+    if (linked.jobGroupKey) {
+      const ranges = await rangesOfJob(linked.jobGroupKey);
+      if (ranges.length > 1) {
+        const ids = ranges.map((r) => String(r._id));
+        const used = await Expense.find({
+          kind: "advance", status: { $ne: "cancelled" },
+          $or: [{ jobKey: { $in: ids } }, { eventId: { $in: ids } }],
+        }).select("jobKey eventId").lean();
+        const usedIds = new Set(used.map((u) => (ids.includes(String(u.jobKey)) ? String(u.jobKey) : String(u.eventId))));
+        siblings = {
+          part: ids.indexOf(linked.eventId) + 1,
+          partCount: ids.length,
+          withAdvance: usedIds.size,
+        };
+      }
+    }
+
     res.json({
       advance: adv
         ? {
@@ -734,6 +805,7 @@ router.get("/job-advance/:eventId", verifyToken, async (req, res) => {
           requesterName: adv.requester?.name || "", canOpen: canSee(req, adv),
         }
         : null,
+      ranges: siblings,
     });
   } catch (err) {
     console.error("❌ ตรวจใบ Advance ของงานไม่สำเร็จ:", err);
@@ -991,7 +1063,7 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
 
     const linked = await resolveJob(req.body.eventId);
     if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
-    // 🔒 1 งาน ออกใบ Advance ได้ใบเดียว (ดู activeAdvanceJob ใน models/Expense.js)
+    // 🔒 1 ช่วงงาน ออกใบ Advance ได้ 1 ใบ (ช่วงอื่นของงานเดียวกันเบิกแยกได้ — ดู activeAdvanceJob ใน models/Expense.js)
     const existing = await findActiveAdvanceForJob(linked);
     if (existing) {
       return res.status(409).json({ message: duplicateAdvanceMessage(existing), advance: { _id: existing._id, docNo: existing.docNo, status: existing.status } });
@@ -1044,7 +1116,7 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
     res.status(201).json({ expense: await withFullNames(expense.toObject()) });
   } catch (err) {
     if (isAdvanceLockConflict(err)) {
-      return res.status(409).json({ message: "งานนี้เพิ่งมีการออกใบเบิก Advance ไปแล้ว — 1 งานออกใบ Advance ได้ใบเดียว" });
+      return res.status(409).json({ message: "ช่วงงานนี้เพิ่งมีการออกใบเบิก Advance ไปแล้ว — 1 ช่วงงานออกได้ 1 ใบ (ช่วงอื่นเบิกแยกได้)" });
     }
     console.error("❌ ออกใบเบิก Advance ไม่สำเร็จ:", err);
     res.status(500).json({ message: "ออกใบเบิกไม่สำเร็จ" });
@@ -1360,6 +1432,7 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
         }
         doc.eventId = linked.eventId;
         doc.jobKey = linked.jobKey;
+        doc.jobGroupKey = linked.jobGroupKey || "";
         doc.job = linked.job;
       }
       if (doc.kind === "advance" && req.body.dueClearAt !== undefined) doc.dueClearAt = parseDay(req.body.dueClearAt);
@@ -1421,7 +1494,7 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
     res.json({ expense: await withFullNames(doc.toObject()) });
   } catch (err) {
     if (isAdvanceLockConflict(err)) {
-      return res.status(409).json({ message: "งานนี้มีใบเบิก Advance อยู่แล้ว — 1 งานออกใบ Advance ได้ใบเดียว" });
+      return res.status(409).json({ message: "ช่วงงานนี้มีใบเบิก Advance อยู่แล้ว — 1 ช่วงงานออกได้ 1 ใบ (ช่วงอื่นเบิกแยกได้)" });
     }
     console.error("❌ แก้ไขใบเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "แก้ไขไม่สำเร็จ" });
