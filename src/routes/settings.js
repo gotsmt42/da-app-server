@@ -53,7 +53,7 @@ const IMAGE_SLOTS = { app: "logoUrl", letterhead: "letterheadUrl", stamp: "stamp
  */
 const BUILTIN_IMAGES = {
   app: [
-    { key: "planngan", label: "PlanNgan (โลโก้แอป)", url: "/app-wordmark-light.png", isAppDefault: true },
+    { key: "nexplan", label: "NexPlan (โลโก้แอป)", url: "/app-wordmark-light.png", isAppDefault: true },
     { key: "doall", label: "DO ALL (ชุดเดิม)", url: "/logo-dark-2.png" },
   ],
   letterhead: [
