@@ -29,7 +29,7 @@ const OrgSetting = require("../models/OrgSetting");
 const CalendarEvent = require("../models/Events");
 const DocCounter = require("../models/DocCounter");
 const verifyToken = require("../middleware/auth");
-const { can, rankLabelOf, titleOf, CAPABILITIES, DEPARTMENT } = require("../config/roles");
+const { can, rankLabelOf, titleOf, normalizeRank, rankFilter, effectiveCapabilities, CAPABILITIES, DEPARTMENT } = require("../config/roles");
 const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers } = require("../services/PushNotify");
@@ -51,7 +51,7 @@ const personName = (u) => String(u?.fname || "").trim() || u?.username || "ไ�
 const actor = (req) => ({
   userId: String(req.user?._id || req.userId || ""),
   name: personName(req.user),
-  role: String(req.user?.role || ""),
+  role: normalizeRank(req.user),   // สำเนา Rank ของคนที่ทำรายการนี้
 });
 
 /** ตำแหน่งที่พิมพ์ใต้ชื่อ = ตำแหน่งเฉพาะบุคคล (jobTitle) ถ้าไม่มีใช้ชื่อ Rank — กติกาเดียวกันทั้งระบบ (titleOf) */
@@ -462,7 +462,9 @@ const STEP_ASK = {
 /** ส่งแจ้งเตือนหาทุกคนที่มีสิทธิ์ของขั้นนั้น (ยกเว้นคนที่เพิ่งกดเอง) */
 const notifyCapable = async (cap, me, payload) => {
   try {
-    const users = await User.find({ role: { $in: CAPABILITIES[cap] || [] } }).select("_id").lean();
+    // ✅ ใช้ "ตารางที่ใช้จริง" ไม่ใช่ค่าเริ่มต้น — ติ๊กสิทธิ์ให้ Rank ไหน คนนั้นต้องได้รับแจ้งเตือนด้วย
+    const ranks = effectiveCapabilities()[cap] || CAPABILITIES[cap] || [];
+    const users = await User.find(rankFilter(ranks)).select("_id").lean();
     notifyUsers(users.map((u) => String(u._id)), me, payload);
   } catch (e) {
     console.error(`push expense ${cap}:`, e.message);
@@ -635,13 +637,13 @@ router.get("/people", verifyToken, async (req, res) => {
     if (!can(req.user, "viewAllExpenses") && !can(req.user, "requestExpense")) {
       return res.status(403).json({ message: "คุณไม่มีสิทธิ์ใช้งานระบบเบิก" });
     }
-    const users = await User.find({}).select("fname lname username role rank jobTitle imageUrl").sort({ fname: 1 }).lean();
+    const users = await User.find({}).select("fname lname username rank role jobTitle imageUrl").sort({ fname: 1 }).lean();
     res.json({
       users: users.map((u) => ({
         userId: String(u._id),
         name: personName(u),
         fullName: [u.fname, u.lname].filter(Boolean).join(" ") || u.username,
-        role: u.role || "",
+        role: normalizeRank(u),   // Rank — หน้าจอเอาไปแสดงเป็นตำแหน่งของคนนั้น
         position: positionOf(u),
         imageUrl: u.imageUrl || "",
       })),

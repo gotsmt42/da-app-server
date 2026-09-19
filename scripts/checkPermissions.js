@@ -31,6 +31,7 @@ const EXPECTED = {
   editOperation: ["admin", "manager", "director", "user"],
   // ⚠️ ตัด sale ออกตามที่ผู้ใช้สั่ง — ทั้งสองหน้าเป็นเรื่องของงานช่าง ไม่ใช่ดีล/ยอดขายของเซล
   viewQuotations: ["admin", "manager", "director", "technician", "techlead"],
+  viewDocuments: ["admin", "manager", "director", "techlead", "technician", "user"],
   editDocuments: ["admin", "manager", "director"],
   viewFinance: ["admin", "manager", "director", "technician", "techlead", "user"],
   editFinance: ["admin", "manager", "director"],

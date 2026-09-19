@@ -1,6 +1,7 @@
 const webpush = require("web-push");
 const PushSubscription = require("../models/PushSubscription");
 const User = require("../models/User");
+const { rankFilter } = require("../config/roles");
 
 webpush.setVapidDetails(
   process.env.VAPID_SUBJECT,
@@ -35,9 +36,9 @@ async function sendPushToUsers(userIds, payload) {
   );
 }
 
-// ✅ ส่ง push ให้ทุกคนที่มี role อยู่ใน roles ที่ระบุ (เช่น แจ้งแอดมิน/manager ทุกคนตอนช่างขอปิดงาน)
+// ✅ ส่ง push ให้ทุกคนที่มี Rank (ตำแหน่งในองค์กร) อยู่ในรายการที่ระบุ (เช่น แจ้งแอดมิน/ผู้จัดการตอนช่างขอปิดงาน)
 async function sendPushToRoles(roles, payload) {
-  const users = await User.find({ role: { $in: roles } }).select("_id").lean();
+  const users = await User.find(rankFilter(roles)).select("_id").lean();
   await sendPushToUsers(users.map((u) => u._id.toString()), payload);
 }
 

@@ -16,8 +16,8 @@ const checkFile = require("../middleware/checkFile");
 
 // 🔒 ตารางสิทธิ์กลางของระบบ — ใช้ requireCap แทนการเช็ค role เขียนสดตามที่ config/roles.js กำหนดไว้
 const {
-  requireCap, ALL_ROLES, ROLES, can, normalizeRole, canAssignRole, canManageUserOfRole, rankLabelOf, titleOf,
-  ALL_SYSTEM_ROLES, SYSTEM_ROLES, SYSTEM_ROLE_LABEL, systemRoleOf,
+  requireCap, ALL_ROLES, ROLES, can, normalizeRole, normalizeRank, rankFilter, canAssignRole, canManageUserOfRole, rankLabelOf, titleOf,
+  ALL_SYSTEM_ROLES, SYSTEM_ROLES, SYSTEM_ROLE_LABEL, systemRoleOf, DEFAULT_SYSTEM_ROLE,
 } = require("../config/roles");
 
 router.post("/validate-password", verifyToken, async (req, res) => {
@@ -60,6 +60,21 @@ router.post("/validate-password", verifyToken, async (req, res) => {
   }
 });
 
+/**
+ * รูปร่างผู้ใช้ที่ส่งให้หน้าจอ — ✅ คงคีย์เดิมไว้ให้ทุกหน้าที่เขียนไว้แล้วทำงานต่อได้
+ *
+ * ฐานข้อมูลเก็บตามคำที่ผู้ใช้กำหนด:  rank = ตำแหน่งในองค์กร · role = ตำแหน่งในระบบ
+ * แต่ payload ยังส่ง role = ตำแหน่งในองค์กร (ชื่อเดิมที่หน้าจอทุกหน้าใช้อยู่) และส่งตำแหน่งในระบบ
+ * แยกไว้ที่ systemRole เพราะคำว่า "admin" เป็นได้ทั้งสองอย่าง — ถ้าใช้คีย์เดียวกันจะแยกไม่ออก
+ * ⚠️ แก้ตรงนี้ที่เดียว ทุก endpoint ที่คืนผู้ใช้จะตรงกันหมด
+ */
+const publicUser = (u) => {
+  const doc = typeof u?.toObject === "function" ? u.toObject() : { ...u };
+  delete doc.password;
+  const rank = normalizeRank(doc);
+  return { ...doc, rank, role: rank, systemRole: systemRoleOf(u), jobTitle: titleOf(doc) };
+};
+
 router.get("/alluser", verifyToken, async (req, res) => {
   try {
     const token = req.token;
@@ -67,10 +82,10 @@ router.get("/alluser", verifyToken, async (req, res) => {
     // 🔒 ตัด hash รหัสผ่านออกจากผลลัพธ์ — endpoint นี้คืนข้อมูลผู้ใช้ "ทุกคน" ให้ทุกคนที่ล็อกอิน
     // ถ้าส่ง password hash ไปด้วย ใครก็ตามที่ล็อกอินได้จะดูดไปลองถอดรหัสแบบออฟไลน์ได้ทั้งบริษัท
     // (ไม่มีหน้าจอไหนใช้ค่านี้เลย — ตรวจแล้วทั้งฝั่งแอป)
-    const allUser = await User.find({}).select("-password").exec();
+    const allUser = await User.find({}).select("-password").lean();
 
     if (allUser) {
-      res.json({ allUser: allUser, token: token });
+      res.json({ allUser: allUser.map(publicUser), token: token });
     } else {
       res.json({
         err: "Username หรือ Password ไม่ถูกต้องกรุณาลองใหม่อีกครั้ง",
@@ -99,7 +114,8 @@ router.get("/staff-directory", verifyToken, async (req, res) => {
         name: [u.fname, u.lname].filter(Boolean).join(" ").trim() || u.fname || "",
         position: titleOf(u),
         tel: u.tel || "",
-        role: u.role || "",
+        rank: normalizeRank(u),          // Rank — ตำแหน่งในองค์กร
+        role: normalizeRank(u),          // ⚠️ ชื่อเดิมของ Rank — คงไว้ให้หน้าจอรุ่นเก่าไม่พัง
         imageUrl: u.imageUrl || "",
       })),
     });
@@ -114,10 +130,10 @@ router.get("/user", verifyToken, async (req, res) => {
     const userId = req.userId;
     const token = req.token;
 
-    const user = await User.findOne({ _id: userId }).exec();
+    const user = await User.findOne({ _id: userId }).lean();
 
     if (user) {
-      res.json({ user: user, token: token });
+      res.json({ user: publicUser(user), token: token });
     } else {
       res.json({
         err: "Username หรือ Password ไม่ถูกต้องกรุณาลองใหม่อีกครั้ง",
@@ -151,7 +167,9 @@ const bcrypt = require("bcryptjs");
  */
 router.post("/signup", verifyToken, requireCap("manageAll"), async (req, res) => {
   try {
-    const { username, password, email, fname, lname, tel, role } = req.body;
+    const { username, password, email, fname, lname, tel } = req.body;
+    // ✅ รับทั้ง rank (ชื่อใหม่) และ role (ชื่อเดิมที่หน้าจอรุ่นเก่าส่งมา) — ทั้งสองหมายถึงตำแหน่งในองค์กร
+    const role = req.body.rank !== undefined ? req.body.rank : req.body.role;
     // ✅ ตำแหน่งเฉพาะบุคคล — หน้าจอใหม่ส่ง jobTitle, ของเก่าส่ง rank (รับทั้งคู่)
     const jobTitle = String(req.body?.jobTitle ?? req.body?.rank ?? "").trim().slice(0, 80);
 
@@ -176,7 +194,8 @@ router.post("/signup", verifyToken, requireCap("manageAll"), async (req, res) =>
       fname,
       lname,
       tel,
-      role: wantedRole,   // Rank — ตำแหน่งในองค์กร (คีย์เดิม)
+      rank: wantedRole,                          // Rank — ตำแหน่งในองค์กร
+      role: DEFAULT_SYSTEM_ROLE[wantedRole],     // Role — ตำแหน่งในระบบ (ค่าตั้งต้นตาม Rank — เขียนไว้ชัดๆ ไม่ปล่อยให้เดา)
       jobTitle,
     });
 
@@ -219,11 +238,11 @@ router.post("/login", async (req, res) => {
       lname: user.lname,
       tel: user.tel,
       username: user.username,
-      rank: user.rank,                       // ⚠️ ชื่อเก่าของตำแหน่งเฉพาะบุคคล (คงไว้ให้แอปรุ่นเก่าไม่พัง)
-      jobTitle: titleOf(user),               // ตำแหน่งที่ใช้พิมพ์จริง
-      role: user.role,                       // Rank — ตำแหน่งในองค์กร (คีย์เดิม)
+      jobTitle: titleOf(user),               // ตำแหน่งเฉพาะบุคคลที่ใช้พิมพ์ในเอกสาร
+      rank: normalizeRank(user),             // Rank — ตำแหน่งในองค์กร
+      role: normalizeRank(user),             // ⚠️ ชื่อเดิมของ Rank — หน้าจอรุ่นเก่าที่ยังเปิดค้างอยู่ใช้คีย์นี้
       // ✅ ชั้นในระบบ (ผู้ดูแลระบบ/สูงสุด) — แยกจากตำแหน่งในองค์กร หน้าจอใช้ตัดสินว่าจะโชว์เมนูตั้งค่าระบบไหม
-      systemRole: user.systemRole || "",
+      systemRole: systemRoleOf(user),        // Role — ตำแหน่งในระบบ (ส่งชื่อนี้เพื่อกันสับสนกับ role ที่เป็น Rank ใน payload)
       imageUrl: user.imageUrl, // ✅ เพิ่มตรงนี้
       sessionVersion: user.sessionVersion || 0,
     };
@@ -277,7 +296,11 @@ router.put(
       if (tel !== undefined) newUser.tel = tel;
       // ✅ ตำแหน่งเฉพาะบุคคล (jobTitle) แก้ไขได้จากหน้าบัญชีของตัวเอง — ใช้พิมพ์ใต้ชื่อในเอกสาร
       // ⚠️ คนละเรื่องกับ Rank (ตำแหน่งในองค์กร = role) และ Role (ในระบบ = systemRole) — ช่องนี้ไม่ให้สิทธิ์อะไรเลย
-      const jobTitleInput = req.body.jobTitle !== undefined ? req.body.jobTitle : req.body.rank;
+      // ⚠️ หน้าจอรุ่นเก่าส่งข้อความตำแหน่งมาในช่อง rank — แต่ตอนนี้ rank คือ "ตำแหน่งในองค์กร"
+      // จึงรับเป็น jobTitle เฉพาะตอนที่ค่าที่ส่งมา "ไม่ใช่คีย์ของตำแหน่ง" — ไม่งั้นการเปลี่ยน Rank
+      // จะกลายเป็นการเขียนทับตำแหน่งในเอกสารเป็นคำว่า "technician" โดยไม่ตั้งใจ
+      const legacyTitle = ALL_ROLES.includes(normalizeRole(req.body.rank)) ? undefined : req.body.rank;
+      const jobTitleInput = req.body.jobTitle !== undefined ? req.body.jobTitle : legacyTitle;
       if (jobTitleInput !== undefined) newUser.jobTitle = String(jobTitleInput || "").trim().slice(0, 80);
 
       const existingUser = await User.findById(userId);
@@ -292,9 +315,11 @@ router.put(
        * ✅ กติกาที่ถูกต้องคือห้าม "การเปลี่ยนสิทธิ์" ไม่ใช่ห้าม "การส่งฟิลด์ role มา" — ถ้าค่าที่ส่งมา
        * เท่ากับสิทธิ์ปัจจุบันก็ถือว่าไม่มีอะไรเปลี่ยน ปล่อยผ่านได้ (ยังกันการยกระดับสิทธิ์ครบเหมือนเดิม)
        */
-      if (role !== undefined) {
-        const wantedRole = normalizeRole(role);
-        const currentRole = normalizeRole(existingUser.role);
+      // ✅ ขอเปลี่ยน Rank — หน้าจอใหม่ส่ง rank, ของเก่าส่ง role
+      const rankInput = ALL_ROLES.includes(normalizeRole(req.body.rank)) ? req.body.rank : role;
+      if (rankInput !== undefined) {
+        const wantedRole = normalizeRole(rankInput);
+        const currentRole = normalizeRank(existingUser);   // Rank ปัจจุบันของคนที่ถูกแก้
         if (wantedRole !== currentRole) {
           if (!isAdmin) {
             return res.status(403).json({ message: "เปลี่ยนสิทธิ์ผู้ใช้ได้เฉพาะแอดมิน/ผู้จัดการเท่านั้น" });
@@ -333,12 +358,12 @@ router.put(
           // 🔒 กันระบบไม่มีแอดมินเหลือเลย — ถ้าถอดสิทธิ์แอดมินคนสุดท้าย จะไม่มีใครเข้าไปแก้อะไรได้อีก
           // (รวมถึงตั้งสิทธิ์คืน) ต้องกู้ด้วยการแก้ฐานข้อมูลตรงๆ เท่านั้น
           if (currentRole === ROLES.ADMIN) {
-            const admins = await User.countDocuments({ role: ROLES.ADMIN });
+            const admins = await User.countDocuments(rankFilter([ROLES.ADMIN]));
             if (admins <= 1) {
               return res.status(409).json({ message: "ถอดสิทธิ์แอดมินคนสุดท้ายไม่ได้ — ต้องมีแอดมินอย่างน้อย 1 คนในระบบ" });
             }
           }
-          newUser.role = wantedRole;
+          newUser.rank = wantedRole;   // Rank — ตำแหน่งในองค์กร
         }
       }
 
@@ -371,7 +396,7 @@ router.put(
 
           // 🔒 ต้องเหลือผู้ดูแลระบบสูงสุดอย่างน้อย 1 คน ไม่งั้นไม่มีใครเข้าหน้าตั้งค่าระบบได้อีกเลย
           if (currentSystemRole === SYSTEM_ROLES.SUPER && wanted !== SYSTEM_ROLES.SUPER) {
-            const all = await User.find({}).select("role systemRole").lean();
+            const all = await User.find({}).select("rank role systemRole").lean();
             const supers = all.filter((u) => systemRoleOf(u) === SYSTEM_ROLES.SUPER);
             if (supers.length <= 1) {
               return res.status(409).json({
@@ -410,7 +435,7 @@ router.put(
         return res.status(404).send("User not found");
       }
 
-      res.status(200).json({ user: updatedUser });
+      res.status(200).json({ user: publicUser(updatedUser) });
     } catch (err) {
       res.status(500).send(err.message);
     }
@@ -430,15 +455,15 @@ router.delete("/user/:id", verifyToken, requireCap("manageAll"), async (req, res
       return res.status(400).json({ message: "ลบบัญชีของตัวเองไม่ได้" });
     }
 
-    const target = await User.findById(userId).select("role").lean();
+    const target = await User.findById(userId).select("rank role systemRole").lean();
     if (!target) return res.status(404).json({ message: "ไม่พบผู้ใช้ที่ต้องการลบ" });
     // 🔒 กฎข้อ 2 (ลำดับชั้น): ลบบัญชีที่ระดับสูงกว่าตัวเองไม่ได้ — แอดมินลบผู้จัดการไม่ได้
     if (!canManageUserOfRole(req.user, target.role)) {
       return res.status(403).json({ message: `คุณไม่มีสิทธิ์ลบบัญชีของ${rankLabelOf(target.role)} — ต้องให้ผู้ที่มีสิทธิ์สูงกว่าเป็นคนลบ` });
     }
     // 🔒 ระบบต้องเหลือแอดมินอย่างน้อย 1 คนเสมอ (เหตุผลเดียวกับการถอดสิทธิ์)
-    if (normalizeRole(target.role) === ROLES.ADMIN) {
-      const admins = await User.countDocuments({ role: ROLES.ADMIN });
+    if (normalizeRank(target) === ROLES.ADMIN) {
+      const admins = await User.countDocuments(rankFilter([ROLES.ADMIN]));
       if (admins <= 1) {
         return res.status(409).json({ message: "ลบแอดมินคนสุดท้ายไม่ได้ — ต้องมีแอดมินอย่างน้อย 1 คนในระบบ" });
       }

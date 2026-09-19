@@ -91,7 +91,7 @@ async function checkAndNotifyOverdueJobs() {
 
     if (overdueJobs.length === 0) return;
 
-    const allUsers = await User.find({}).select("fname role").lean();
+    const allUsers = await User.find({}).select("fname rank role").lean();
     const userById = new Map(allUsers.map((u) => [u._id.toString(), u]));
     const userByFname = new Map(allUsers.map((u) => [u.fname, u]));
 
@@ -211,7 +211,7 @@ async function checkAndNotifyStaleQuotations() {
     }
 
     // ✅ แจ้งผู้รับผิดชอบของแต่ละงานเป็นรายคนด้วย (เทียบ pattern เดียวกับ checkAndNotifyOverdueJobs)
-    const allUsers = await User.find({}).select("fname role").lean();
+    const allUsers = await User.find({}).select("fname rank role").lean();
     const userById = new Map(allUsers.map((u) => [u._id.toString(), u]));
     const userByFname = new Map(allUsers.map((u) => [u.fname, u]));
 
@@ -302,7 +302,7 @@ async function checkAndNotifyOverdueContracts() {
     }
 
     // ✅ แจ้งผู้รับผิดชอบของแต่ละสัญญาเป็นรายคนด้วย (เทียบ pattern เดียวกับ checkAndNotifyOverdueJobs)
-    const allUsers = await User.find({}).select("fname role").lean();
+    const allUsers = await User.find({}).select("fname rank role").lean();
     const userById = new Map(allUsers.map((u) => [u._id.toString(), u]));
     const userByFname = new Map(allUsers.map((u) => [u.fname, u]));
 
@@ -390,7 +390,7 @@ async function checkAndNotifyExpiringContracts() {
     }
 
     // ── แจ้งผู้รับผิดชอบรายคน ────────────────────────────────────────────
-    const allUsers = await User.find({}).select("fname role").lean();
+    const allUsers = await User.find({}).select("fname rank role").lean();
     const userById = new Map(allUsers.map((u) => [u._id.toString(), u]));
     const userByFname = new Map(allUsers.map((u) => [u.fname, u]));
 

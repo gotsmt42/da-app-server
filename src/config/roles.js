@@ -117,6 +117,13 @@ const CAPABILITIES = {
   // (ใบเสนอราคาของงานที่ลงตารางแล้ว) ไม่ใช่ดีลที่เซลกำลังปิด เซลเปิดเข้าไปก็ไม่มีของตัวเอง
   viewQuotations: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
 
+  /**
+   * เปิดเมนู "เอกสาร" ได้ (ไฟล์แนบของงาน + ทะเบียนเอกสารที่ออก)
+   * 🐛 ที่แก้: เดิมหน้า DocumentsHub เช็คตรงๆว่า "เป็นเซลไหม" — ติ๊กในตารางสิทธิ์ก็ไม่มีผล
+   * ทำให้ผู้ดูแลระบบตั้งค่าอย่างไรก็ไม่เกิดอะไรขึ้น — ย้ายมาเป็นสิทธิ์จริงที่ปรับได้
+   */
+  viewDocuments: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.TECH_LEAD, ROLES.TECHNICIAN, ROLES.USER],
+
   /** แก้/ลบทะเบียนเอกสารที่ระบบออก (ใบส่งของ ฯลฯ) */
   editDocuments: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
@@ -284,8 +291,15 @@ const DEFAULT_SYSTEM_ROLE = {
  * @param {object|string} who  user object (ใช้ systemRole ถ้ามี) หรือสตริงตำแหน่งในองค์กร (ของเก่า)
  */
 const systemRoleOf = (who) => {
-  const explicit = typeof who === "object" && who ? String(who.systemRole || "").trim().toLowerCase() : "";
-  if (ALL_SYSTEM_ROLES.includes(explicit)) return explicit;
+  if (who && typeof who === "object") {
+    // ✅ รูปแบบใหม่: มี rank เป็นตำแหน่งในองค์กร แปลว่า role คือ "ตำแหน่งในระบบ"
+    const isNewShape = ALL_ROLES.includes(String(who.rank || "").trim().toLowerCase());
+    const role = String(who.role || "").trim().toLowerCase();
+    if (isNewShape && ALL_SYSTEM_ROLES.includes(role)) return role;
+    // รูปแบบเก่า: ตำแหน่งในระบบอยู่ที่ systemRole
+    const legacy = String(who.systemRole || "").trim().toLowerCase();
+    if (ALL_SYSTEM_ROLES.includes(legacy)) return legacy;
+  }
   return DEFAULT_SYSTEM_ROLE[normalizeRole(who)] || SYSTEM_ROLES.MEMBER;
 };
 
@@ -315,6 +329,7 @@ const EDITABLE_CAPABILITIES = [
   "editFinance",
   "viewContracts",
   "editContracts",
+  "viewDocuments",
   "editDocuments",
   "createSalesPlan",
   "manageMasterData",
@@ -410,9 +425,15 @@ const SUPERVISOR_ROLES = [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER];
  * (โค้ดเดิมทั่วแอปก็ทำ .toLowerCase() ทุกจุดด้วยเหตุผลเดียวกัน)
  */
 const normalizeRole = (who) => {
-  const raw = typeof who === "string" ? who : who?.role;
-  return String(raw || "").trim().toLowerCase();
+  if (typeof who === "string") return who.trim().toLowerCase();
+  // ✅ รูปแบบใหม่: user.rank = ตำแหน่งในองค์กร · รูปแบบเก่า (และสำเนาที่ฝังในเอกสารอื่น): user.role
+  const rank = String(who?.rank || "").trim().toLowerCase();
+  if (ALL_ROLES.includes(rank)) return rank;
+  return String(who?.role || "").trim().toLowerCase();
 };
+
+/** ชื่อเดียวกับ normalizeRole แต่เรียกตามคำที่ผู้ใช้กำหนด — โค้ดใหม่ควรใช้ตัวนี้ */
+const normalizeRank = (who) => normalizeRole(who);
 
 /**
  * ── ลำดับชั้นของสิทธิ์ (ใครแก้สิทธิ์ใครได้) ────────────────────────────────────
@@ -502,6 +523,21 @@ const requireCap = (capability) => (req, res, next) => {
  * แต่โค้ดที่เขียนใหม่ให้เรียกผ่านชื่อนี้ จะได้อ่านโค้ดแล้วตรงกับคำที่ผู้ใช้เห็นบนหน้าจอ
  */
 const RANKS = ROLES;
+
+/**
+ * เงื่อนไขค้นหาผู้ใช้ตาม Rank (ตำแหน่งในองค์กร) — ใช้กับ User.find/countDocuments เสมอ
+ *
+ * ⚠️ ห้ามเขียน { rank: { $in: [...] } } ตรงๆ: เอกสารที่ยังไม่ถูกย้าย (ของเก่า/กู้คืนจากสำรอง/
+ * สร้างจากโค้ดรุ่นเก่าระหว่าง deploy) เก็บตำแหน่งในองค์กรไว้ที่ role — ถ้าไม่เผื่อไว้ คนกลุ่มนั้นจะ
+ * "หายไปเงียบๆ" จากรายชื่อผู้รับแจ้งเตือน ซึ่งเป็นบั๊กที่ไม่มี error ให้เห็นเลย
+ * ⚠️ สาขาของเก่าจะใช้ก็ต่อเมื่อ rank ว่างจริงๆ — กันเคส role = "admin" (ตำแหน่งในระบบ) ถูกนับเป็นแอดมินช่าง
+ */
+const rankFilter = (ranks) => ({
+  $or: [
+    { rank: { $in: ranks } },
+    { rank: { $in: [null, ""] }, role: { $in: ranks } },
+  ],
+});
 const ALL_RANKS = ALL_ROLES;
 const rankOf = (who) => normalizeRole(who);
 
@@ -510,14 +546,23 @@ const rankOf = (who) => normalizeRole(who);
  * ลำดับ: ตำแหน่งเฉพาะบุคคล (jobTitle) > ค่าเก่าในฐานข้อมูล (rank) > ชื่อ Rank ของตำแหน่ง
  * ⚠️ อ่าน user.rank ต่อไปด้วย เพราะผู้ใช้ที่กรอกไว้ก่อนเปลี่ยนชื่อฟิลด์ ต้องไม่หายไปจากเอกสาร
  */
-const titleOf = (user) => String(user?.jobTitle || user?.rank || "").trim() || rankLabelOf(user?.role || user) || "";
+const titleOf = (user) => {
+  const own = String(user?.jobTitle || "").trim();
+  if (own) return own;
+  // ⚠️ ข้อมูลเก่า: user.rank เคยเป็น "ข้อความตำแหน่งที่พิมพ์เอง" ก่อนเปลี่ยนความหมายเป็นตำแหน่งในองค์กร
+  const legacy = String(user?.rank || "").trim();
+  if (legacy && !ALL_ROLES.includes(legacy.toLowerCase())) return legacy;
+  return rankLabelOf(user) || "";
+};
 
 module.exports = {
   ROLES,
   ALL_ROLES,
   RANKS,
   ALL_RANKS,
+  rankFilter,
   rankOf,
+  normalizeRank,
   titleOf,
   RANK_LABEL,
   DEPARTMENT,

@@ -19,7 +19,7 @@ const Signature = require("../models/Signature");
 const SignatureImage = require("../models/SignatureImage");
 const User = require("../models/User");
 const verifyToken = require("../middleware/auth");
-const { can } = require("../config/roles");
+const { can, normalizeRank } = require("../config/roles");
 
 const router = express.Router();
 
@@ -148,7 +148,7 @@ router.get("/status", verifyToken, async (req, res) => {
     }
     const [rows, users] = await Promise.all([
       Signature.find({}).select("userId updatedAt method").lean(),
-      User.find({}).select("_id fname lname role").lean(),
+      User.find({}).select("_id fname lname rank role").lean(),
     ]);
     const byUser = new Map(rows.map((r) => [String(r.userId), r]));
     res.json({
@@ -157,7 +157,7 @@ router.get("/status", verifyToken, async (req, res) => {
         return {
           userId: String(u._id),
           name: [u.fname, u.lname].filter(Boolean).join(" ") || "",
-          role: u.role || "",
+          role: normalizeRank(u),
           hasSignature: Boolean(sig),
           updatedAt: sig?.updatedAt || null,
         };

@@ -22,7 +22,7 @@ const SystemType = require("../models/SystemType");
 const Customer = require("../models/Customer");
 const DocCounter = require("../models/DocCounter");
 const verifyToken = require("../middleware/auth");
-const { can, SUPERVISOR_ROLES, DEPARTMENT, TECHNICIAN_ROLES } = require("../config/roles");
+const { can, SUPERVISOR_ROLES, DEPARTMENT, TECHNICIAN_ROLES, normalizeRank, rankFilter } = require("../config/roles");
 const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers, sendPushToRoles } = require("../services/PushNotify");
@@ -34,7 +34,7 @@ const actor = (req) => ({
   userId: String(req.user?._id || req.userId || ""),
   name:
     [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ไม่ทราบชื่อ",
-  role: String(req.user?.role || ""),
+  role: normalizeRank(req.user),   // สำเนา Rank ของคนที่ทำ (เก็บชื่อฟิลด์เดิมไว้ เอกสารเก่าอ่านได้)
 });
 
 /**
@@ -273,8 +273,8 @@ router.get("/assignable", verifyToken, async (req, res) => {
       return res.status(403).json({ message: "เฉพาะแอดมิน/ผู้จัดการเท่านั้นที่มอบหมายงานได้" });
     }
     // ⚠️ ตอนนี้มีแค่แผนกบริการ (ช่าง) — เพิ่มแผนกใหม่ให้เพิ่ม role ที่ receiveDispatch ใน config/roles.js
-    const users = await User.find({ role: { $in: TECHNICIAN_ROLES } })
-      .select("fname lname username role imageUrl").lean();
+    const users = await User.find(rankFilter(TECHNICIAN_ROLES))
+      .select("fname lname username rank role imageUrl").lean();
     res.json({ users });
   } catch (err) {
     console.error("❌ ดึงรายชื่อผู้รับงานไม่สำเร็จ:", err);
@@ -444,7 +444,7 @@ router.post("/:id/assign", verifyToken, async (req, res) => {
     const userIds = [...new Set((parseJsonArray(req.body.userIds) || req.body.userIds || []).map(String))];
     if (!userIds.length) return res.status(400).json({ message: "กรุณาเลือกผู้รับงานอย่างน้อย 1 คน" });
 
-    const users = await User.find({ _id: { $in: userIds } }).select("fname lname username role").lean();
+    const users = await User.find({ _id: { $in: userIds } }).select("fname lname username rank role").lean();
     if (users.length !== userIds.length) return res.status(400).json({ message: "มีผู้รับงานบางคนไม่อยู่ในระบบแล้ว" });
     const notReceivers = users.filter((u) => !can(u, "receiveDispatch"));
     if (notReceivers.length) {
@@ -463,7 +463,7 @@ router.post("/:id/assign", verifyToken, async (req, res) => {
       return {
         userId: String(u._id),
         name: personName(u),
-        role: u.role,
+        role: normalizeRank(u),   // Rank ของช่าง (ชื่อคีย์เดิมในเอกสาร)
         assignedAt: new Date(),
         assignedByUserId: me.userId,
         assignedByName: me.name,
@@ -666,7 +666,7 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
     // ผู้รับผิดชอบ (ไม่บังคับ — บางทีนัดวันได้ก่อนแล้วค่อยเลือกคน)
     let responsible = null;
     if (responsiblePersonId) {
-      responsible = await User.findById(responsiblePersonId).select("fname lname username role").lean();
+      responsible = await User.findById(responsiblePersonId).select("fname lname username rank role").lean();
       if (!responsible) return res.status(400).json({ message: "ไม่พบผู้รับผิดชอบที่เลือก" });
       if (!can(responsible, "receiveDispatch")) {
         return res.status(400).json({ message: "ผู้รับผิดชอบต้องเป็นผู้รับงานของแผนกช่าง" });
