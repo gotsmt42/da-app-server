@@ -77,6 +77,26 @@ const orgSettingSchema = new mongoose.Schema(
      */
     rankLabels: { type: mongoose.Schema.Types.Mixed, default: {} },
     updatedBy: { userId: { type: String, default: "" }, name: { type: String, default: "" } },
+    /**
+     * ประวัติการแก้ไข — ล่าสุดอยู่หน้าสุด
+     *
+     * 🐛 ที่ต้องมี: เดิมเก็บแค่ "ใครแก้ล่าสุด" ย้อนดูไม่ได้เลยว่าใครเปลี่ยนอะไรเมื่อไหร่
+     *    พอชื่อบริษัทภาษาไทยเสียเป็นเครื่องหมายคำถาม จึงสืบไม่ได้ว่าเกิดตอนไหนและใครทำ
+     * ⚠️ จำกัด HISTORY_MAX รายการ — เอกสารนี้ถูกอ่านทุกครั้งที่เปิดแอป ปล่อยให้โตไม่มีเพดาน
+     *    จะกลายเป็นเอกสารหนักที่ทุกคนต้องโหลด
+     * ⚠️ ไม่เก็บค่าของช่องรูป (โลโก้/ตราประทับ) เป็นข้อความยาวๆ — เก็บแค่ว่าเปลี่ยน
+     */
+    history: {
+      type: [{
+        at: { type: Date, default: Date.now },
+        by: { type: String, default: "" },
+        // ⚠️ _id:false ทั้งสองชั้น — ไม่งั้น mongoose แถม _id ให้ทุกบรรทัดการเปลี่ยนแปลง
+        //    แล้วมันติดไปในข้อมูลที่ส่งให้หน้าจอโดยไม่มีใครใช้
+        changes: [{ field: String, from: String, to: String, _id: false }],
+        _id: false,
+      }],
+      default: [],
+    },
   },
   { timestamps: true, collection: "orgsettings" }
 );
@@ -105,5 +125,14 @@ orgSettingSchema.statics.clearCache = function clearCache() {
 };
 
 orgSettingSchema.statics.DEFAULTS = DEFAULTS;
+
+/** จำนวนรายการประวัติที่เก็บไว้ — พอให้สืบย้อนได้ โดยไม่ทำให้เอกสารบวม */
+orgSettingSchema.statics.HISTORY_MAX = 50;
+
+/** ค่ายาวๆ ตัดให้สั้นก่อนเก็บลงประวัติ (โดยเฉพาะ URL รูปจาก Cloudinary ที่ยาวมาก) */
+orgSettingSchema.statics.forHistory = function forHistory(v) {
+  const s = String(v ?? "");
+  return s.length > 120 ? `${s.slice(0, 117)}...` : s;
+};
 
 module.exports = mongoose.model("OrgSetting", orgSettingSchema);

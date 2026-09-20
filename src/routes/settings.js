@@ -95,6 +95,15 @@ const publicShape = (s) => ({
 });
 
 /**
+ * ประวัติการแก้ไข — แยกจาก publicShape โดยตั้งใจ
+ * 🔒 publicShape เปิดให้อ่านได้โดยไม่ต้องล็อกอิน (หน้าเข้าสู่ระบบต้องวาดโลโก้ก่อนมี token)
+ *    ประวัติมีชื่อคนแก้อยู่ด้วย จึงห้ามอยู่ในก้อนนั้น — ต้องขอผ่านเส้นทางที่ตรวจสิทธิ์แยก
+ */
+const historyShape = (s) => (s.history || []).map((h) => ({
+  at: h.at, by: h.by || "", changes: h.changes || [],
+}));
+
+/**
  * ค่าปัจจุบัน — หน้าจอเรียกตอนเปิดแอปเพื่อวาดโลโก้/ชื่อบริษัท
  * 🔒 เปิดให้อ่านได้โดยไม่ต้องล็อกอิน "โดยตั้งใจ" — หน้าเข้าสู่ระบบต้องวาดโลโก้บริษัทก่อนมี token
  * ⚠️ จึงห้ามใส่อะไรที่เป็นความลับลงใน publicShape() เด็ดขาด — ข้อมูลชุดนี้คือสิ่งที่พิมพ์อยู่บนหัวกระดาษ
@@ -107,6 +116,19 @@ router.get("/", async (req, res) => {
   } catch (err) {
     console.error("❌ ดึงตั้งค่าองค์กรไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงการตั้งค่าไม่สำเร็จ" });
+  }
+});
+
+/**
+ * ประวัติการแก้ค่าตั้งค่า
+ * 🔒 เฉพาะ manageSystem (ผู้ดูแลระบบสูงสุด) — มีชื่อคนแก้อยู่ในนั้น
+ */
+router.get("/history", verifyToken, requireCap("manageSystem"), async (req, res) => {
+  try {
+    res.json({ history: historyShape(await OrgSetting.current({ fresh: true })) });
+  } catch (err) {
+    console.error("❌ ดึงประวัติตั้งค่าไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ดึงประวัติไม่สำเร็จ" });
   }
 });
 
@@ -167,7 +189,41 @@ router.put("/", verifyToken, requireCap("manageSystem"), async (req, res) => {
     }
 
     update.updatedBy = { userId: String(req.userId || ""), name: req.user?.fname || "" };
-    const saved = await OrgSetting.findOneAndUpdate({ key: "org" }, { $set: update }, { new: true, upsert: true, setDefaultsOnInsert: true }).lean();
+
+    /**
+     * บันทึก "ส่วนต่าง" ลงประวัติ — เก็บเฉพาะช่องที่ค่าเปลี่ยนจริง
+     * ⚠️ ต้องอ่านค่าก่อนหน้าแบบสดเสมอ (fresh) ไม่งั้นได้ค่าจากแคชที่อาจเก่ากว่าความจริง
+     *    แล้วประวัติจะบันทึก "ค่าเดิม" ผิด
+     * ⚠️ ไม่บันทึกอะไรเลยถ้าไม่มีช่องไหนเปลี่ยน — กดบันทึกซ้ำๆ ไม่ควรสร้างรายการเปล่า
+     */
+    const before = await OrgSetting.current({ fresh: true });
+    const changes = Object.entries(update)
+      .filter(([field]) => field !== "updatedBy")
+      .map(([field, to]) => ({
+        field,
+        from: OrgSetting.forHistory(before?.[field]),
+        to: OrgSetting.forHistory(to),
+      }))
+      .filter((c) => c.from !== c.to);
+
+    const saved = await OrgSetting.findOneAndUpdate(
+      { key: "org" },
+      {
+        $set: update,
+        ...(changes.length
+          ? {
+            $push: {
+              history: {
+                $each: [{ at: new Date(), by: req.user?.fname || "", changes }],
+                $position: 0,
+                $slice: OrgSetting.HISTORY_MAX,
+              },
+            },
+          }
+          : {}),
+      },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    ).lean();
     OrgSetting.clearCache();
     res.json({ settings: publicShape(saved) });
   } catch (err) {
