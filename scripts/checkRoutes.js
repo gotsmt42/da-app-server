@@ -27,7 +27,7 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 133;   // +1 = GET /api/settings/history (ประวัติการแก้ค่าตั้งค่า)
+const EXPECTED_TOTAL = 134;   // +1 = GET /api/search (ค้นหารวม)
 const EXPECTED_PER_PREFIX = {
   // ✅ +1 = PUT /reorder (จัดลำดับการ์ดงานในวันเดียวกันบนปฏิทิน)
   "/api/events": 32,
