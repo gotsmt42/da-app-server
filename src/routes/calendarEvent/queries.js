@@ -81,8 +81,21 @@ module.exports = (router) => {
         + "jobGroupId closeRequested approvalStatus responsiblePerson userId";
       const slim = req.query.slim === "1" || req.query.slim === "true";
 
+      /**
+      * ✅ ค่าเริ่มต้น "ไม่ส่งประวัติกิจกรรม" — วัดจากข้อมูลจริงแล้ว activityLog กินพื้นที่ 58.5% ของ
+      *    ทั้ง response คนเดียว (1,708 จาก 2,850 bytes ต่อแถว) ทั้งที่มีแค่ 4 หน้าที่อ่านมันจริง
+      *    ตัวที่เจ็บที่สุดคือป้ายตัวเลขบนเมนู (useAppBadges) ซึ่ง poll ทุก 30 วินาทีตลอดเวลาที่เปิดแอป
+      *    ที่ 1000 งาน = ดาวน์โหลด 3.6 MB ทุกครึ่งนาทีต่อผู้ใช้หนึ่งคน เพื่อนับเลขไม่กี่ตัว
+      * ⚠️ ทำเป็น "ไม่ส่งโดยปริยาย + ขอเพิ่มเมื่อต้องใช้" ไม่ใช่ "ส่งโดยปริยาย + สั่งตัดเมื่อไม่ใช้"
+      *    หน้าใหม่ที่เขียนทีหลังจะได้ค่าที่เบาอัตโนมัติ โดยไม่ต้องรู้เรื่องนี้มาก่อน
+      * ⚠️ หน้าที่ต้องส่ง detail=1 (ไล่ทั้ง src แล้ว): การดำเนินงาน · งานของฉัน · ติดตามใบเสนอราคา ·
+      *    ภาพรวมสัญญา — สามหน้าแรกทำ read-modify-write กับ activityLog ด้วย (อ่านมาทั้งก้อน
+      *    ต่อท้ายรายการใหม่ แล้วเขียนกลับ) ถ้าหน้าไหนได้ก้อนเปล่าไปแล้วบันทึก ประวัติจะถูกลบทิ้งทั้งชุด
+      */
+      const detail = req.query.detail === "1" || req.query.detail === "true";
+
       const userEvents = await CalendarEvent.find(withDepartmentScope(query, req))
-        .select(slim ? SLIM_FIELDS : undefined)
+        .select(slim ? SLIM_FIELDS : (detail ? undefined : "-activityLog"))
         .sort({ start: -1 })
         .lean();
 
@@ -92,7 +105,18 @@ module.exports = (router) => {
       const userIds = userEvents.map((event) => event.userId.toString());
       const uniqueUserIds = [...new Set(userIds)];
 
-      const users = await User.find({ _id: { $in: uniqueUserIds } }).lean();
+      /**
+      * ✅ เอาเฉพาะ "ชื่อคนสร้างงาน" พอ — ไม่ใช่ทั้งโปรไฟล์
+      * ⚠️ เดิมแนบ user ทั้งก้อน (ตัดแค่ password) = 380 bytes ต่อแถว หรือ 12.3% ของทั้ง response
+      *    โดย imageUrl (URL รูปโปรไฟล์) กินไป 91 bytes ทั้งที่ไม่มีหน้าไหนเอาไปแสดงเลย
+      *    และยังมี email/tel/jobTitle ติดไปทุกแถวด้วย ซึ่งเป็นข้อมูลติดต่อของพนักงาน
+      *    ไม่ควรกระจายไปกับรายการงานโดยไม่มีใครขอ
+      * ⚠️ ไล่ทั้ง src ฝั่งหน้าเว็บแล้ว มีที่เดียวที่อ่าน event.user คือ useEventNotifications
+      *    ซึ่งใช้ fname/lname/username ทำเป็นชื่อผู้ส่ง — role/rank ใส่เพิ่มไว้เผื่อ (รวมแค่ 21 bytes)
+      */
+      const users = await User.find({ _id: { $in: uniqueUserIds } })
+        .select("fname lname username role rank")
+        .lean();
 
       const userMap = new Map();
       users.forEach((user) => {

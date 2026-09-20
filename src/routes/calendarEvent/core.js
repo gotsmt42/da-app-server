@@ -23,6 +23,46 @@ const {
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
 
+/** ลายเซ็นของรายการกิจกรรมหนึ่งบรรทัด — ใช้เทียบว่าเป็นรายการเดียวกันไหม (_id ใช้ไม่ได้ ดูด้านล่าง) */
+const logSignature = (log) =>
+  [new Date(log?.timestamp || 0).getTime(), log?.action || "", log?.userId || "", log?.detail || ""].join("|");
+
+/**
+ * ✅ ประวัติกิจกรรมเป็น "ต่อท้ายอย่างเดียว" — ไม่มีฟีเจอร์ไหนในแอปลบประวัติได้ ประวัติที่สั้นลง
+ *    จึงแปลว่าฝั่งที่ส่งมาถือข้อมูลไม่ครบ ไม่ใช่ว่าผู้ใช้ตั้งใจลบ
+ *
+ * 🐛 กันสองเคสที่ทำประวัติหายทั้งชุดแบบเงียบๆ:
+ *    1. แข่งกันเขียน — หน้าเว็บอ่านประวัติมาทั้งก้อน ต่อท้ายรายการใหม่ แล้วเขียนกลับทั้งก้อน
+ *       ถ้าสองคนเปิดงานเดียวกันแล้วกดพร้อมกัน คนที่เขียนทีหลังจะทับรายการของคนแรกหายไป
+ *    2. เวอร์ชันไม่ตรงกัน — ตั้งแต่ /event-op ไม่ส่ง activityLog มาโดยปริยาย (ดู queries.js)
+ *       ถ้า server เวอร์ชันใหม่ขึ้นก่อนหน้าเว็บ หน้าเว็บเก่าจะได้ก้อนว่างมาแล้วเขียนทับประวัติทั้งหมด
+ *
+ * ⚠️ ตัดรายการซ้ำด้วย timestamp+action+ผู้ทำ+รายละเอียด ไม่ใช่ _id — subdocument ที่ยังไม่เคยบันทึก
+ *    ลงฐานข้อมูลจะได้ _id ใหม่ทุกครั้ง เทียบด้วย _id จึงไม่มีอะไรถูกตัดเลยสักรายการ
+ *    (เหตุผลเดียวกับ contractEditHistory ฝั่งหน้าเว็บ)
+ *
+ * @returns {Array|undefined} undefined = ไม่ได้ส่งมา ปล่อยของเดิมในฐานข้อมูลไว้ไม่ต้องแตะ
+ */
+const appendOnlyActivityLog = (incoming, existing = []) => {
+  if (!Array.isArray(incoming)) return undefined;
+  // ⚠️ existing มาจาก mongoose document — แปลงเป็น object ธรรมดาก่อน ไม่งั้นได้ subdocument ปนกับ
+  //    object ธรรมดาในอาร์เรย์เดียวกัน ซึ่งแปลกและ cast พลาดได้
+  const plain = (log) => (typeof log?.toObject === "function" ? log.toObject() : log);
+  // ⚠️ ต้องรวมทั้งสองฝั่งเสมอ ไม่ใช่เช็คแค่ "ส่งมาสั้นกว่าไหม" — เคสแข่งกันเขียนที่เจ็บที่สุดคือ
+  //    ยาวเท่ากันแต่คนละรายการ (ต่างคนต่างต่อท้ายจากก้อนเดียวกันคนละรายการ) ซึ่งเช็คความยาวไม่เจอ
+  const merged = [];
+  const seen = new Set();
+  for (const log of [...existing.map(plain), ...incoming]) {
+    const sig = logSignature(log);
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    merged.push(log);
+  }
+  // เรียงตามเวลาเสมอ — ลำดับต้องไม่ขึ้นกับว่าใครเขียนทีหลัง (Array.sort ของ V8 เสถียร
+  // รายการที่เวลาเท่ากันจึงคงลำดับเดิมไว้)
+  return merged.sort((a, b) => new Date(a?.timestamp || 0) - new Date(b?.timestamp || 0));
+};
+
 module.exports = (router) => {
   router.post("/", verifyToken, async (req, res) => {
     try {
@@ -669,7 +709,8 @@ module.exports = (router) => {
         checkedInAt,
         checkedOutAt,
         workNote,
-        activityLog,
+        // ⚠️ ห้ามใส่ activityLog ตรงๆ — ประวัติต่อท้ายอย่างเดียว (ดู appendOnlyActivityLog ด้านบนไฟล์)
+        activityLog: appendOnlyActivityLog(activityLog, existingEvent.activityLog),
         closeRequested,
         closeRequestedAt,
         closeRequestedBy,
