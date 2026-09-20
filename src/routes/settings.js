@@ -41,6 +41,24 @@ const TEXT_FIELDS = {
   tel: 60,
   email: 120,
   website: 160,
+  // ช่องทางติดต่อที่ไปโผล่เป็นเมนู "ติดต่อ" บนหัวเว็บ (เบอร์/อีเมล/เว็บไซต์ใช้ของด้านบนร่วมกัน)
+  contactLine: 300,
+  contactFacebook: 300,
+};
+
+/**
+ * ช่องที่ต้องเป็นลิงก์เว็บเท่านั้น
+ * 🔒 ห้ามรับสคีมอื่นเด็ดขาด — ค่าเหล่านี้ไปเป็น href บนหัวเว็บที่ผู้ใช้ทุกคนเห็น
+ *    ถ้าปล่อยให้ใส่ javascript: หรือ data: ได้ = ช่องทางฝังสคริปต์ให้คนทั้งองค์กรกด
+ */
+const URL_FIELDS = ["website", "contactLine", "contactFacebook"];
+const isSafeUrl = (v) => {
+  if (!v) return true;              // ว่างได้ = ไม่แสดงช่องทางนั้น
+  try {
+    return ["http:", "https:"].includes(new URL(v).protocol);
+  } catch {
+    return false;
+  }
 };
 
 /** รูปของแต่ละช่อง — คีย์ที่หน้าจอส่งมา → ฟิลด์ในฐานข้อมูล */
@@ -67,6 +85,7 @@ const BUILTIN_IMAGES = {
 const publicShape = (s) => ({
   nameTh: s.nameTh, nameEn: s.nameEn, address: s.address, taxId: s.taxId,
   tel: s.tel || "", email: s.email || "", website: s.website || "",
+  contactLine: s.contactLine || "", contactFacebook: s.contactFacebook || "",
   logoUrl: s.logoUrl || "", letterheadUrl: s.letterheadUrl || "", stampUrl: s.stampUrl || "",
   advanceClearDays: s.advanceClearDays || OrgSetting.DEFAULTS.advanceClearDays,
   // ✅ ชื่อ Rank (ตำแหน่งในองค์กร) ที่ตั้งเอง — หน้าจอทุกหน้าใช้แสดง (ไม่ใช่ความลับ)
@@ -117,6 +136,11 @@ router.put("/", verifyToken, requireCap("manageSystem"), async (req, res) => {
       update[field] = hit.url;
       return undefined;
     });
+    const badUrl = URL_FIELDS.find((f) => update[f] !== undefined && !isSafeUrl(update[f]));
+    if (badUrl) {
+      return res.status(400).json({ message: "ลิงก์ต้องขึ้นต้นด้วย http:// หรือ https:// เท่านั้น" });
+    }
+
     if (!Object.keys(update).length) return res.status(400).json({ message: "ไม่มีข้อมูลที่จะบันทึก" });
 
     // ⚠️ ชื่อบริษัทภาษาไทยว่าง = หัวกระดาษเอกสารทุกใบไม่มีชื่อบริษัท — กันไว้ตั้งแต่ต้นทาง
