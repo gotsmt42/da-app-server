@@ -148,6 +148,24 @@ router.put("/", verifyToken, requireCap("manageSystem"), async (req, res) => {
       return res.status(400).json({ message: "กรุณาระบุชื่อบริษัท (ภาษาไทย) — ใช้พิมพ์บนหัวกระดาษทุกใบ" });
     }
 
+    /**
+     * 🐛 เคยเกิดจริง: ชื่อบริษัทภาษาไทยถูกบันทึกทับเป็นเครื่องหมายคำถามล้วน
+     *    ("?????? ?? ??? ...") จากการผ่านตัวแปลงอักขระที่ไม่รองรับภาษาไทยที่ไหนสักแห่ง
+     *    แล้วไม่มีใครรู้ เพราะค่านี้ไปโผล่แค่บนหัวกระดาษ PDF ที่ส่งให้ลูกค้า
+     * ✅ ค่าที่มีแต่เครื่องหมายคำถาม/ช่องว่าง เป็นไปไม่ได้ที่จะตั้งใจพิมพ์ — ปฏิเสธไปเลย
+     *    และบอกให้ชัดว่าเกิดอะไรขึ้น จะได้แก้ตั้งแต่ตอนนั้นแทนที่จะพิมพ์ผิดไปเป็นเดือน
+     * ⚠️ ตรวจจาก "ลายเซ็นของความเสียหาย" (คำถามล้วน) ไม่ใช่ตรวจว่ามีอักษรไทยไหม —
+     *    บางองค์กรตั้งชื่อช่องนี้เป็นอักษรโรมันโดยตั้งใจ ห้ามไปบังคับเขา
+     */
+    const looksCorrupted = (v) => Boolean(v) && /^[?\s]+$/.test(v);
+    const corrupted = ["nameTh", "nameEn", "address"].find((f) => looksCorrupted(update[f]));
+    if (corrupted) {
+      return res.status(400).json({
+        message: "ข้อความที่ส่งมาเป็นเครื่องหมายคำถามล้วน — แปลว่าตัวอักษรไทยเพี้ยนระหว่างทาง "
+          + "กรุณาพิมพ์ใหม่อีกครั้ง (ค่านี้ถูกพิมพ์บนหัวกระดาษเอกสารทุกใบ)",
+      });
+    }
+
     update.updatedBy = { userId: String(req.userId || ""), name: req.user?.fname || "" };
     const saved = await OrgSetting.findOneAndUpdate({ key: "org" }, { $set: update }, { new: true, upsert: true, setDefaultsOnInsert: true }).lean();
     OrgSetting.clearCache();
