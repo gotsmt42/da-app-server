@@ -413,6 +413,11 @@ eventSchema.pre("save", function (next) {
 // ✅ เช็คช่างชนกัน (double-booking) ต้อง query ตาม resPerson + ช่วงวันที่ทุกครั้งที่สร้าง/แก้ไขงาน
 // เดิมไม่มี index รองรับเลย (มีแค่ jobGroupId/unscheduled แยกฟิลด์เดี่ยวๆ) query จะช้าเมื่อข้อมูลเยอะขึ้น
 eventSchema.index({ resPerson: 1, start: 1, end: 1 });
+// ✅ หน้าการดำเนินงาน/รายงาน กรองด้วย department แล้วเรียงตาม start เสมอ (ดู routes/calendarEvent)
+// ⚠️ ไม่มี index ตัวนี้ MongoDB ต้องดึงทั้งชุดมาเรียงในหน่วยความจำ ซึ่งมีเพดาน 32MB —
+//    พองานแตะหลักพันขึ้นไปจะเริ่มช้า และสุดท้ายจะ error ทั้ง endpoint โดยไม่มีอะไรเตือนล่วงหน้า
+// ⚠️ ลำดับฟิลด์สำคัญ: ตัวกรอง (department) ต้องมาก่อนตัวเรียง (start) ไม่งั้น index ใช้ช่วยเรียงไม่ได้
+eventSchema.index({ department: 1, start: -1 });
 
 // ✅ ตัวเตือน "ใบที่เลยกำหนดชำระ" รันทุกวันและ query ด้วย billing.dueAt เสมอ — sparse เพราะงาน
 // ส่วนใหญ่ยังไม่ได้วางบิล (dueAt เป็น null) ไม่ต้องกินพื้นที่ index ไปกับ null เป็นแสนแถว

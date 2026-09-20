@@ -67,9 +67,27 @@ module.exports = (router) => {
             ] };
 
       // ✅ กรองตามแผนกก่อนเสมอ — เซลเห็นเฉพาะแผนงานฝ่ายขาย ช่างเห็นเฉพาะงานบริการ
+      /**
+      * โหมด "เอาเฉพาะที่ใช้สรุป" — สำหรับหน้ารายงานที่ไม่ได้แสดงไฟล์แนบ/คอมเมนต์/ประวัติกิจกรรม
+      *
+      * ⚠️ เอกสารงานหนึ่งใบหนักราว 3.7 KB โดย activityLog กินไปเกือบครึ่ง (วัดจากข้อมูลจริง)
+      *    ที่ 1000 งานจึงเป็นราว 3.6 MB ต่อการเปิดหน้าหนึ่งครั้ง — หน้ารายงานใช้แค่ 15 ฟิลด์
+      *    โหมดนี้จึงลดขนาดลงราว 10 เท่า
+      * ⚠️ ฟิลด์ในลิสต์นี้ตัดทิ้งไม่ได้ตามใจ — getOverdueGroupKey ใช้ company/site/title/system/
+      *    team/time/jobGroupId ส่วน buildDaysPastDueMap ใช้ start/end/allDay/status/
+      *    closeRequested/approvalStatus ถ้าขาดตัวใดตัวหนึ่ง ตัวเลข "ค้างงาน" จะเพี้ยนเงียบๆ
+      */
+      const SLIM_FIELDS = "status start end allDay date system company site title team time "
+        + "jobGroupId closeRequested approvalStatus responsiblePerson userId";
+      const slim = req.query.slim === "1" || req.query.slim === "true";
+
       const userEvents = await CalendarEvent.find(withDepartmentScope(query, req))
+        .select(slim ? SLIM_FIELDS : undefined)
         .sort({ start: -1 })
         .lean();
+
+      // โหมด slim ไม่ต้องแนบข้อมูลผู้ใช้เต็มก้อน (ราว 380 bytes ต่อแถว) — รายงานไม่ได้ใช้
+      if (slim) return res.json({ userEvents });
 
       const userIds = userEvents.map((event) => event.userId.toString());
       const uniqueUserIds = [...new Set(userIds)];
