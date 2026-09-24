@@ -453,39 +453,45 @@
       "featured": false
     },
     {
-      "name": "Hikvision",
-      "category": "CCTV",
+      "name": "GST",
+      "category": "Fire Alarm",
       "order": 5,
       "featured": false
     },
     {
-      "name": "Dahua",
+      "name": "Hikvision",
       "category": "CCTV",
       "order": 6,
       "featured": false
     },
     {
-      "name": "Axis",
+      "name": "Dahua",
       "category": "CCTV",
       "order": 7,
       "featured": false
     },
     {
+      "name": "Axis",
+      "category": "CCTV",
+      "order": 8,
+      "featured": false
+    },
+    {
       "name": "Bosch",
       "category": "Security",
-      "order": 8,
+      "order": 9,
       "featured": false
     },
     {
       "name": "Cisco",
       "category": "Network",
-      "order": 9,
+      "order": 10,
       "featured": false
     },
     {
       "name": "Ubiquiti",
       "category": "Network",
-      "order": 10,
+      "order": 11,
       "featured": false
     }
   ],

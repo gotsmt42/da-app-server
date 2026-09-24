@@ -164,7 +164,10 @@ router.get("/content", async (req, res) => {
         relatedService: a.relatedService, keywords: a.keywords, cover: img(a.cover), body: a.body,
         publishedAt: a.publishedAt || a.createdAt, updatedAt: a.updatedAt,
       })),
-      brands: brands.map((b) => ({ name: b.name, category: b.category, featured: b.featured })),
+      brands: brands.map((b) => ({
+        name: b.name, category: b.category, featured: b.featured,
+        logo: b.logo?.url ? { url: b.logo.url, width: b.logo.width, height: b.logo.height } : undefined,
+      })),
       settings: {
         stats: settings.stats, showStats: settings.showStats, showProjects: settings.showProjects,
         showBrands: settings.showBrands, showArticles: settings.showArticles,
