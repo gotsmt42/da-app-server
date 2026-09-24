@@ -11,7 +11,7 @@ const { imageSchema, editorSchema, STATUS } = require("./webShared");
  */
 const webBrandSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, unique: true, trim: true, maxlength: 80 },
+    name: { type: String, required: true, trim: true, maxlength: 80 },
     /** หมวด เช่น "Fire Alarm" "CCTV" — แสดงใต้ชื่อยี่ห้อ */
     category: { type: String, required: true, trim: true, maxlength: 60 },
     logo: { type: imageSchema, default: undefined },
@@ -24,4 +24,16 @@ const webBrandSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-module.exports = mongoose.model("WebBrand", webBrandSchema);
+/**
+ * ✅ ไม่ซ้ำ = ชื่อ + หมวด — ยี่ห้อเดียวอยู่ได้หลายหมวด (Hikvision มีทั้ง CCTV และ Access Control)
+ * ⚠️ เดิมบังคับชื่อไม่ซ้ำอย่างเดียว (ดัชนี name_1) — syncIndexes ด้านล่างลบดัชนีเก่าให้เองตอนเปิด server
+ *    ไม่ลบ = เพิ่ม Hikvision หมวดที่สองไม่ได้ ขึ้น "ชื่อนี้มีอยู่แล้ว"
+ */
+webBrandSchema.index({ name: 1, category: 1 }, { unique: true });
+
+const WebBrand = mongoose.model("WebBrand", webBrandSchema);
+const syncIndexes = () => WebBrand.syncIndexes().catch((err) => console.warn("⚠️  WebBrand syncIndexes:", err.message));
+if (mongoose.connection.readyState === 1) syncIndexes();
+else mongoose.connection.once("open", syncIndexes);
+
+module.exports = WebBrand;

@@ -72,7 +72,11 @@ const editorOf = (req) => ({ userId: String(req.userId || ""), name: [req.user?.
 /** แปลง error ของ mongoose เป็นข้อความภาษาไทยที่ผู้ใช้อ่านรู้เรื่อง */
 function sendDbError(res, err, label) {
   if (err?.code === 11000) {
-    const field = Object.keys(err.keyPattern || {})[0] || "";
+    const keys = Object.keys(err.keyPattern || {});
+    if (keys.includes("name") && keys.includes("category")) {
+      return res.status(409).json({ message: "ยี่ห้อนี้มีอยู่แล้วในหมวดเดียวกัน" });
+    }
+    const field = keys[0] || "";
     const what = field === "slug" ? "ลิงก์ (slug)" : field === "name" ? "ชื่อ" : field;
     return res.status(409).json({ message: `${what}นี้มีอยู่แล้วใน${label}อื่น กรุณาใช้ค่าอื่น` });
   }

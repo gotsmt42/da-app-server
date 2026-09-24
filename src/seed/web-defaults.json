@@ -435,21 +435,39 @@
       "featured": false
     },
     {
+      "name": "ZKTeco",
+      "category": "Access Control",
+      "order": 7,
+      "featured": false
+    },
+    {
+      "name": "HIP",
+      "category": "Access Control",
+      "order": 8,
+      "featured": false
+    },
+    {
+      "name": "Hikvision",
+      "category": "Access Control",
+      "order": 9,
+      "featured": false
+    },
+    {
       "name": "Bosch",
       "category": "Security",
-      "order": 7,
+      "order": 10,
       "featured": false
     },
     {
       "name": "Cisco",
       "category": "Network",
-      "order": 8,
+      "order": 11,
       "featured": false
     },
     {
       "name": "Ubiquiti",
       "category": "Network",
-      "order": 9,
+      "order": 12,
       "featured": false
     }
   ],
