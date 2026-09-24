@@ -166,36 +166,6 @@
     },
     {
       "category": "fire-alarm",
-      "type": "อุปกรณ์ตรวจจับ",
-      "name": "อุปกรณ์ตรวจจับความร้อน",
-      "brand": "Nohmi",
-      "model": "",
-      "description": "เหมาะกับพื้นที่ฝุ่นหรือไอน้ำมาก เช่น พื้นที่ผลิตในโรงงาน ครัว และลานจอดรถ ซึ่งอุปกรณ์ตรวจจับควันจะแจ้งเหตุหลอกบ่อย",
-      "specs": [
-        {
-          "label": "หลักการตรวจจับ",
-          "value": "อุณหภูมิคงที่ / อัตราการเพิ่มอุณหภูมิ"
-        }
-      ],
-      "order": 9
-    },
-    {
-      "category": "fire-alarm",
-      "type": "ตู้ควบคุม",
-      "name": "ตู้ควบคุมระบบแจ้งเหตุเพลิงไหม้",
-      "brand": "Nohmi",
-      "model": "",
-      "description": "ตู้ควบคุมระบบแจ้งเหตุเพลิงไหม้ พบได้บ่อยในโรงงานและอาคารของกลุ่มบริษัทญี่ปุ่น รับติดตั้งเพิ่มและดูแลระบบเดิม",
-      "specs": [
-        {
-          "label": "การบริการ",
-          "value": "ติดตั้ง ขยายระบบ และบำรุงรักษา"
-        }
-      ],
-      "order": 10
-    },
-    {
-      "category": "fire-alarm",
       "type": "ตู้ควบคุม",
       "name": "ตู้ควบคุมระบบแจ้งเหตุเพลิงไหม้แบบแบ่งโซน",
       "brand": "Asenware",
@@ -441,57 +411,51 @@
       "featured": false
     },
     {
-      "name": "Nohmi",
+      "name": "Asenware",
       "category": "Fire Alarm",
       "order": 3,
       "featured": false
     },
     {
-      "name": "Asenware",
+      "name": "GST",
       "category": "Fire Alarm",
       "order": 4,
       "featured": false
     },
     {
-      "name": "GST",
-      "category": "Fire Alarm",
-      "order": 5,
-      "featured": false
-    },
-    {
       "name": "Hikvision",
       "category": "CCTV",
-      "order": 6,
+      "order": 5,
       "featured": false
     },
     {
       "name": "Dahua",
       "category": "CCTV",
-      "order": 7,
+      "order": 6,
       "featured": false
     },
     {
       "name": "Axis",
       "category": "CCTV",
-      "order": 8,
+      "order": 7,
       "featured": false
     },
     {
       "name": "Bosch",
       "category": "Security",
-      "order": 9,
+      "order": 8,
       "featured": false
     },
     {
       "name": "Cisco",
       "category": "Network",
-      "order": 10,
+      "order": 9,
       "featured": false
     },
     {
       "name": "Ubiquiti",
       "category": "Network",
-      "order": 11,
+      "order": 10,
       "featured": false
     }
   ],
