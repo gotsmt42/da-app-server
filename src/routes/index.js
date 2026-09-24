@@ -29,6 +29,8 @@ const realtimeRouter = require("./realtime");
 // ✅ ตั้งค่าองค์กร (โลโก้/ข้อมูลบริษัท/ค่าตั้งต้นเอกสาร) — ผู้ใช้ขอให้แก้เองได้จากหน้าตั้งค่า
 const settingsRouter = require("./settings");
 const searchRouter = require("./search");
+// ✅ เว็บไซต์บริษัท (da-web): เนื้อหาที่แก้จากหลังบ้าน + คำขอจากฟอร์มบนเว็บ
+const webRouter = require("./web");
 const { publishMutations } = require("../services/realtime");
 
 /**
@@ -47,6 +49,8 @@ router.use("/realtime", realtimeRouter);
 router.use("/settings", settingsRouter);
 // ค้นหารวมข้ามงาน/ลูกค้า — ตัวกรองสิทธิ์อยู่ในไฟล์นั้น ใช้ชุดเดียวกับหน้ารายการ
 router.use("/search", searchRouter);
+// ⚠️ มีเส้นสาธารณะ (GET /web/content, POST /web/leads) — ด่านสิทธิ์อยู่ในไฟล์นั้นทีละเส้น
+router.use("/web", webRouter);
 router.use("/auth", authRouter);
 router.use("/signatures", signaturesRouter);
 router.use("/customer", customerRouter);

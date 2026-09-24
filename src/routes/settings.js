@@ -162,6 +162,11 @@ router.put("/", verifyToken, requireCap("manageSystem"), async (req, res) => {
     if (badUrl) {
       return res.status(400).json({ message: "ลิงก์ต้องขึ้นต้นด้วย http:// หรือ https:// เท่านั้น" });
     }
+    // 🐛 เคยมีลิงก์เว็บไซต์ถูกกรอกลงช่องอีเมล (https://doall.vercel.app) — ช่องนี้ไปเป็นปุ่ม "อีเมล"
+    //    บนเว็บไซต์บริษัทและหัวแอป กดแล้วเปิดโปรแกรมอีเมลด้วยที่อยู่ที่ส่งไม่ได้ จึงต้องตรวจรูปแบบ
+    if (update.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(update.email)) {
+      return res.status(400).json({ message: "รูปแบบอีเมลไม่ถูกต้อง (เช่น contact@example.com) — ลิงก์เว็บไซต์ให้กรอกในช่องเว็บไซต์" });
+    }
 
     if (!Object.keys(update).length) return res.status(400).json({ message: "ไม่มีข้อมูลที่จะบันทึก" });
 

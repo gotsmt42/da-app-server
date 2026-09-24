@@ -65,6 +65,9 @@ app.use(compression());
 // ตัวเดียวกับที่ใช้ทุก route — ต้องมีตัวแยกเพดานของตัวเอง "ก่อน" ตัวกลาง ไม่งั้นผู้ใช้จะเจอ
 // "request entity too large" แบบไม่มีคำอธิบาย แทนข้อความบอกขนาดที่รับได้ (ดู routes/signatures.js)
 app.use("/api/signatures", express.json({ limit: "1mb" }));
+// ⚠️ บทความบนเว็บไซต์ส่งมาทั้งเรื่องเป็น JSON — ภาษาไทยใช้ 3 ไบต์ต่อตัวอักษร บทความราว 3 หมื่นตัวอักษร
+//    ก็เกิน 100kb แล้ว จะได้ 413 เงียบๆ ตอนกดบันทึก (เฉพาะเส้นผู้ดูแลเนื้อหา ไม่ขยายทั้งแอป)
+app.use("/api/web/admin", express.json({ limit: "1mb" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 

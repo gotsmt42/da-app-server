@@ -235,6 +235,18 @@ const CAPABILITIES = {
 
   /** เห็นใบของทุกคน + เบิกแทนคนอื่นได้ + ดูรายงานทั้งบริษัท (คนอื่นเห็นเฉพาะของตัวเอง — กรองที่ server) */
   viewAllExpenses: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
+  /**
+   * ✅ ระบบหลังบ้านของเว็บไซต์บริษัท (da-web) — แก้สินค้า ผลงาน บทความ ยี่ห้อ และการแสดงผลบนเว็บ
+   * ⚠️ ทุกอย่างที่แก้ตรงนี้ขึ้นเว็บสาธารณะทันที (หน้าเว็บดึงใหม่อัตโนมัติหลังบันทึก)
+   *    จึงให้เฉพาะระดับผู้ดูแล ไม่ให้ทุกคนที่ดูข้อมูลได้
+   */
+  manageWebsite: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
+  /**
+   * ✅ เห็นและจัดการ "คำขอจากเว็บไซต์" (ฟอร์มติดต่อ/ขอใบเสนอราคา) — รวมฝ่ายขายด้วย
+   *    เพราะเป็นคนโทรกลับลูกค้าและทำใบเสนอราคาจริง
+   * ⚠️ ข้อมูลในนี้เป็นข้อมูลส่วนบุคคลของลูกค้า (ชื่อ เบอร์ อีเมล) — ห้ามเปิดให้ช่าง/ผู้ใช้ทั่วไป
+   */
+  viewLeads: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.SALE],
 };
 
 /**
@@ -338,6 +350,8 @@ const EDITABLE_CAPABILITIES = [
   "approveExpense",
   "disburseExpense",
   "viewAllExpenses",
+  "manageWebsite",
+  "viewLeads",
 ];
 
 /**

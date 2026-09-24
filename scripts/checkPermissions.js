@@ -54,6 +54,9 @@ const EXPECTED = {
   approveOwnReview: ["manager"],
   approveOwnExpense: ["admin", "manager", "director"],
   viewAllExpenses: ["admin", "manager", "director"],
+  // ✅ ระบบหลังบ้านเว็บไซต์บริษัท (24 ก.ย. 2569)
+  manageWebsite: ["admin", "manager", "director"],
+  viewLeads: ["admin", "manager", "director", "sale"],
 };
 
 const FRONTEND_ROLES_FILE = path.resolve(
