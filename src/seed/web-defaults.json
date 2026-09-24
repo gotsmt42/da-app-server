@@ -451,24 +451,6 @@
       "category": "Access Control",
       "order": 9,
       "featured": false
-    },
-    {
-      "name": "Bosch",
-      "category": "Security",
-      "order": 10,
-      "featured": false
-    },
-    {
-      "name": "Cisco",
-      "category": "Network",
-      "order": 11,
-      "featured": false
-    },
-    {
-      "name": "Ubiquiti",
-      "category": "Network",
-      "order": 12,
-      "featured": false
     }
   ],
   "articles": [
