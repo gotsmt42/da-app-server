@@ -11,7 +11,7 @@ const { imageSchema, editorSchema, STATUS, SLUG_RE } = require("./webShared");
  * ⚠️ slug คือ URL ที่ Google เก็บไว้ — เปลี่ยนหลังเผยแพร่แล้ว = ลิงก์เดิมกลายเป็น 404
  */
 // ⚠️ "engineering" (งานระบบอาคาร) ถูกแทนด้วย "fire-pump" ตามที่บริษัทสั่ง (24 ก.ย. 2569)
-const SYSTEMS = ["fire-alarm", "fire-pump", "cctv", "access-control", "network", "maintenance"];
+const SYSTEMS = ["fire-alarm", "fire-protection", "fire-pump", "cctv", "access-control", "network", "maintenance"];
 
 const webProjectSchema = new mongoose.Schema(
   {

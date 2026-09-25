@@ -178,6 +178,9 @@ router.get("/content", async (req, res) => {
         businessHoursWeekdays: settings.businessHoursWeekdays, businessHoursSaturday: settings.businessHoursSaturday,
         businessHoursClosed: settings.businessHoursClosed, emergencyNote: settings.emergencyNote,
         serviceAreas: settings.serviceAreas, announcement: settings.announcement,
+        serviceImages: (settings.serviceImages || []).map((x) => ({
+          slug: x.slug, url: x.image?.url, width: x.image?.width, height: x.image?.height, alt: x.image?.alt || "",
+        })),
       },
       // ✅ ช่องทางติดต่อใช้ชุดเดียวกับที่ Super Admin ตั้งในแอป (หน้าตั้งค่าองค์กร)
       contact: {
@@ -275,6 +278,7 @@ const uploadLeadFile = (buf, { ref, index, ext, resourceType }) =>
 
 const SERVICE_LABEL = {
   "fire-alarm": "ระบบแจ้งเหตุเพลิงไหม้ (Fire Alarm)",
+  "fire-protection": "ระบบป้องกันอัคคีภัย (Fire Protection)",
   "fire-pump": "ระบบเครื่องสูบน้ำดับเพลิง (Fire Pump)",
   cctv: "กล้องวงจรปิด (CCTV)",
   "access-control": "ระบบควบคุมการเข้าออก",
@@ -525,8 +529,9 @@ router.post("/admin/upload", ...adminAuth, (req, res) => {
 
 const SETTING_FIELDS = [
   "stats", "showStats", "showProjects", "showBrands", "showArticles", "businessHoursWeekdays",
-  "businessHoursSaturday", "businessHoursClosed", "emergencyNote", "serviceAreas", "announcement",
+  "businessHoursSaturday", "businessHoursClosed", "emergencyNote", "serviceAreas", "announcement", "serviceImages",
 ];
+const serviceImageIds = (doc) => (doc?.serviceImages || []).map((x) => x.image?.publicId).filter(Boolean);
 
 router.get("/admin/settings", ...adminAuth, async (req, res) => {
   try {
@@ -539,11 +544,15 @@ router.get("/admin/settings", ...adminAuth, async (req, res) => {
 
 router.put("/admin/settings", ...adminAuth, async (req, res) => {
   try {
+    const before = await WebSetting.findOne({ key: "web" }, "serviceImages").lean();
     const doc = await WebSetting.findOneAndUpdate(
       { key: "web" },
       { $set: { ...pick(req.body || {}, SETTING_FIELDS), updatedBy: editorOf(req) } },
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
     ).lean();
+    // รูปบริการที่ถูกเปลี่ยน/เอาออก → ลบไฟล์เก่าทิ้ง (เหมือนรูปสินค้า)
+    const kept = new Set(serviceImageIds(doc));
+    destroyAssets(serviceImageIds(before).filter((id) => !kept.has(id)));
     revalidateWebsite();
     res.json({ settings: doc });
   } catch (err) {

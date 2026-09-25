@@ -1,5 +1,5 @@
 const mongoose = require("../db");
-const { editorSchema } = require("./webShared");
+const { editorSchema, imageSchema, SLUG_RE } = require("./webShared");
 
 /**
  * การแสดงผลของเว็บไซต์บริษัท — มีเอกสารเดียว (key = "web")
@@ -14,6 +14,19 @@ const statSchema = new mongoose.Schema(
     suffix: { type: String, default: "", maxlength: 8 },
     label: { type: String, required: true, maxlength: 60 },
     note: { type: String, default: "", maxlength: 120 },
+  },
+  { _id: false }
+);
+
+/**
+ * รูปของแต่ละบริการ (หน้าแรก · หน้าบริการ) — ✅ บริษัทสั่ง "พวกระบบ อยากให้มีรูปภาพด้วย" (25 ก.ย. 2569)
+ * ⚠️ ไม่ตั้ง = เว็บใช้ภาพประกอบที่ติดมากับเว็บ (public/services/<slug>.svg) — อัปภาพถ่ายงานจริงทับได้ทีละบริการ
+ * ⚠️ slug ต้องตรงกับบริการบนเว็บ (fire-alarm, fire-protection, ...) — slug ที่ไม่มีบนเว็บจะถูกเว็บมองข้ามเฉยๆ
+ */
+const serviceImageSchema = new mongoose.Schema(
+  {
+    slug: { type: String, required: true, maxlength: 60, match: SLUG_RE },
+    image: { type: imageSchema, required: true },
   },
   { _id: false }
 );
@@ -53,6 +66,7 @@ const webSettingSchema = new mongoose.Schema(
     emergencyNote: { type: String, default: DEFAULTS.emergencyNote, maxlength: 200 },
     serviceAreas: { type: [{ type: String, maxlength: 60 }], default: DEFAULTS.serviceAreas },
     announcement: { type: String, default: "", maxlength: 200 },
+    serviceImages: { type: [serviceImageSchema], default: [], validate: [(v) => v.length <= 20, "รูปบริการได้ไม่เกิน 20 รูป"] },
     updatedBy: { type: editorSchema, default: () => ({}) },
   },
   { timestamps: true }
