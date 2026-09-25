@@ -7,7 +7,6 @@
  * (Render ล้างดิสก์ทุกครั้งที่ deploy — เก็บลงดิสก์แล้วโลโก้จะหายเงียบๆ หลัง deploy ถัดไป)
  */
 const express = require("express");
-const { revalidateWebsite } = require("../services/websiteRevalidate");
 const multer = require("multer");
 const streamifier = require("streamifier");
 
@@ -45,7 +44,6 @@ const TEXT_FIELDS = {
   // ช่องทางติดต่อที่ไปโผล่เป็นเมนู "ติดต่อ" บนหัวเว็บ (เบอร์/อีเมล/เว็บไซต์ใช้ของด้านบนร่วมกัน)
   contactLine: 300,
   contactFacebook: 300,
-  contactHotline: 60,
 };
 
 /**
@@ -87,7 +85,7 @@ const BUILTIN_IMAGES = {
 const publicShape = (s) => ({
   nameTh: s.nameTh, nameEn: s.nameEn, address: s.address, taxId: s.taxId,
   tel: s.tel || "", email: s.email || "", website: s.website || "",
-  contactLine: s.contactLine || "", contactFacebook: s.contactFacebook || "", contactHotline: s.contactHotline || "",
+  contactLine: s.contactLine || "", contactFacebook: s.contactFacebook || "",
   logoUrl: s.logoUrl || "", letterheadUrl: s.letterheadUrl || "", stampUrl: s.stampUrl || "",
   advanceClearDays: s.advanceClearDays || OrgSetting.DEFAULTS.advanceClearDays,
   // ✅ ชื่อ Rank (ตำแหน่งในองค์กร) ที่ตั้งเอง — หน้าจอทุกหน้าใช้แสดง (ไม่ใช่ความลับ)
@@ -232,7 +230,6 @@ router.put("/", verifyToken, requireCap("manageSystem"), async (req, res) => {
       { new: true, upsert: true, setDefaultsOnInsert: true },
     ).lean();
     OrgSetting.clearCache();
-    revalidateWebsite();   // ✅ เว็บบริษัทใช้เบอร์/อีเมล/LINE/Facebook จากที่นี่ — อัปเดตเว็บทันที
     res.json({ settings: publicShape(saved) });
   } catch (err) {
     console.error("❌ บันทึกตั้งค่าองค์กรไม่สำเร็จ:", err);

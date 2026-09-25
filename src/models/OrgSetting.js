@@ -51,8 +51,6 @@ const orgSettingSchema = new mongoose.Schema(
      * ⚠️ ว่าง = ไม่แสดงช่องทางนั้น · ไม่มีช่องทางไหนเลย = ไม่มีปุ่ม "ติดต่อ" บนหัวเว็บ
      */
     contactLine: { type: String, default: "" },
-    /** ✅ สายด่วน/Hotline งานฉุกเฉิน (บริษัทสั่ง 25 ก.ย. 2569) — แสดงบนเว็บบริษัทก่อนเบอร์ปกติ */
-    contactHotline: { type: String, default: "" },
     contactFacebook: { type: String, default: "" },
     /** โลโก้บนหัวเว็บ/หน้าเข้าสู่ระบบ */
     logoUrl: { type: String, default: "" },

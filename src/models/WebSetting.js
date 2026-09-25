@@ -66,6 +66,17 @@ const webSettingSchema = new mongoose.Schema(
     emergencyNote: { type: String, default: DEFAULTS.emergencyNote, maxlength: 200 },
     serviceAreas: { type: [{ type: String, maxlength: 60 }], default: DEFAULTS.serviceAreas },
     announcement: { type: String, default: "", maxlength: 200 },
+    /**
+     * ✅ ช่องทางติดต่อ "ของเว็บไซต์บริษัท" — แยกจากตั้งค่าองค์กรของแอปหลังบ้านโดยสิ้นเชิง
+     *    (ผู้ใช้สั่ง 25 ก.ย. 2569: "ย้ายออกไปในส่วนของตั้งค่าเว็บไซต์ต่างหากเลย ไม่ต้องรวมกับในแอปหลังบ้าน")
+     * ⚠️ แก้ที่นี่ = เปลี่ยนเฉพาะเว็บบริษัท · เบอร์/อีเมลบนเอกสาร PDF และเมนูติดต่อในแอป ยังใช้ตั้งค่าองค์กรเหมือนเดิม
+     * ⚠️ ว่าง = ไม่แสดงช่องทางนั้นบนเว็บ
+     */
+    contactHotline: { type: String, default: "", maxlength: 60 },
+    contactTel: { type: String, default: "", maxlength: 60 },
+    contactEmail: { type: String, default: "", maxlength: 120 },
+    contactLine: { type: String, default: "", maxlength: 300 },
+    contactFacebook: { type: String, default: "", maxlength: 300 },
     serviceImages: { type: [serviceImageSchema], default: [], validate: [(v) => v.length <= 20, "รูปบริการได้ไม่เกิน 20 รูป"] },
     updatedBy: { type: editorSchema, default: () => ({}) },
   },

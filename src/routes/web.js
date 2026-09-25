@@ -19,7 +19,6 @@ const { requireCap, can } = require("../config/roles");
 const User = require("../models/User");
 const { revalidateWebsite } = require("../services/websiteRevalidate");
 const { cloudinary } = require("../config/cloudinary");
-const OrgSetting = require("../models/OrgSetting");
 const DocCounter = require("../models/DocCounter");
 const WebProduct = require("../models/WebProduct");
 const WebProject = require("../models/WebProject");
@@ -129,13 +128,12 @@ const assetIdsOf = (doc) =>
 router.get("/content", async (req, res) => {
   try {
     const published = { status: "published" };
-    const [products, projects, articles, brands, settings, org] = await Promise.all([
+    const [products, projects, articles, brands, settings] = await Promise.all([
       WebProduct.find(published).sort(COLLECTIONS.products.sort).lean(),
       WebProject.find(published).sort(COLLECTIONS.projects.sort).lean(),
       WebArticle.find(published).sort(COLLECTIONS.articles.sort).lean(),
       WebBrand.find(published).sort(COLLECTIONS.brands.sort).lean(),
       WebSetting.current(),
-      OrgSetting.current(),
     ]);
     const img = (i) => (i ? { url: i.url, width: i.width, height: i.height, alt: i.alt } : undefined);
     res.set("Cache-Control", "public, max-age=60");
@@ -169,9 +167,10 @@ router.get("/content", async (req, res) => {
           slug: x.slug, url: x.image?.url, width: x.image?.width, height: x.image?.height, alt: x.image?.alt || "",
         })),
       },
-      // ✅ ช่องทางติดต่อใช้ชุดเดียวกับที่ Super Admin ตั้งในแอป (หน้าตั้งค่าองค์กร)
+      // ✅ ช่องทางติดต่อของเว็บ ตั้งแยกที่ "เว็บไซต์บริษัท → ตั้งค่า" (ไม่ใช้ตั้งค่าองค์กรของแอปแล้ว — ผู้ใช้สั่ง)
       contact: {
-        tel: org.tel || "", hotline: org.contactHotline || "", email: org.email || "", lineUrl: org.contactLine || "", facebookUrl: org.contactFacebook || "",
+        hotline: settings.contactHotline || "", tel: settings.contactTel || "", email: settings.contactEmail || "",
+        lineUrl: settings.contactLine || "", facebookUrl: settings.contactFacebook || "",
       },
     });
   } catch (err) {
@@ -525,7 +524,25 @@ router.post("/admin/upload", ...adminAuth, (req, res) => {
 const SETTING_FIELDS = [
   "stats", "showStats", "showProjects", "showBrands", "showArticles", "businessHoursWeekdays",
   "businessHoursSaturday", "businessHoursClosed", "emergencyNote", "serviceAreas", "announcement", "serviceImages",
+  "contactHotline", "contactTel", "contactEmail", "contactLine", "contactFacebook",
 ];
+
+/**
+ * ตรวจช่องทางติดต่อก่อนบันทึก — คืนข้อความภาษาไทยของช่องแรกที่ผิด (null = ผ่าน)
+ * 🔒 ลิงก์ต้องเป็น http/https เท่านั้น — ค่าเหล่านี้ไปเป็น href บนเว็บสาธารณะ ห้ามรับ javascript: / data:
+ */
+function contactError(b) {
+  const phone = (v) => !v || (/^[\d\s\-+()]+$/.test(v) && v.replace(/\D/g, "").length >= 4);
+  const url = (v) => { if (!v) return true; try { return ["http:", "https:"].includes(new URL(v).protocol); } catch { return false; } };
+  const email = (v) => !v || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  const t = (k) => (b[k] === undefined ? "" : String(b[k] || "").trim());
+  if (!phone(t("contactHotline"))) return "สายด่วนต้องเป็นเบอร์โทร (ตัวเลขอย่างน้อย 4 หลัก)";
+  if (!phone(t("contactTel"))) return "โทรศัพท์ต้องเป็นเบอร์โทร (ตัวเลขอย่างน้อย 4 หลัก)";
+  if (!email(t("contactEmail"))) return "อีเมลไม่ถูกต้อง (เช่น info@company.com)";
+  if (!url(t("contactLine"))) return "ลิงก์ LINE ต้องขึ้นต้นด้วย http:// หรือ https://";
+  if (!url(t("contactFacebook"))) return "ลิงก์ Facebook ต้องขึ้นต้นด้วย http:// หรือ https://";
+  return null;
+}
 const serviceImageIds = (doc) => (doc?.serviceImages || []).map((x) => x.image?.publicId).filter(Boolean);
 
 router.get("/admin/settings", ...adminAuth, async (req, res) => {
@@ -539,6 +556,11 @@ router.get("/admin/settings", ...adminAuth, async (req, res) => {
 
 router.put("/admin/settings", ...adminAuth, async (req, res) => {
   try {
+    const bad = contactError(req.body || {});
+    if (bad) return res.status(400).json({ message: bad });
+    ["contactHotline", "contactTel", "contactEmail", "contactLine", "contactFacebook"].forEach((k) => {
+      if (req.body?.[k] !== undefined) req.body[k] = String(req.body[k] || "").trim();
+    });
     const before = await WebSetting.findOne({ key: "web" }, "serviceImages").lean();
     const doc = await WebSetting.findOneAndUpdate(
       { key: "web" },
