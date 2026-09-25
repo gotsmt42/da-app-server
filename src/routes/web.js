@@ -506,7 +506,11 @@ router.post("/admin/upload", ...adminAuth, (req, res) => {
                 folder: "website/images",
                 resource_type: "image",
                 // ✅ ย่อรูปยักษ์จากกล้องมือถือตั้งแต่ตอนเก็บ — เว็บไม่ต้องใช้รูปกว้างเกิน 2400px
-                transformation: [{ width: 2400, height: 2400, crop: "limit", quality: "auto" }],
+                // ✅ โลโก้ (?kind=logo): ตัดขอบว่างรอบโลโก้ออกอัตโนมัติ — 🐛 ผู้ใช้อัปไฟล์โลโก้ที่มีพื้นว่างรอบๆ
+                //    เยอะ (เช่น 200×200 แต่ตัวโลโก้กว้างแค่ครึ่งเดียว) บนเว็บเลยเห็นโลโก้เล็กจิ๋วกลางกล่อง
+                transformation: req.query.kind === "logo"
+                  ? [{ effect: "trim:10" }, { width: 1200, height: 1200, crop: "limit" }]
+                  : [{ width: 2400, height: 2400, crop: "limit", quality: "auto" }],
               },
           (err, r) => (err ? reject(err) : resolve(r))
         );
