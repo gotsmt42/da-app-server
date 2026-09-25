@@ -44,6 +44,7 @@ const TEXT_FIELDS = {
   // ช่องทางติดต่อที่ไปโผล่เป็นเมนู "ติดต่อ" บนหัวเว็บ (เบอร์/อีเมล/เว็บไซต์ใช้ของด้านบนร่วมกัน)
   contactLine: 300,
   contactFacebook: 300,
+  contactHotline: 60,
 };
 
 /**
@@ -85,7 +86,7 @@ const BUILTIN_IMAGES = {
 const publicShape = (s) => ({
   nameTh: s.nameTh, nameEn: s.nameEn, address: s.address, taxId: s.taxId,
   tel: s.tel || "", email: s.email || "", website: s.website || "",
-  contactLine: s.contactLine || "", contactFacebook: s.contactFacebook || "",
+  contactLine: s.contactLine || "", contactFacebook: s.contactFacebook || "", contactHotline: s.contactHotline || "",
   logoUrl: s.logoUrl || "", letterheadUrl: s.letterheadUrl || "", stampUrl: s.stampUrl || "",
   advanceClearDays: s.advanceClearDays || OrgSetting.DEFAULTS.advanceClearDays,
   // ✅ ชื่อ Rank (ตำแหน่งในองค์กร) ที่ตั้งเอง — หน้าจอทุกหน้าใช้แสดง (ไม่ใช่ความลับ)

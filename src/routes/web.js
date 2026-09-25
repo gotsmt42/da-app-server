@@ -185,7 +185,7 @@ router.get("/content", async (req, res) => {
       },
       // ✅ ช่องทางติดต่อใช้ชุดเดียวกับที่ Super Admin ตั้งในแอป (หน้าตั้งค่าองค์กร)
       contact: {
-        tel: org.tel || "", email: org.email || "", lineUrl: org.contactLine || "", facebookUrl: org.contactFacebook || "",
+        tel: org.tel || "", hotline: org.contactHotline || "", email: org.email || "", lineUrl: org.contactLine || "", facebookUrl: org.contactFacebook || "",
       },
     });
   } catch (err) {
