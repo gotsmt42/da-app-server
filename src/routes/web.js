@@ -17,6 +17,7 @@ const streamifier = require("streamifier");
 const verifyToken = require("../middleware/auth");
 const { requireCap, can } = require("../config/roles");
 const User = require("../models/User");
+const { revalidateWebsite } = require("../services/websiteRevalidate");
 const { cloudinary } = require("../config/cloudinary");
 const OrgSetting = require("../models/OrgSetting");
 const DocCounter = require("../models/DocCounter");
@@ -93,21 +94,6 @@ function sendDbError(res, err, label) {
   return res.status(500).json({ message: "บันทึกไม่สำเร็จ กรุณาลองใหม่" });
 }
 
-/**
- * สั่งเว็บไซต์ดึงเนื้อหาใหม่ทันที — ยิงแล้วไม่รอ (ไม่ให้การบันทึกช้าเพราะรอเว็บ)
- * ⚠️ ไม่ตั้ง WEB_REVALIDATE_URL = เว็บจะอัปเดตเองตามรอบเวลา (ดู da-web/src/lib/cms.ts)
- */
-function revalidateWebsite() {
-  const url = process.env.WEB_REVALIDATE_URL;
-  const secret = process.env.WEB_REVALIDATE_SECRET;
-  if (!url || !secret) return;
-  fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-revalidate-secret": secret },
-    body: JSON.stringify({ tags: ["web-content"] }),
-    signal: AbortSignal.timeout(10_000),
-  }).catch((err) => console.error("⚠️ สั่งเว็บไซต์อัปเดตไม่สำเร็จ:", err.message));
-}
 
 /**
  * ลบรูปที่ไม่ได้ใช้แล้วออกจาก Cloudinary (รูปกำพร้าเสียค่าพื้นที่ฟรีๆ)

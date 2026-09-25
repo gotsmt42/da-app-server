@@ -7,6 +7,7 @@
  * (Render ล้างดิสก์ทุกครั้งที่ deploy — เก็บลงดิสก์แล้วโลโก้จะหายเงียบๆ หลัง deploy ถัดไป)
  */
 const express = require("express");
+const { revalidateWebsite } = require("../services/websiteRevalidate");
 const multer = require("multer");
 const streamifier = require("streamifier");
 
@@ -231,6 +232,7 @@ router.put("/", verifyToken, requireCap("manageSystem"), async (req, res) => {
       { new: true, upsert: true, setDefaultsOnInsert: true },
     ).lean();
     OrgSetting.clearCache();
+    revalidateWebsite();   // ✅ เว็บบริษัทใช้เบอร์/อีเมล/LINE/Facebook จากที่นี่ — อัปเดตเว็บทันที
     res.json({ settings: publicShape(saved) });
   } catch (err) {
     console.error("❌ บันทึกตั้งค่าองค์กรไม่สำเร็จ:", err);
