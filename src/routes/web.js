@@ -442,7 +442,8 @@ router.put("/leads/:id", ...leadAuth, async (req, res) => {
  * ลบคำขอ — ✅ พ.ร.บ.คุ้มครองข้อมูลส่วนบุคคล: ลูกค้ามีสิทธิ์ขอให้ลบข้อมูลของตัวเอง บริษัทต้องทำได้จริง
  * 🔒 ลบได้เฉพาะ manageWebsite (ผู้ดูแล) ไม่ใช่ทุกคนที่เห็นคำขอ — ลบแล้วกู้คืนไม่ได้ รวมไฟล์แนบด้วย
  */
-router.delete("/leads/:id", verifyToken, requireCap("manageWebsite"), async (req, res) => {
+// ✅ ผู้ใช้สั่งให้แอดมินจัดการหน้านี้ได้ — ลบ (คำขอลบข้อมูลตาม PDPA) ได้ทุกคนที่มีสิทธิ์ viewLeads
+router.delete("/leads/:id", verifyToken, requireCap("viewLeads"), async (req, res) => {
   try {
     const lead = await Lead.findByIdAndDelete(req.params.id).lean();
     if (!lead) return res.status(404).json({ message: "ไม่พบคำขอนี้" });
