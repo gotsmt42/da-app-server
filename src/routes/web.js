@@ -15,7 +15,8 @@ const multer = require("multer");
 const streamifier = require("streamifier");
 
 const verifyToken = require("../middleware/auth");
-const { requireCap, CAPABILITIES } = require("../config/roles");
+const { requireCap, can } = require("../config/roles");
+const User = require("../models/User");
 const { cloudinary } = require("../config/cloudinary");
 const OrgSetting = require("../models/OrgSetting");
 const DocCounter = require("../models/DocCounter");
@@ -25,7 +26,7 @@ const WebArticle = require("../models/WebArticle");
 const WebBrand = require("../models/WebBrand");
 const WebSetting = require("../models/WebSetting");
 const Lead = require("../models/Lead");
-const { sendPushToRoles } = require("../services/PushNotify");
+const { sendPushToUsers } = require("../services/PushNotify");
 const { sendMail, esc } = require("../services/Mailer");
 
 const router = express.Router();
@@ -330,12 +331,16 @@ router.post("/leads", leadUpload.array("files", 5), async (req, res) => {
     const what = lead.kind === "quotation" ? "คำขอใบเสนอราคา" : "ข้อความติดต่อ";
     const service = SERVICE_LABEL[lead.serviceType] || lead.serviceType || lead.subject || "";
     // 🔒 push แสดงบนหน้าจอล็อก — ใส่แค่ชื่อกับเรื่อง ไม่ใส่เบอร์/อีเมลลูกค้า
-    sendPushToRoles(CAPABILITIES.viewLeads, {
+    // ⚠️ ส่งตาม "สิทธิ์จริง" (can) ไม่ใช่รายชื่อตำแหน่ง — viewLeads ตอนนี้ไม่ผูกตำแหน่งใดเลย (Super Admin เท่านั้น)
+    //    ถ้าส่งตามตำแหน่งเหมือนเดิม จะไม่มีใครได้แจ้งเตือนเลย
+    User.find({}).select("_id rank role systemRole").lean()
+      .then((all) => sendPushToUsers(all.filter((u) => can(u, "viewLeads")).map((u) => String(u._id)), {
       title: `📨 ${what}ใหม่จากเว็บไซต์`,
       body: `${lead.name}${lead.company ? ` (${lead.company})` : ""}${service ? ` · ${service}` : ""}`,
       url: `/website/leads?id=${doc._id}`,
       tag: `lead-${doc._id}`,
-    }).catch((err) => console.error("⚠️ push คำขอจากเว็บ:", err.message));
+    }))
+      .catch((err) => console.error("⚠️ push คำขอจากเว็บ:", err.message));
 
     const rows = [
       ["เลขอ้างอิง", ref], ["ประเภท", what], ["ชื่อ", lead.name], ["บริษัท", lead.company], ["โทร", lead.phone],

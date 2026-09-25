@@ -240,13 +240,17 @@ const CAPABILITIES = {
    * ⚠️ ทุกอย่างที่แก้ตรงนี้ขึ้นเว็บสาธารณะทันที (หน้าเว็บดึงใหม่อัตโนมัติหลังบันทึก)
    *    จึงให้เฉพาะระดับผู้ดูแล ไม่ให้ทุกคนที่ดูข้อมูลได้
    */
-  manageWebsite: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
+  // ✅ ผู้ใช้สั่ง (25 ก.ย. 2569): "การตั้งค่า และการแสดงเมนู ให้ทำได้แค่ Super Admin ก่อน"
+  //    ไม่ให้ตำแหน่งใดในองค์กรโดยค่าเริ่มต้น — Super Admin ผ่านทุกสิทธิ์อยู่แล้ว (ดู can())
+  //    ถ้าวันหลังจะให้ตำแหน่งไหน ติ๊กเพิ่มได้จากหน้าตั้งค่าสิทธิ์ ไม่ต้องแก้โค้ด
+  manageWebsite: [],
   /**
    * ✅ เห็นและจัดการ "คำขอจากเว็บไซต์" (ฟอร์มติดต่อ/ขอใบเสนอราคา) — รวมฝ่ายขายด้วย
    *    เพราะเป็นคนโทรกลับลูกค้าและทำใบเสนอราคาจริง
    * ⚠️ ข้อมูลในนี้เป็นข้อมูลส่วนบุคคลของลูกค้า (ชื่อ เบอร์ อีเมล) — ห้ามเปิดให้ช่าง/ผู้ใช้ทั่วไป
    */
-  viewLeads: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.SALE],
+  // ✅ ผู้ใช้สั่ง: "เซลไม่ต้อง ให้แก้และดูอะไรได้ในตั้งค่า" — เหลือ Super Admin เท่านั้นเหมือน manageWebsite
+  viewLeads: [],
 };
 
 /**
@@ -480,13 +484,30 @@ const ROLE_LEVEL = {
 /** ระดับของผู้ใช้/role (role ที่ระบบไม่รู้จัก = 0 ทำอะไรไม่ได้เลย) */
 const roleLevel = (who) => ROLE_LEVEL[normalizeRole(who)] || 0;
 
-/** ตั้ง role นี้ให้คนอื่นได้ไหม — ต้องมีสิทธิ์จัดการผู้ใช้ก่อน และห้ามตั้งสิทธิ์ที่สูงกว่าระดับตัวเอง (กฎข้อ 1) */
-const canAssignRole = (actor, role) =>
-  can(actor, "manageAll") && roleLevel(role) > 0 && roleLevel(role) <= roleLevel(actor);
+/**
+ * ✅ Super Admin ทำได้ทุกอย่าง — ผู้ใช้สั่ง (25 ก.ย. 2569): "ให้สิทธิ์ Super Admin ในระบบทำได้ทุกอย่าง
+ *    เช่นเปลี่ยนสิทธิ์ หรือตำแหน่งในองค์กรได้หมด"
+ *    ผ่านทุก capability (can) และไม่ติดลำดับชั้นตำแหน่ง (ตั้งใครเป็นกรรมการผู้จัดการก็ได้ แก้บัญชีตำแหน่งใดก็ได้)
+ * ⚠️ ที่ยังกันไว้เพื่อความปลอดภัย: เปลี่ยน "สิทธิ์ในระบบ" ของตัวเองไม่ได้ และต้องเหลือ Super Admin อย่างน้อย 1 คน
+ *    (ไม่งั้นกดพลาดครั้งเดียว ทั้งบริษัทไม่มีใครเข้าหน้าตั้งค่าได้อีกเลย)
+ */
+const isSuperAdmin = (who) => systemRoleOf(who) === SYSTEM_ROLES.SUPER;
 
-/** แตะบัญชีที่มี role นี้ได้ไหม (เปลี่ยนสิทธิ์/ลบ) — ต้องมีสิทธิ์จัดการผู้ใช้ และห้ามแตะคนที่ระดับสูงกว่าตัวเอง (กฎข้อ 2) */
+/**
+ * สายอนุมัติค่าใช้จ่าย — ⚠️ ยกเว้นจาก "Super Admin ทำได้ทุกอย่าง" โดยตั้งใจ
+ * ผู้ใช้กำหนดคนแต่ละขั้นไว้ชัดตามตำแหน่งในองค์กร (เช่น กรรมการผู้จัดการไม่อยู่ขั้นตรวจสอบ/อนุมัติ)
+ * และเป็นกลไกควบคุมภายในเรื่องเงิน — ถ้า Super Admin ข้ามได้ทุกขั้น ใบเบิกจะไม่มีคนสอบทานเลย
+ */
+const EXPENSE_WORKFLOW_CAPS = ["reviewExpense", "approveExpense", "disburseExpense", "approveOwnReview", "approveOwnExpense"];
+
+
+/** ตั้ง role นี้ให้คนอื่นได้ไหม — ต้องมีสิทธิ์จัดการผู้ใช้ก่อน และห้ามตั้งสิทธิ์ที่สูงกว่าระดับตัวเอง (กฎข้อ 1) · Super Admin ตั้งได้ทุกตำแหน่ง */
+const canAssignRole = (actor, role) =>
+  roleLevel(role) > 0 && (isSuperAdmin(actor) || (can(actor, "manageAll") && roleLevel(role) <= roleLevel(actor)));
+
+/** แตะบัญชีที่มี role นี้ได้ไหม (เปลี่ยนสิทธิ์/ลบ) — ห้ามแตะคนที่ระดับสูงกว่าตัวเอง (กฎข้อ 2) · Super Admin แตะได้ทุกบัญชี */
 const canManageUserOfRole = (actor, targetRole) =>
-  can(actor, "manageAll") && roleLevel(actor) >= roleLevel(targetRole);
+  isSuperAdmin(actor) || (can(actor, "manageAll") && roleLevel(actor) >= roleLevel(targetRole));
 
 
 /**
@@ -498,6 +519,8 @@ const can = (who, capability) => {
   // ✅ สิทธิ์ระดับระบบ (จัดการผู้ใช้/ตั้งค่าระบบ) ตัดสินด้วย "ชั้นในระบบ" ไม่เกี่ยวกับตำแหน่งในองค์กร
   if (isSystemCapability(capability)) return SYSTEM_CAPABILITIES[capability].includes(systemRoleOf(who));
   const allowed = CAPABILITIES[capability];
+  // ✅ Super Admin ผ่านทุกสิทธิ์ที่มีอยู่จริง (ผู้ใช้สั่ง) ยกเว้นสายอนุมัติค่าใช้จ่าย — ชื่อสิทธิ์ที่พิมพ์ผิดยังถูกปฏิเสธ
+  if (allowed && isSuperAdmin(who) && !EXPENSE_WORKFLOW_CAPS.includes(capability)) return true;
   // ⚠️ พิมพ์ชื่อสิทธิ์ผิด = ปฏิเสธเสมอ (ปลอดภัยไว้ก่อน) แต่ต้องส่งเสียงดังพอให้เห็นตอน dev
   // ไม่งั้นจะกลายเป็นบั๊กเงียบแบบเดียวกับที่ไฟล์นี้ตั้งใจจะกำจัด
   if (!allowed) {
@@ -605,6 +628,8 @@ module.exports = {
   ROLE_LEVEL,
   roleLevel,
   canAssignRole,
+  isSuperAdmin,
+  EXPENSE_WORKFLOW_CAPS,
   canManageUserOfRole,
   normalizeRole,
   can,

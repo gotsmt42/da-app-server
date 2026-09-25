@@ -16,7 +16,7 @@ const checkFile = require("../middleware/checkFile");
 
 // 🔒 ตารางสิทธิ์กลางของระบบ — ใช้ requireCap แทนการเช็ค role เขียนสดตามที่ config/roles.js กำหนดไว้
 const {
-  requireCap, ALL_ROLES, ROLES, can, normalizeRole, normalizeRank, rankFilter, canAssignRole, canManageUserOfRole, rankLabelOf, titleOf,
+  requireCap, ALL_ROLES, ROLES, can, normalizeRole, normalizeRank, rankFilter, canAssignRole, canManageUserOfRole, rankLabelOf, isSuperAdmin, titleOf,
   ALL_SYSTEM_ROLES, SYSTEM_ROLES, SYSTEM_ROLE_LABEL, systemRoleOf, DEFAULT_SYSTEM_ROLE,
 } = require("../config/roles");
 
@@ -324,7 +324,9 @@ router.put(
           if (!isAdmin) {
             return res.status(403).json({ message: "เปลี่ยนสิทธิ์ผู้ใช้ได้เฉพาะแอดมิน/ผู้จัดการเท่านั้น" });
           }
-          if (isSelf) {
+          // ✅ Super Admin เปลี่ยน "ตำแหน่งในองค์กร" ของตัวเองได้ (ผู้ใช้สั่ง "เปลี่ยนตำแหน่งในองค์กรได้หมด")
+          //    — อำนาจของ Super Admin มาจากสิทธิ์ในระบบ ไม่ได้มาจากตำแหน่ง จึงไม่เสี่ยงล็อกตัวเองออก
+          if (isSelf && !isSuperAdmin(req.user)) {
             return res.status(403).json({ message: "เปลี่ยนสิทธิ์ของตัวเองไม่ได้ — ให้ผู้ที่มีสิทธิ์จัดการผู้ใช้ท่านอื่นเป็นคนเปลี่ยนให้" });
           }
           if (!ALL_ROLES.includes(wantedRole)) {

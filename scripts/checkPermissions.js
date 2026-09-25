@@ -55,8 +55,8 @@ const EXPECTED = {
   approveOwnExpense: ["admin", "manager", "director"],
   viewAllExpenses: ["admin", "manager", "director"],
   // ✅ ระบบหลังบ้านเว็บไซต์บริษัท (24 ก.ย. 2569)
-  manageWebsite: ["admin", "manager", "director"],
-  viewLeads: ["admin", "manager", "director", "sale"],
+  manageWebsite: [],
+  viewLeads: [],
 };
 
 const FRONTEND_ROLES_FILE = path.resolve(
@@ -86,10 +86,14 @@ capsInCode.filter((c) => capsExpected.includes(c)).forEach((c) => {
   }
 });
 
+/** ผู้ใช้สั่ง (25 ก.ย. 2569): เว็บไซต์บริษัท — Super Admin เท่านั้นก่อน */
+const SUPER_ONLY = ["manageWebsite", "viewLeads"];
+
 // ── 2) role ที่ไม่มีอยู่จริง / สิทธิ์ที่ไม่มีใครทำได้ ────────────────────
 capsInCode.forEach((c) => {
   const roles = CAPABILITIES[c];
-  if (!roles.length) {
+  // ✅ สิทธิ์ที่ตั้งใจให้ Super Admin เท่านั้น (ว่างโดยเจตนา — Super Admin ผ่านทุกสิทธิ์ใน can())
+  if (!roles.length && !SUPER_ONLY.includes(c)) {
     problems.push(`สิทธิ์ "${c}" ไม่มี role ไหนทำได้เลย — ฟีเจอร์นี้จะไม่มีใครใช้ได้`);
   }
   roles.filter((r) => !ALL_ROLES.includes(r)).forEach((r) =>
