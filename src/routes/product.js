@@ -12,7 +12,7 @@ const { fileFilter, limits } = require("../config/upload");
 const upload = multer({ dest: UPLOAD_IMAGES_DIR, fileFilter, limits });
 
 const verifyToken = require("../middleware/auth");
-const { can } = require("../config/roles");
+const { canEditMasterData } = require("../config/roles");
 const checkFile = require("../middleware/checkFile");
 
 // Route to create a new product
@@ -59,7 +59,7 @@ router.get("/", verifyToken, async (req, res) => {
 
     let userProducts;
 
-    if (can(req.user, "manageAll")) {
+    if (canEditMasterData(req.user)) {
       userProducts = await Product.find({});
     } else {
       userProducts = await Product.find({ userId: userId });
@@ -155,7 +155,7 @@ router.delete("/:id", verifyToken, async (req, res) => {
     }
 
     // Check if the authenticated user is the owner of the file or an admin
-    if (productToDelete.userId !== req.userId && !can(req.user, "manageAll")) {
+    if (productToDelete.userId !== req.userId && !canEditMasterData(req.user)) {
       return res.status(403).send("Unauthorized to delete this file.");
     }
 

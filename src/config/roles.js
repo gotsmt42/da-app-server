@@ -33,7 +33,14 @@ const ROLES = {
   /** กรรมการผู้จัดการ — ✅ ผู้ใช้ขอเพิ่ม: ระดับสูงสุดของบริษัท มีทุกสิทธิ์ในระบบ */
   DIRECTOR: "director",
   MANAGER: "manager",
-  ADMIN: "admin",
+  /**
+   * แอดมินช่าง — ⚠️ คีย์คือ "techadmin" ไม่ใช่ "admin"
+   * 🐛 ที่แก้ (ผู้ใช้สั่ง: "rank คือชื่อเฉพาะในองค์กร ควรตั้งให้สอดคล้อง"): เดิมคีย์นี้ชนกับชั้นในระบบ
+   * Admin พอดี ค่าคำเดียวกันจึงแปลได้สองความหมายแล้วแต่ว่าใครอ่าน — เป็นต้นเหตุของบั๊กจริงที่เคยเจอ
+   * (ตั้ง Super Admin แล้วเมนูหาย เพราะโค้ดต้องเดาว่า "admin" ที่อยู่ในฟิลด์ role หมายถึงอะไร)
+   * ✅ ข้อมูลเก่าที่ยังเป็น "admin" ยังใช้ได้ตลอดไป — ดู LEGACY_RANK_ALIAS ด้านล่าง
+   */
+  ADMIN: "techadmin",
   /** หัวหน้าช่างเทคนิค — ✅ ผู้ใช้ขอเพิ่ม: ตอนนี้ให้สิทธิ์เท่าช่างเทคนิคทุกอย่างก่อน */
   TECH_LEAD: "techlead",
   TECHNICIAN: "technician",
@@ -42,6 +49,14 @@ const ROLES = {
 };
 
 const ALL_ROLES = Object.values(ROLES);
+
+/**
+ * ชื่อคีย์เดิมของตำแหน่งในองค์กร → คีย์ปัจจุบัน
+ * ✅ ข้อมูลเก่าในฐานข้อมูล (user.rank/user.role) และสำเนาที่ฝังอยู่ในเอกสารอื่น (ใบเบิก/ใบมอบหมาย/
+ *    ประวัติการแก้ไข) ยังอ่านได้เหมือนเดิมโดยไม่ต้องย้ายข้อมูลก่อน — ย้ายทีหลังเมื่อไรก็ได้
+ * ⚠️ ห้ามลบบรรทัดนี้ทิ้งแม้จะย้ายข้อมูลครบแล้ว — สำเนาที่ฝังในเอกสารเก่าย้อนหลังยังมีค่าเดิมอยู่เสมอ
+ */
+const LEGACY_RANK_ALIAS = { admin: ROLES.ADMIN };
 
 /** ชื่อภาษาไทยสำหรับแสดงผล — ทั้งแอปเป็นภาษาไทย ห้ามโชว์ค่าดิบอย่าง "technician" ให้ผู้ใช้เห็น */
 const RANK_LABEL = {
@@ -267,6 +282,11 @@ const CAPABILITIES = {
  */
 const SYSTEM_ROLES = { SUPER: "superadmin", ADMIN: "admin", MEMBER: "member" };
 const ALL_SYSTEM_ROLES = Object.values(SYSTEM_ROLES);
+/**
+ * ชั้นในระบบที่ "ไม่มีทางเป็นตำแหน่งในองค์กร" — ใช้แยกให้ออกว่าค่าที่อยู่ในฟิลด์ role เป็นอะไรกันแน่
+ * ⚠️ ไม่มี "admin" ในลิสต์นี้โดยตั้งใจ — ชื่อซ้ำกับตำแหน่ง "แอดมินช่าง" (ROLES.ADMIN) ในองค์กร
+ */
+const SYSTEM_ONLY_ROLES = [SYSTEM_ROLES.SUPER, SYSTEM_ROLES.MEMBER];
 const SYSTEM_ROLE_LABEL = {
   [SYSTEM_ROLES.SUPER]: "Super Admin",
   [SYSTEM_ROLES.ADMIN]: "Admin",
@@ -308,13 +328,30 @@ const DEFAULT_SYSTEM_ROLE = {
  */
 const systemRoleOf = (who) => {
   if (who && typeof who === "object") {
-    // ✅ รูปแบบใหม่: มี rank เป็นตำแหน่งในองค์กร แปลว่า role คือ "ตำแหน่งในระบบ"
-    const isNewShape = ALL_ROLES.includes(String(who.rank || "").trim().toLowerCase());
+    /**
+     * ⚠️ ค่าที่ "ตั้งไว้ชัดเจน" ต้องชนะเสมอ — ช่อง systemRole ถูกเขียนเฉพาะตอนที่มีคนเลือกจากหน้า
+     * ตั้งค่าสิทธิ์เท่านั้น ส่วนช่อง role เป็นค่าที่ติดมาตั้งแต่ตอนสมัคร (เดาจากตำแหน่ง) หรือเป็นสำเนาเก่า
+     * 🐛 ที่แก้ (ผู้ใช้แจ้ง "ตั้ง Super Admin แล้วเมนูไม่ขึ้น"): เดิมอ่านช่อง role ก่อน ตั้งใครเป็น
+     * Super Admin จากหน้าตั้งค่าสิทธิ์แล้ว "ไม่มีอะไรเกิดขึ้นเลย" เพราะค่าเดิมในช่อง role ชนะค่าที่
+     * เพิ่งบันทึกทุกครั้ง — คนที่สมัครเข้ามาใหม่ได้ role = "member" ติดตัวมาตั้งแต่ต้นด้วย
+     */
+    const explicit = String(who.systemRole || "").trim().toLowerCase();
+    if (ALL_SYSTEM_ROLES.includes(explicit)) return explicit;
     const role = String(who.role || "").trim().toLowerCase();
+    /**
+     * ✅ "superadmin" / "member" ไม่มีทางเป็นตำแหน่งในองค์กร — เจอที่ฟิลด์ role เมื่อไรแปลว่าเอกสารนี้
+     * เป็นรูปแบบใหม่ (role = ชั้นในระบบ) แน่นอน
+     * 🐛 ที่แก้: เดิมยอมอ่าน role เป็นชั้นในระบบ "ก็ต่อเมื่อ rank ถูกต้องด้วย" — ผู้ใช้ที่ตั้งเป็น
+     * Super Admin แล้วแต่ยังไม่มี rank จึงตกไปเป็น Member เงียบๆ แล้วเมนูหายทั้งแถบ
+     * ⚠️ "admin" ยังต้องรอ rank เหมือนเดิม เพราะซ้ำกับตำแหน่ง "แอดมินช่าง" ในองค์กร — ถ้าเดาผิดทาง
+     * ผู้ใช้เก่าที่เป็นแอดมินช่างจะเสียสิทธิ์ในองค์กรไปทันที (ของเดิมเดาให้ถูกอยู่แล้วผ่าน DEFAULT_SYSTEM_ROLE)
+     */
+    if (SYSTEM_ONLY_ROLES.includes(role)) return role;
+    // ⚠️ ใช้ "ตำแหน่งที่ถอดได้จริง" ไม่ใช่ค่าดิบในฟิลด์ rank — ข้อมูลเก่าที่ยังใช้ชื่อคีย์เดิมก็ต้องนับด้วย
+    const isNewShape = ALL_ROLES.includes(normalizeRole(who));
     if (isNewShape && ALL_SYSTEM_ROLES.includes(role)) return role;
     // รูปแบบเก่า: ตำแหน่งในระบบอยู่ที่ systemRole
-    const legacy = String(who.systemRole || "").trim().toLowerCase();
-    if (ALL_SYSTEM_ROLES.includes(legacy)) return legacy;
+    // (ช่อง systemRole ถูกอ่านไปตั้งแต่ต้นฟังก์ชันแล้ว — ดูคอมเมนต์ด้านบน)
   }
   return DEFAULT_SYSTEM_ROLE[normalizeRole(who)] || SYSTEM_ROLES.MEMBER;
 };
@@ -399,7 +436,10 @@ let RANK_LABEL_OVERRIDES = {};
 const setRankLabels = (map) => {
   const clean = {};
   Object.entries(map || {}).forEach(([role, label]) => {
-    const r = String(role || "").toLowerCase();
+    // ⚠️ ชื่อที่องค์กรตั้งไว้ก่อนเปลี่ยนคีย์ (เช่น "admin") ต้องยังมีผลกับคีย์ปัจจุบัน
+    // ไม่งั้นชื่อตำแหน่งที่ลูกค้าตั้งเองจะหายกลับไปเป็นชื่อเริ่มต้นเงียบๆ ตอน deploy
+    const raw = String(role || "").toLowerCase();
+    const r = LEGACY_RANK_ALIAS[raw] || raw;
     const text = String(label || "").trim().slice(0, 60);
     if (ALL_ROLES.includes(r) && text) clean[r] = text;
   });
@@ -443,11 +483,28 @@ const SUPERVISOR_ROLES = [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER];
  * (โค้ดเดิมทั่วแอปก็ทำ .toLowerCase() ทุกจุดด้วยเหตุผลเดียวกัน)
  */
 const normalizeRole = (who) => {
-  if (typeof who === "string") return who.trim().toLowerCase();
+  if (typeof who === "string") {
+    const s = who.trim().toLowerCase();
+    return LEGACY_RANK_ALIAS[s] || s;
+  }
   // ✅ รูปแบบใหม่: user.rank = ตำแหน่งในองค์กร · รูปแบบเก่า (และสำเนาที่ฝังในเอกสารอื่น): user.role
   const rank = String(who?.rank || "").trim().toLowerCase();
   if (ALL_ROLES.includes(rank)) return rank;
-  return String(who?.role || "").trim().toLowerCase();
+  if (LEGACY_RANK_ALIAS[rank]) return LEGACY_RANK_ALIAS[rank];
+  const role = String(who?.role || "").trim().toLowerCase();
+  // ⚠️ ต้องเช็คชื่อเดิมก่อนเข้าเงื่อนไข SYSTEM_ONLY_ROLES — ข้อมูลเก่าที่ role = "admin" หมายถึง
+  // "แอดมินช่าง" (ตำแหน่งในองค์กร) เสมอ ไม่ใช่ชั้นในระบบ
+  if (LEGACY_RANK_ALIAS[role]) return LEGACY_RANK_ALIAS[role];
+  /**
+   * 🐛 ที่แก้ (ผู้ใช้แจ้ง: "role เป็น superadmin แล้ว แต่เมนูไม่ขึ้น"):
+   * ผู้ใช้ที่ถูกตั้ง "ชั้นในระบบ" ไว้ที่ฟิลด์ role แต่ยังไม่มี rank (ข้อมูลเก่าที่ยังไม่ได้ย้าย)
+   * จะได้ตำแหน่งในองค์กรเป็นคำว่า "superadmin" ซึ่งไม่มีอยู่ในตารางสิทธิ์เลยสักช่อง →
+   * ทุกสิทธิ์ถูกปฏิเสธเงียบๆ และเมนูหายทั้งแถบโดยไม่มี error ให้เห็น
+   * ✅ ถือว่า "ไม่รู้ตำแหน่งในองค์กร" ไปตรงๆ ดีกว่าเอาชื่อชั้นในระบบมาสวมเป็นตำแหน่ง
+   * ⚠️ "admin" ไม่เข้าเงื่อนไขนี้โดยตั้งใจ — เป็นชื่อที่ซ้ำกันทั้งสองฝั่ง (แอดมินช่าง = ตำแหน่งในองค์กร)
+   *    ข้อมูลเก่าที่ role = "admin" ต้องยังได้สิทธิ์แอดมินช่างเหมือนเดิมทุกประการ
+   */
+  return SYSTEM_ONLY_ROLES.includes(role) ? "" : role;
 };
 
 /** ชื่อเดียวกับ normalizeRole แต่เรียกตามคำที่ผู้ใช้กำหนด — โค้ดใหม่ควรใช้ตัวนี้ */
@@ -544,6 +601,17 @@ const can = (who, capability) => {
 };
 
 /** แผนกที่ role นี้สังกัด (null = ไม่ผูกแผนกใดเป็นพิเศษ) */
+/**
+ * แก้ "ข้อมูลหลัก" (ประเภทงาน · ระบบ · สินค้า · สต๊อก) ได้ไหม
+ *
+ * 🐛 ที่แก้: ด่านหน้าเพจใช้ manageMasterData (ตำแหน่งระดับหัวหน้าในองค์กร) แต่ API ฝั่งนี้เช็ค
+ * manageAll (ชั้นผู้ดูแลระบบ) — คนละเกณฑ์กัน ผลคือผู้จัดการแผนกที่ไม่ได้เป็นผู้ดูแลระบบ "เปิดหน้าได้
+ * แต่กดบันทึกแล้วเด้ง 403" โดยไม่มีคำอธิบาย (เป็นบั๊กชนิดเดียวกับที่คอมเมนต์ใน AdminRoute เตือนไว้)
+ * ✅ รวมเป็นเกณฑ์เดียว: หัวหน้าในองค์กร "หรือ" ผู้ดูแลระบบ ก็แก้ข้อมูลหลักได้
+ * ⚠️ ใช้ตัวนี้ทุกที่ที่เป็นข้อมูลหลัก อย่าเขียน can(...,"manageAll") เองอีก ไม่งั้นจะหลุดกันอีกรอบ
+ */
+const canEditMasterData = (who) => can(who, "manageMasterData") || can(who, "manageAll");
+
 const departmentOf = (who) => ROLE_DEPARTMENT[normalizeRole(who)] || null;
 
 const isRole = (who, ...roles) => roles.map((r) => String(r).toLowerCase()).includes(normalizeRole(who));
@@ -604,6 +672,7 @@ const titleOf = (user) => {
 module.exports = {
   ROLES,
   ALL_ROLES,
+  LEGACY_RANK_ALIAS,
   RANKS,
   ALL_RANKS,
   rankFilter,
@@ -641,6 +710,7 @@ module.exports = {
   EXPENSE_WORKFLOW_CAPS,
   canManageUserOfRole,
   normalizeRole,
+  canEditMasterData,
   can,
   departmentOf,
   isRole,

@@ -8,7 +8,8 @@ const { imageSchema, editorSchema, STATUS, SLUG_RE } = require("./webShared");
  *    หน้าเว็บจึงวาดได้โดยไม่ต้องใช้ dangerouslySetInnerHTML — ไม่มีช่องให้ฝังสคริปต์ (XSS)
  *    ต่อให้บัญชีผู้ดูแลถูกขโมยไป ก็แทรกโค้ดขึ้นเว็บสาธารณะผ่านบทความไม่ได้
  */
-const BLOCK_TYPES = ["p", "h2", "list", "table", "note"];
+// ✅ เพิ่ม "image" — ผู้ใช้แจ้งว่าแทรกรูปในบทความไม่ได้ (เดิมมีแค่รูปปกที่ใช้ตอนแชร์ลิงก์เท่านั้น)
+const BLOCK_TYPES = ["p", "h2", "list", "table", "note", "image"];
 
 const blockSchema = new mongoose.Schema(
   {
@@ -20,6 +21,13 @@ const blockSchema = new mongoose.Schema(
     /** ใช้กับ table — หัวตาราง และแถว (แต่ละแถวต้องมีจำนวนช่องเท่าหัวตาราง) */
     head: { type: [{ type: String, maxlength: 200 }], default: undefined },
     rows: { type: [[{ type: String, maxlength: 500 }]], default: undefined },
+    /**
+     * ใช้กับ image — รูปที่อัปผ่าน /web/admin/upload แล้ว (เก็บ url + publicId เหมือนรูปที่อื่นทั้งระบบ)
+     * ⚠️ เก็บเป็นอ็อบเจกต์รูป ไม่ใช่ URL ดิบจากผู้ใช้ — กันการฝังลิงก์ภายนอกที่อาจหายหรือถูกสลับภายหลัง
+     */
+    image: { type: imageSchema, default: undefined },
+    /** คำบรรยายใต้รูป (ไม่บังคับ) */
+    caption: { type: String, default: "", maxlength: 300 },
   },
   { _id: false }
 );

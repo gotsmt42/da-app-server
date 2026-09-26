@@ -12,9 +12,19 @@
  *    การย้ายนี้จึงเป็นเรื่อง "ให้คนเปิดฐานข้อมูลอ่านรู้เรื่อง" ไม่ใช่เงื่อนไขให้ระบบทำงาน
  */
 const User = require("../models/User");
-const { ALL_ROLES, ALL_SYSTEM_ROLES, DEFAULT_SYSTEM_ROLE, ROLES } = require("../config/roles");
+const { ALL_ROLES, ALL_SYSTEM_ROLES, DEFAULT_SYSTEM_ROLE, ROLES, LEGACY_RANK_ALIAS } = require("../config/roles");
 
 const lower = (v) => String(v || "").trim().toLowerCase();
+/**
+ * ตำแหน่งในองค์กรที่ค่านี้หมายถึง — รองรับ "ชื่อคีย์เดิม" ด้วย
+ * ⚠️ จำเป็นหลังเปลี่ยนคีย์ admin → techadmin: ถ้าไม่แปลงให้ เอกสารเก่าที่ยังเป็น "admin" จะกลายเป็น
+ * "ไม่รู้ตำแหน่ง" แล้วโดนข้ามทั้งหมด (ระบบยังอ่านออกอยู่ แต่ข้อมูลในฐานข้อมูลจะไม่ถูกเก็บกวาดสักที)
+ */
+const asRank = (v) => {
+  const r = lower(v);
+  if (ALL_ROLES.includes(r)) return r;
+  return LEGACY_RANK_ALIAS[r] || "";
+};
 
 /** เอกสารนี้เป็นรูปแบบใหม่แล้วหรือยัง — ดูที่ rank ว่าเป็นคีย์ตำแหน่งในองค์กรจริง */
 const isNewShape = (u) => ALL_ROLES.includes(lower(u.rank)) && ALL_SYSTEM_ROLES.includes(lower(u.role));
@@ -25,18 +35,18 @@ function nextShape(u) {
   const rawRole = lower(u.role);
 
   // ตำแหน่งในองค์กร: ของใหม่อยู่ที่ rank, ของเก่าอยู่ที่ role
-  const rank = ALL_ROLES.includes(rawRank) ? rawRank : (ALL_ROLES.includes(rawRole) ? rawRole : "");
+  const rank = asRank(rawRank) || asRank(rawRole);
   if (!rank) return null; // ไม่รู้ว่าเป็นตำแหน่งอะไร — ข้ามไว้ ให้คนมาดูเอง ดีกว่าเดา
 
   // ตำแหน่งในระบบ: ถ้า role เป็นค่าระบบ "และ" ไม่ได้ถูกใช้เป็นตำแหน่งองค์กรอยู่ ให้ถือว่าเป็นของใหม่แล้ว
   const legacySystem = lower(u.systemRole);
   let role;
-  if (ALL_ROLES.includes(rawRank) && ALL_SYSTEM_ROLES.includes(rawRole)) role = rawRole;
+  if (asRank(rawRank) && ALL_SYSTEM_ROLES.includes(rawRole)) role = rawRole;
   else if (ALL_SYSTEM_ROLES.includes(legacySystem)) role = legacySystem;
   else role = DEFAULT_SYSTEM_ROLE[rank] || "member";
 
   // ตำแหน่งเฉพาะบุคคล: ข้อความเดิมใน rank ที่ไม่ใช่คีย์ตำแหน่ง
-  const legacyTitle = ALL_ROLES.includes(rawRank) ? "" : String(u.rank || "").trim();
+  const legacyTitle = asRank(rawRank) ? "" : String(u.rank || "").trim();
   const jobTitle = String(u.jobTitle || "").trim() || legacyTitle;
 
   return { rank, role, jobTitle };

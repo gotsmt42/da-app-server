@@ -15,7 +15,8 @@
     "check:perms": "node scripts/checkPermissions.js",
     "test": "npm run lint && npm run check:routes && npm run check:perms",
     "force-logout-all": "node scripts/forceLogoutAll.js",
-    "backfill-responsible-person": "node scripts/backfillResponsiblePerson.js"
+    "backfill-responsible-person": "node scripts/backfillResponsiblePerson.js",
+    "check:users": "node scripts/checkUserRanks.js"
   },
   "keywords": [],
   "author": "",

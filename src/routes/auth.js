@@ -319,6 +319,18 @@ router.put(
       const rankInput = ALL_ROLES.includes(normalizeRole(req.body.rank)) ? req.body.rank : role;
       if (rankInput !== undefined) {
         const wantedRole = normalizeRole(rankInput);
+        /**
+         * 🔒 ที่แก้ (เจอของจริง: บัญชีหนึ่งลงเอยด้วย rank = "superadmin"):
+         * เดิมค่าอะไรก็ตามที่ส่งมาในช่อง role/rank ถูกเขียนลงช่อง rank ตรงๆ ถ้าหน้าจอเผลอส่ง
+         * "ชั้นในระบบ" มาในช่องนั้น ตำแหน่งในองค์กรจะถูกเขียนทับด้วยค่าที่ไม่มีอยู่ในตารางสิทธิ์เลย
+         * ผลคือผู้ใช้คนนั้นเสียสิทธิ์งานทุกอย่างเงียบๆ โดยไม่มี error ให้เห็น
+         * ✅ ตำแหน่งในองค์กรต้องเป็นค่าที่อยู่ในรายการเท่านั้น ไม่ผ่าน = ปฏิเสธไปเลยพร้อมบอกเหตุผล
+         */
+        if (!ALL_ROLES.includes(wantedRole)) {
+          return res.status(400).json({
+            message: `ตำแหน่งในองค์กรไม่ถูกต้อง ("${rankInput}") — ต้องเป็นหนึ่งใน: ${ALL_ROLES.join(", ")}`,
+          });
+        }
         const currentRole = normalizeRank(existingUser);   // Rank ปัจจุบันของคนที่ถูกแก้
         if (wantedRole !== currentRole) {
           if (!isAdmin) {
