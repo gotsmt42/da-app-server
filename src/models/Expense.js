@@ -279,6 +279,15 @@ const expenseSchema = new mongoose.Schema(
       no: { type: Number, default: 0 },
       total: { type: Number, default: 0 },
     },
+    /**
+     * ช่วงงานที่งวดนี้ครอบคลุม — ✅ ผู้ใช้สั่ง: "งานงวดให้เบิกหลายช่วงได้"
+     * งานหนึ่งเข้าหลายช่วงวันที่ (1 event = 1 ช่วง) ส่วนผู้รับเหมาเบิกงวดเดียวรวมหลายช่วงได้
+     * ⚠️ ทุกช่วงต้องเป็นงานเดียวกัน (jobGroupKey เดียวกัน) · eventId/job ของใบ = ช่วงแรก แต่ job.start/end = ช่วงรวม
+     */
+    jobRanges: {
+      type: [{ _id: false, eventId: String, start: Date, end: Date, part: Number }],
+      default: [],
+    },
     /** มูลค่าตามสัญญาจ้างทั้งหมด (ก่อน VAT) — ใช้คำนวณ "เบิกไปแล้ว/คงเหลือ" ของงานนี้ */
     contractValue: { type: Number, default: 0 },
     /**

@@ -566,6 +566,49 @@ const clearDays = async () => {
  *   ผู้กรอก = พนักงานกรอกแทน · สายอนุมัติเดียวกับใบเบิก · หัก ณ ที่จ่าย + หักเงินมัดจำ/เบิกล่วงหน้า · ผูกงาน + งวดงาน
  * ⚠️ ยอดทุกตัวคำนวณที่นี่ ไม่เชื่อค่าจาก client (เหตุผลเดียวกับรายการในใบ)
  */
+/**
+ * หลายช่วงงานของ "งานเดียวกัน" สำหรับใบค่าจ้างผู้รับเหมา (ผู้ใช้สั่ง: "งานงวดให้เบิกหลายช่วงได้")
+ * @param {string|string[]} raw  eventIds (อาร์เรย์ / JSON / คั่นด้วยจุลภาค)
+ * @returns {Promise<{linked, ranges}|{error}>} linked = snapshot แบบ resolveJob โดย job.start/end คลุมทุกช่วง
+ * ⚠️ ห้ามปนงานคนละงาน — ยอดสะสมตามสัญญาคิดต่องาน ถ้าปนจะนับยอดผิดงาน
+ */
+const MAX_RANGES = 40;
+const resolveJobRanges = async (raw) => {
+  let ids = raw;
+  if (typeof ids === "string") {
+    try { ids = ids.trim().startsWith("[") ? JSON.parse(ids) : ids.split(","); } catch { ids = []; }
+  }
+  ids = [...new Set((Array.isArray(ids) ? ids : []).map((x) => String(x || "").trim()).filter(Boolean))].slice(0, MAX_RANGES);
+  if (!ids.length) {
+    const none = await resolveJob("");
+    return { linked: none, ranges: [] };
+  }
+  const all = await Promise.all(ids.map((id) => resolveJob(id)));
+  if (all.some((x) => !x)) return { error: "ไม่พบช่วงงานที่เลือกบางช่วง — อาจถูกลบไปแล้ว กรุณาเลือกใหม่" };
+  if (all.length > 1) {
+    const group = all[0].jobGroupKey;
+    if (!group || all.some((x) => x.jobGroupKey !== group)) {
+      return { error: "เลือกได้หลายช่วงเฉพาะช่วงวันที่ของงานเดียวกันเท่านั้น" };
+    }
+  }
+  const t = (d) => (d ? new Date(d).getTime() : 0);
+  all.sort((a, b) => t(a.job.start) - t(b.job.start));
+  const first = all[0];
+  const ends = all.map((x) => t(x.job.end || x.job.start)).filter(Boolean);
+  const linked = {
+    ...first,
+    job: {
+      ...first.job,
+      end: ends.length ? new Date(Math.max(...ends)) : first.job.end,
+      // หลายช่วง = ไม่ใช่ "ช่วงที่ n" ช่วงเดียวอีกต่อไป (รายละเอียดอยู่ใน jobRanges)
+      part: all.length > 1 ? 0 : first.job.part,
+    },
+  };
+  const ranges = all.map((x) => ({ eventId: x.eventId, start: x.job.start, end: x.job.end, part: x.job.part || 0 }));
+  return { linked, ranges };
+};
+
+
 const VAT_RATES = [0, 7];
 const MAX_WHT_RATE = 15;
 
@@ -886,6 +929,8 @@ router.get("/jobs", verifyToken, async (req, res) => {
     res.json({
       jobs: jobs.map(({ jobGroupId, time, team, teamMembers, ...j }) => ({
         ...j,
+        // ✅ ใบค่าจ้างผู้รับเหมาเลือกได้หลายช่วงของงานเดียวกัน — หน้าจอใช้คีย์นี้กรองให้เหลือช่วงของงานเดียวกัน
+        groupKey: jobGroupId || "",
         round: time === undefined || time === null ? "" : String(time),
         // ✅ รายชื่อคนที่เข้างาน "ช่วงนี้" (หัวหน้างาน + ลูกทีมของช่วง) — ปุ่ม "เบี้ยเลี้ยงทีมงาน" ใช้สร้างรายการให้ทีละคน
         teamNames: [...new Set([team, ...(teamMembers || []).map((m) => m?.name)].map((n) => String(n || "").trim()).filter(Boolean))],
@@ -1537,8 +1582,9 @@ router.post("/contractor-payments", verifyToken, upload.array("files", 15), asyn
       if (!requesterUser) return res.status(400).json({ message: "ไม่พบผู้เบิกที่เลือก" });
     }
 
-    const linked = await resolveJob(req.body.eventId);
-    if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
+    const rr = await resolveJobRanges(req.body.eventIds ?? req.body.eventId);
+    if (rr.error) return res.status(400).json({ message: rr.error });
+    const { linked } = rr;
     const payToResult = readContractorPayTo(req.body);
     if (payToResult.error) return res.status(400).json({ message: payToResult.error });
 
@@ -1559,6 +1605,7 @@ router.post("/contractor-payments", verifyToken, upload.array("files", 15), asyn
       },
       createdBy: me,
       ...linked,
+      jobRanges: rr.ranges,
       contractor: c.contractor,
       installment: inst.installment,
       contractValue: inst.contractValue,
@@ -1728,7 +1775,15 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
     // ✅ ใบ Advance และใบสำรองจ่าย เป็น "ใบที่ตั้งต้นเอง" — ผูกงาน/เปลี่ยนผู้เบิกได้
     // ⚠️ ใบเคลมที่เคลียร์ Advance ทำสองอย่างนี้ไม่ได้ ทั้งงานและผู้เบิกต้องตามใบ Advance เสมอ
     if (isStandalone(doc)) {
-      if (req.body.eventId !== undefined) {
+      if (isContractor(doc) && (req.body.eventIds !== undefined || req.body.eventId !== undefined)) {
+        const rr = await resolveJobRanges(req.body.eventIds ?? req.body.eventId);
+        if (rr.error) return res.status(400).json({ message: rr.error });
+        doc.eventId = rr.linked.eventId;
+        doc.jobKey = rr.linked.jobKey;
+        doc.jobGroupKey = rr.linked.jobGroupKey || "";
+        doc.job = rr.linked.job;
+        doc.jobRanges = rr.ranges;
+      } else if (req.body.eventId !== undefined) {
         const linked = await resolveJob(req.body.eventId);
         if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
         if (doc.kind === "advance") {
