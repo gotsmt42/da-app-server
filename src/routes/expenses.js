@@ -163,6 +163,7 @@ const sanitizeItems = (raw, kind) =>
         amount: money(qty * unitPrice),
         advanceItemIndex: kind === "claim" && Number.isInteger(idx) && idx >= 0 ? idx : null,
         receiptNo: kind === "claim" ? String(it?.receiptNo || "").trim().slice(0, 60) : "",
+        workDate: parseDay(it?.workDate),
         person: {
           userId: /^[a-f0-9]{24}$/i.test(String(it?.person?.userId || "")) ? String(it.person.userId) : "",
           name: String(it?.person?.name || "").trim().slice(0, 80),
