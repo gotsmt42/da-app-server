@@ -27,15 +27,15 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 149;   // +1 = GET /api/customer/map/embed (แผนที่บนฟอร์มงาน) ·   // +14 = /api/web (เว็บไซต์บริษัท: เนื้อหา 7 · คำขอจากเว็บ 6 · อัปโหลด 1)
+const EXPECTED_TOTAL = 152;   // +3 = ใบค่าจ้างผู้รับเหมา (/api/expenses: contractors · contractor-history · contractor-payments) · +1 = GET /api/customer/map/embed (แผนที่บนฟอร์มงาน) ·   // +14 = /api/web (เว็บไซต์บริษัท: เนื้อหา 7 · คำขอจากเว็บ 6 · อัปโหลด 1)
 const EXPECTED_PER_PREFIX = {
   // ✅ +1 = PUT /reorder (จัดลำดับการ์ดงานในวันเดียวกันบนปฏิทิน)
   "/api/events": 32,
   // ✅ ฝ่ายขาย: ท่อขาย 10 + ปฏิทินนัดหมาย 5
   // ✅ ใบมอบหมายงานข้ามแผนก — แทน /api/workorder เดิมที่ไม่เคยถูกใช้จริงเลย (0 document)
   "/api/dispatch": 15,
-  // ✅ เบิก Advance / เคลม / สำรองจ่าย — path ตายตัว 9 ตัว (summary/report/people/jobs/suggest/list/advances/claims/reimbursements) + /:id 9 ตัว
-  "/api/expenses": 26,
+  // ✅ เบิก Advance / เคลม / สำรองจ่าย — path ตายตัว 12 ตัว (summary/report/people/jobs/suggest/list/advances/claims/reimbursements/contractors/contractor-history/contractor-payments) + /:id 9 ตัว
+  "/api/expenses": 29,
   // ✅ ลายเซ็นอิเล็กทรอนิกส์: GET/PUT/DELETE /me + GET /status
   "/api/signatures": 4,
   "/api/auth": 9,

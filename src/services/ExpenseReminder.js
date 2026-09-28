@@ -85,12 +85,15 @@ async function checkAndNotifyPendingExpenses() {
       // ✅ แยกใบสำรองจ่ายออกจากใบเคลมในข้อความ — สองใบนี้คนละเรื่องกันสำหรับคนอนุมัติ (ใบหนึ่งเคลียร์เงิน
       // ที่จ่ายไปแล้ว อีกใบคือพนักงานควักเงินตัวเองรออยู่)
       const rmb = rows.filter((r) => r.kind === "claim" && r.claimType === "reimburse");
-      const clm = rows.filter((r) => r.kind === "claim" && r.claimType !== "reimburse");
-      const sum = (list) => list.reduce((t, r) => t + (Number(r.total) || 0), 0);
+      // ✅ ใบค่าจ้างผู้รับเหมา — ยอดที่แสดงคือยอดจ่ายสุทธิ (difference) ไม่ใช่ค่าจ้างก่อนหัก
+      const ctr = rows.filter((r) => r.kind === "claim" && r.claimType === "contractor");
+      const clm = rows.filter((r) => r.kind === "claim" && !["reimburse", "contractor"].includes(r.claimType));
+      const sum = (list, f = "total") => list.reduce((t, r) => t + (Number(r[f]) || 0), 0);
       const parts = [
         adv.length ? `Advance ${adv.length} ใบ (${baht(sum(adv))})` : "",
         clm.length ? `ใบเคลม ${clm.length} ใบ` : "",
         rmb.length ? `สำรองจ่าย ${rmb.length} ใบ (${baht(sum(rmb))})` : "",
+        ctr.length ? `ค่าจ้างผู้รับเหมา ${ctr.length} ใบ (สุทธิ ${baht(sum(ctr, "difference"))})` : "",
       ].filter(Boolean).join(" · ");
       // eslint-disable-next-line no-await-in-loop
       await sendPushToRoles(CAPABILITIES[s.cap] || [], {

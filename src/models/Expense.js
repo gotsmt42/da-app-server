@@ -33,7 +33,16 @@ const KINDS = ["advance", "claim"];
  * ⚠️ เลขที่เอกสารคนละชุดกัน: CLM-xxxxx/ปี (clear) · RMB-xxxxx/ปี (reimburse) — ฝ่ายบัญชีต้องแยก
  * "เคลียร์เงินที่จ่ายล่วงหน้าไปแล้ว" ออกจาก "จ่ายคืนเงินที่พนักงานออกไปก่อน" ได้ตั้งแต่เลขที่ใบ
  */
-const CLAIM_TYPES = ["clear", "reimburse"];
+/**
+ * contractor — ใบเบิกค่าจ้างผู้รับเหมา (ผู้ใช้สั่ง 28 ก.ย. 2569: "เพิ่มระบบเบิกเงินผู้รับเหมาให้สมบูรณ์มืออาชีพ"
+ *              และ "ใบนี้ไม่มี advance คือเบิกค่าแรงเลย")
+ *   • พนักงานกรอกแทนผู้รับเหมา (requester = พนักงานผู้ออกใบ · ผู้รับเงิน = ผู้รับเหมาในฟิลด์ contractor)
+ *   • ใช้สายอนุมัติเดียวกับใบเบิกทุกใบ (ตรวจสอบ → อนุมัติ → อนุมัติเบิกจ่าย)
+ *   • ผูกงาน + งวดงาน (installment) + มูลค่าตามสัญญาจ้าง (contractValue) ใช้ดูยอดสะสมทุกงวด
+ *   • หัก ณ ที่จ่าย / หักเงินมัดจำ-เบิกล่วงหน้าที่จ่ายไปแล้ว (deductions) → difference = ยอดจ่ายสุทธิ
+ * ⚠️ เลขที่เอกสารชุด CTR-xxxxx/ปี ของตัวเอง
+ */
+const CLAIM_TYPES = ["clear", "reimburse", "contractor"];
 
 const STATUS = [
   "pending",   // รอตรวจสอบ (ขั้นที่ 1)
@@ -61,6 +70,7 @@ const CATEGORIES = [
   "material",  // วัสดุ / อุปกรณ์
   "tool",      // เครื่องมือ
   "shipping",  // ค่าขนส่ง
+  "labor",     // ค่าแรง / ค่าจ้างเหมา (ใบเบิกค่าจ้างผู้รับเหมา)
   "other",     // อื่นๆ
 ];
 
@@ -252,6 +262,36 @@ const expenseSchema = new mongoose.Schema(
      *   = 0  พอดี (อนุมัติแล้วจบทันที ไม่ต้องมีขั้นชำระ)
      */
     difference: { type: Number, default: 0 },
+
+    // ── เฉพาะใบเบิกค่าจ้างผู้รับเหมา (claimType = "contractor") ─────────────
+    /** ผู้รับเหมา = ผู้รับเงินของใบ (คนนอกระบบ) — requester คือพนักงานที่กรอกแทน */
+    contractor: {
+      name: { type: String, default: "", trim: true },
+      /** เลขประจำตัวผู้เสียภาษี 13 หลัก — ต้องใช้ออกหนังสือรับรองการหักภาษี ณ ที่จ่าย (50 ทวิ) */
+      taxId: { type: String, default: "" },
+      phone: { type: String, default: "" },
+      address: { type: String, default: "" },
+      /** นิติบุคคล (ภ.ง.ด.53) หรือบุคคลธรรมดา (ภ.ง.ด.3) — ฝ่ายบัญชีใช้แยกแบบยื่นภาษี */
+      isCompany: { type: Boolean, default: false },
+    },
+    /** งวดงาน — งวดที่ no จาก total งวด (0 = ไม่ระบุ) */
+    installment: {
+      no: { type: Number, default: 0 },
+      total: { type: Number, default: 0 },
+    },
+    /** มูลค่าตามสัญญาจ้างทั้งหมด (ก่อน VAT) — ใช้คำนวณ "เบิกไปแล้ว/คงเหลือ" ของงานนี้ */
+    contractValue: { type: Number, default: 0 },
+    /**
+     * ยอดหัก/บวกของใบค่าจ้าง — คำนวณที่ server เสมอ (ดู contractorMoney ใน routes/expenses.js)
+     *   ค่าจ้างงวดนี้ (total) + VAT − หัก ณ ที่จ่าย (คิดจากยอดก่อน VAT) − หักเงินมัดจำ/เบิกล่วงหน้า = difference
+     */
+    deductions: {
+      vatRate: { type: Number, default: 0 },
+      vat: { type: Number, default: 0 },
+      whtRate: { type: Number, default: 0 },
+      wht: { type: Number, default: 0 },
+      deposit: { type: Number, default: 0 },
+    },
 
     // ── เฉพาะ Advance ────────────────────────────────────────────────────
     /** กำหนดเคลียร์ — ใช้ยิงแจ้งเตือนรายวันเมื่อเลยกำหนดแล้วยังไม่ส่งใบเคลม */

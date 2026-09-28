@@ -9,7 +9,7 @@
  *   ส่วนที่ 3 อนุมัติเบิกจ่าย                   → เงินออกจริง (Advance: จ่ายเงิน · ใบเคลม: ปิดส่วนต่าง)
  *
  * ⚠️ **ลำดับ route ห้ามสลับ** — path ตายตัว (/summary, /report, /people, /jobs, /suggest,
- * /advances, /claims) ต้องมาก่อน /:id ทั้งหมด ไม่งั้นจะถูกกลืนเงียบๆ กลายเป็นการหาใบที่ id ชื่อ
+ * /advances, /claims, /reimbursements, /contractors, /contractor-history, /contractor-payments) ต้องมาก่อน /:id ทั้งหมด ไม่งั้นจะถูกกลืนเงียบๆ กลายเป็นการหาใบที่ id ชื่อ
  * "summary" (ตรวจด้วย `npm run check:routes`)
  *
  * ⚠️ ยอดเงินทุกตัวคำนวณที่ server เสมอ (qty × ราคาต่อหน่วย → รวม → ส่วนต่าง) ไม่เชื่อค่าที่ client ส่งมา —
@@ -64,13 +64,19 @@ const buddhistYear = () => new Date().getFullYear() + 543;
  * ⚠️ "reimburse" ไม่ใช่ kind ในฐานข้อมูล แต่เป็นชนิดย่อยของ claim (claimType) — ทุกที่ที่ต้องรู้ว่า
  * ใบนี้อยู่ชุดไหนให้เรียก seriesOf(doc) ห้ามอ่าน doc.kind ตรงๆ ไม่งั้นใบสำรองจ่ายจะไปกินเลขชุด CLM
  */
-const DOC_PREFIX = { advance: "ADV", claim: "CLM", reimburse: "RMB" };
-const KIND_LABEL = { advance: "ใบเบิก Advance", claim: "ใบเคลม", reimburse: "ใบเบิกค่าใช้จ่าย (สำรองจ่าย)" };
+const DOC_PREFIX = { advance: "ADV", claim: "CLM", reimburse: "RMB", contractor: "CTR" };
+const KIND_LABEL = {
+  advance: "ใบเบิก Advance", claim: "ใบเคลม", reimburse: "ใบเบิกค่าใช้จ่าย (สำรองจ่าย)", contractor: "ใบเบิกค่าจ้างผู้รับเหมา",
+};
 
-const seriesOf = (doc) => (doc?.kind === "claim" && doc?.claimType === "reimburse" ? "reimburse" : doc?.kind);
+const seriesOf = (doc) => (doc?.kind === "claim" && ["reimburse", "contractor"].includes(doc?.claimType) ? doc.claimType : doc?.kind);
 const labelOf = (doc) => KIND_LABEL[seriesOf(doc)] || "ใบเบิก";
 /** ใบที่ผู้เบิกสำรองจ่ายเอง (ไม่มี Advance) — บริษัทต้องจ่ายคืนเต็มยอด */
 const isReimburse = (doc) => seriesOf(doc) === "reimburse";
+/** ใบเบิกค่าจ้างผู้รับเหมา — บริษัทจ่ายยอดสุทธิ (หลังหัก) ให้ผู้รับเหมา ไม่มี Advance */
+const isContractor = (doc) => seriesOf(doc) === "contractor";
+/** ใบที่ "ตั้งต้นเอง" (ไม่อ้างใบ Advance) — ผูกงาน/เปลี่ยนผู้เบิกได้ ต้องมีรายการและยอด > 0 */
+const isStandalone = (doc) => doc?.kind === "advance" || isReimburse(doc) || isContractor(doc);
 
 const nextDocNo = async (series) => {
   const year = buddhistYear();
@@ -450,10 +456,23 @@ const fullNamesOf = async (refs) => {
   return refs.map((p) => byId.get(String(p?.userId || "")) || p?.name || "");
 };
 
+/** ใบค่าจ้างผู้รับเหมา: ใคร · งวดไหน · ค่าจ้าง → หัก → สุทธิ */
+const contractorLineOf = (doc) => {
+  const d = doc.deductions || {};
+  const inst = doc.installment?.no ? ` งวดที่ ${doc.installment.no}${doc.installment.total ? `/${doc.installment.total}` : ""}` : "";
+  const cuts = [
+    d.vat ? `VAT ${fullBaht(d.vat)}` : "",
+    d.wht ? `หัก ณ ที่จ่าย ${d.whtRate}% ${fullBaht(d.wht)}` : "",
+    d.deposit ? `หักมัดจำ ${fullBaht(d.deposit)}` : "",
+  ].filter(Boolean).join(" · ");
+  return `ผู้รับเหมา ${doc.contractor?.name || "-"}${inst} · ค่าจ้าง ${fullBaht(doc.total)}${cuts ? `\n${cuts}` : ""}\nจ่ายสุทธิ ${fullBaht(doc.difference)}`;
+};
+
 /** ยอดเงินของใบ เขียนให้อ่านแล้วรู้ทันทีว่าเงินไหลไปทางไหน */
 const moneyLineOf = (doc) => {
   if (doc.kind === "advance") return `ขอเบิกเงินล่วงหน้า ${fullBaht(doc.total)}`;
   if (isReimburse(doc)) return `ขอเบิกคืนค่าสำรองจ่าย ${fullBaht(doc.total)}`;
+  if (isContractor(doc)) return contractorLineOf(doc);
   const diff = money(doc.total - (doc.advance?.total || 0));
   const base = `เคลียร์ ${doc.advance?.docNo || "Advance"} · ใช้จริง ${fullBaht(doc.total)} จากที่เบิก ${fullBaht(doc.advance?.total || 0)}`;
   if (diff > 0) return `${base}\nบริษัทต้องจ่ายเพิ่มให้พนักงาน ${fullBaht(diff)}`;
@@ -465,6 +484,7 @@ const moneyLineOf = (doc) => {
 const disburseLineOf = (doc) => {
   if (doc.kind === "advance") return `จ่ายเงิน Advance ให้พนักงาน ${fullBaht(doc.total)}`;
   if (isReimburse(doc)) return `จ่ายคืนค่าสำรองจ่ายให้พนักงาน ${fullBaht(doc.difference)}`;
+  if (isContractor(doc)) return `จ่ายค่าจ้างผู้รับเหมา ${doc.contractor?.name || ""} สุทธิ ${fullBaht(doc.difference)}`;
   return doc.difference > 0
     ? `จ่ายส่วนต่างเพิ่มให้พนักงาน ${fullBaht(doc.difference)} (อ้าง ${doc.advance?.docNo || "Advance"})`
     : `รับเงินคืนจากพนักงาน ${fullBaht(-doc.difference)} (อ้าง ${doc.advance?.docNo || "Advance"})`;
@@ -504,7 +524,7 @@ const notifyCapable = async (cap, me, payload) => {
 const notifyNextStep = async (step, doc, me, { lead = "", prevBy = "" } = {}) => {
   try {
     const [requesterName] = await fullNamesOf([doc.requester]);
-    const ask = step === "disburse" && doc.kind === "claim" && !isReimburse(doc) && doc.difference < 0
+    const ask = step === "disburse" && doc.kind === "claim" && !isStandalone(doc) && doc.difference < 0
       ? "กรุณายืนยันการรับเงินคืนและบันทึกหลักฐาน"
       : STEP_ASK[step];
     const body = [
@@ -539,6 +559,100 @@ const clearDays = async () => {
   }
 };
 
+
+/**
+ * ══ ใบเบิกค่าจ้างผู้รับเหมา (claimType = "contractor") ══════════════════════
+ * ✅ ผู้ใช้สั่ง (28 ก.ย. 2569): "เพิ่มระบบเบิกเงินผู้รับเหมาให้สมบูรณ์มืออาชีพ" · "ใบนี้ไม่มี advance คือเบิกค่าแรงเลย"
+ *   ผู้กรอก = พนักงานกรอกแทน · สายอนุมัติเดียวกับใบเบิก · หัก ณ ที่จ่าย + หักเงินมัดจำ/เบิกล่วงหน้า · ผูกงาน + งวดงาน
+ * ⚠️ ยอดทุกตัวคำนวณที่นี่ ไม่เชื่อค่าจาก client (เหตุผลเดียวกับรายการในใบ)
+ */
+const VAT_RATES = [0, 7];
+const MAX_WHT_RATE = 15;
+
+/** อ่านข้อมูลผู้รับเหมาจากฟอร์ม @returns {{contractor}|{error}} */
+const readContractor = (body) => {
+  const name = String(body?.contractorName || "").trim().slice(0, 150);
+  if (!name) return { error: "กรุณาระบุชื่อผู้รับเหมา" };
+  const taxId = digitsOnly(body?.contractorTaxId).slice(0, 13);
+  if (taxId && taxId.length !== 13) return { error: "เลขประจำตัวผู้เสียภาษีต้องมี 13 หลัก" };
+  return {
+    contractor: {
+      name,
+      taxId,
+      phone: String(body?.contractorPhone || "").trim().slice(0, 40),
+      address: String(body?.contractorAddress || "").trim().slice(0, 300),
+      isCompany: body?.contractorIsCompany === true || body?.contractorIsCompany === "true",
+    },
+  };
+};
+
+/**
+ * ยอดของใบค่าจ้าง
+ *   VAT = ค่าจ้าง × อัตรา · หัก ณ ที่จ่าย = ค่าจ้าง (ก่อน VAT) × อัตรา · สุทธิ = ค่าจ้าง + VAT − หัก ณ ที่จ่าย − มัดจำ
+ * ⚠️ หัก ณ ที่จ่ายคิดจากยอดก่อน VAT เสมอ (หลักของกรมสรรพากร) — คิดรวม VAT = หักเกินผู้รับเหมา
+ * @returns {{deductions, net}|{error}}
+ */
+const contractorMoney = (gross, raw = {}) => {
+  const vatRate = VAT_RATES.includes(Number(raw.vatRate)) ? Number(raw.vatRate) : 0;
+  const whtRate = Math.round(Math.min(Math.max(Number(raw.whtRate) || 0, 0), MAX_WHT_RATE) * 100) / 100;
+  const deposit = money(Math.max(Number(raw.deposit) || 0, 0));
+  const vat = money(gross * vatRate / 100);
+  const wht = money(gross * whtRate / 100);
+  const net = money(gross + vat - wht - deposit);
+  if (net < 0) return { error: "ยอดหักมัดจำ/เบิกล่วงหน้ามากกว่ายอดที่ต้องจ่าย — กรุณาตรวจสอบตัวเลขอีกครั้ง" };
+  return { deductions: { vatRate, vat, whtRate, wht, deposit }, net };
+};
+
+/** อ่านงวดงาน + มูลค่าสัญญา @returns {{installment, contractValue}|{error}} */
+const readInstallment = (body) => {
+  const no = Math.max(Math.floor(Number(body?.installmentNo) || 0), 0);
+  const total = Math.max(Math.floor(Number(body?.installmentTotal) || 0), 0);
+  if (no > 99 || total > 99) return { error: "งวดงานต้องไม่เกิน 99 งวด" };
+  if (no && total && no > total) return { error: `งวดที่ ${no} มากกว่าจำนวนงวดทั้งหมด (${total} งวด)` };
+  const contractValue = money(Math.min(Math.max(Number(body?.contractValue) || 0, 0), 1_000_000_000));
+  return { installment: { no, total }, contractValue };
+};
+
+/**
+ * บัญชีรับเงินของผู้รับเหมา — กรอกเอง (ผู้รับเหมาไม่มีบัญชีในทะเบียนพนักงาน)
+ * ⚠️ ตรวจเลขบัญชีกับรูปแบบของธนาคารเสมอ (config/banks.js) — โอนผิดบัญชีคือเงินหาย
+ * ไม่ระบุธนาคาร = จ่ายเป็นเงินสด/เช็ค
+ */
+const readContractorPayTo = (body) => {
+  const bankCode = String(body?.payBankCode || "").trim().toUpperCase();
+  if (!bankCode) return { payTo: { ...EMPTY_PAY_TO } };
+  const accountNo = digitsOnly(body?.payAccountNo);
+  const invalid = validateAccount(bankCode, accountNo);
+  if (invalid) return { error: invalid };
+  const accountName = String(body?.payAccountName || "").trim().slice(0, 120);
+  if (!accountName) return { error: "กรุณากรอกชื่อบัญชีของผู้รับเหมา" };
+  return { payTo: { accountId: "", bankCode, bankName: bankByCode(bankCode)?.name || bankCode, accountNo, accountName } };
+};
+
+/**
+ * ใบค่าจ้างของ "ผู้รับเหมาคนเดียวกัน ในงานเดียวกัน" — ใช้แสดงยอดเบิกสะสมทุกงวด
+ * ✅ งานเดียวกัน = jobGroupKey เดียวกัน (งานหลายช่วง) หรือ eventId เดียวกัน (งานช่วงเดียว)
+ * ⚠️ ไม่นับใบที่ยกเลิก · ใบที่ถูกตีกลับยังนับ (จะแก้ส่งใหม่ในใบเดิม)
+ */
+const contractorHistoryOf = async ({ eventId, jobGroupKey, name, excludeId }) => {
+  const nm = String(name || "").trim();
+  if (!nm || (!eventId && !jobGroupKey)) return [];
+  const query = {
+    kind: "claim", claimType: "contractor", status: { $ne: "cancelled" },
+    "contractor.name": new RegExp(`^${escapeRegex(nm)}$`, "i"),
+    ...(jobGroupKey ? { jobGroupKey } : { eventId }),
+  };
+  if (excludeId) query._id = { $ne: excludeId };
+  const rows = await Expense.find(query)
+    .select("docNo status docDate installment contractValue total difference deductions payment.at")
+    .sort({ "installment.no": 1, docDate: 1, createdAt: 1 })
+    .lean();
+  return rows.map((r) => ({
+    _id: r._id, docNo: r.docNo, status: r.status, docDate: r.docDate, installment: r.installment,
+    contractValue: r.contractValue, total: r.total, net: r.difference, deductions: r.deductions, paidAt: r.payment?.at || null,
+  }));
+};
+
 // ══ path ตายตัว (ต้องมาก่อน /:id) ══════════════════════════════════════════
 
 /** ตัวเลขสรุปบนหัวหน้า — ใช้ทำ badge และการ์ดสรุป */
@@ -563,7 +677,19 @@ router.get("/summary", verifyToken, async (req, res) => {
         { $group: { _id: null, total: { $sum: "$total" } } },
       ]),
       Expense.countDocuments({ ...mine, kind: "advance", status: "rejected" }),
-      Expense.countDocuments({ ...mine, kind: "claim", status: "rejected" }),
+      Expense.countDocuments({ ...mine, kind: "claim", claimType: { $ne: "contractor" }, status: "rejected" }),
+    ]);
+    // ✅ หน้าใบค่าจ้างผู้รับเหมา — ตัวเลขของหน้าตัวเอง + ป้ายเมนู (ใบของฉันที่ถูกตีกลับ)
+    const ctr = { kind: "claim", claimType: "contractor" };
+    const [ctrPending, ctrReviewing, ctrToPay, ctrRejectedMine, ctrPaidAgg] = await Promise.all([
+      Expense.countDocuments({ ...scope, ...ctr, status: "pending" }),
+      Expense.countDocuments({ ...scope, ...ctr, status: "reviewed" }),
+      Expense.countDocuments({ ...scope, ...ctr, status: "approved" }),
+      Expense.countDocuments({ ...mine, ...ctr, status: "rejected" }),
+      Expense.aggregate([
+        { $match: { ...scope, ...ctr, status: "approved" } },
+        { $group: { _id: null, total: { $sum: "$difference" } } },
+      ]),
     ]);
     /**
      * ✅ ตัวเลขสำหรับ "ป้ายแจ้งเตือน" — ต้องนับเฉพาะใบที่ผู้ใช้คนนี้กดทำรายการได้จริง (ผู้ใช้แจ้งว่าป้ายแปลก)
@@ -595,6 +721,10 @@ router.get("/summary", verifyToken, async (req, res) => {
       inboxPending, inboxReviewing, inboxDisburse, awaitingClaimMine,
       advanceRejectedMine, claimRejectedMine,
       outstandingAmount: money(outstanding[0]?.total || 0),
+      contractor: {
+        pending: ctrPending, reviewing: ctrReviewing, toPay: ctrToPay, rejectedMine: ctrRejectedMine,
+        toPayAmount: money(ctrPaidAgg[0]?.total || 0),
+      },
     });
   } catch (err) {
     console.error("❌ สรุปใบเบิกไม่สำเร็จ:", err);
@@ -642,10 +772,15 @@ router.get("/report", verifyToken, async (req, res) => {
       .select("-activityLog -attachments")
       .sort({ docDate: -1, createdAt: -1 })
       .lean();
+    // ✅ ใบค่าจ้างผู้รับเหมา — เงินที่บริษัทจ่ายจริงอีกก้อน ต้องอยู่ในรายงานด้วย (แยกก้อนเพราะมีหัก ณ ที่จ่าย/มัดจำ)
+    const contractors = await Expense.find({ ...query, kind: "claim", claimType: "contractor" })
+      .select("-activityLog -attachments")
+      .sort({ docDate: -1, createdAt: -1 })
+      .lean();
     // ✅ เติมชื่อ-นามสกุลให้ครบเหมือนหน้าอื่น — รายงาน/ไฟล์ Excel ต้องไม่โชว์ชื่อต้นอย่างเดียว
     const rows = advances.map((a) => ({ ...a, claim: claimByAdvance.get(String(a._id)) || null }));
-    await withFullNames([...rows, ...rows.map((r) => r.claim).filter(Boolean), ...reimbursements]);
-    res.json({ advances: rows, reimbursements });
+    await withFullNames([...rows, ...rows.map((r) => r.claim).filter(Boolean), ...reimbursements, ...contractors]);
+    res.json({ advances: rows, reimbursements, contractors });
   } catch (err) {
     console.error("❌ ดึงรายงานการเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงรายงานไม่สำเร็จ" });
@@ -993,8 +1128,10 @@ router.get("/", verifyToken, async (req, res) => {
     // ✅ แยก "เคลียร์ Advance" ออกจาก "สำรองจ่ายเอง" ได้ที่หน้าใบเคลม
     // ⚠️ ใบเก่าที่ออกก่อนมีฟีเจอร์นี้ไม่มีฟิลด์ claimType เลย ต้องนับเป็น clear ด้วย ($ne: reimburse)
     // ไม่ใช่ {claimType: "clear"} ซึ่งจะทำให้ใบเก่าหายไปจากรายการทั้งหมด
-    if (req.query.claimType === "reimburse") query.claimType = "reimburse";
-    else if (req.query.claimType === "clear") query.claimType = { $ne: "reimburse" };
+    if (["reimburse", "contractor"].includes(req.query.claimType)) query.claimType = req.query.claimType;
+    else if (req.query.claimType === "clear") query.claimType = { $nin: ["reimburse", "contractor"] };
+    // ✅ หน้าใบเคลม "ทั้งหมด" = ใบของพนักงาน (เคลียร์ Advance + สำรองจ่าย) — ใบค่าจ้างผู้รับเหมามีหน้าของตัวเอง
+    else if (req.query.claimType === "staff") query.claimType = { $ne: "contractor" };
     const statuses = String(req.query.status || "").split(",").map((s) => s.trim()).filter((s) => Expense.STATUS.includes(s));
     if (statuses.length) query.status = { $in: statuses };
     if (req.query.userId && can(req.user, "viewAllExpenses")) query["requester.userId"] = String(req.query.userId);
@@ -1013,7 +1150,7 @@ router.get("/", verifyToken, async (req, res) => {
     if (q) {
       const rx = new RegExp(escapeRegex(q), "i");
       and.push({ $or: [
-        { docNo: rx }, { subject: rx }, { "requester.name": rx }, { "job.title": rx },
+        { docNo: rx }, { subject: rx }, { "requester.name": rx }, { "job.title": rx }, { "contractor.name": rx },
         { "job.site": rx }, { "job.company": rx }, { "advance.docNo": rx }, { "items.description": rx },
       ] });
     }
@@ -1307,6 +1444,148 @@ router.post("/reimbursements", verifyToken, upload.array("files", 15), async (re
   }
 });
 
+/**
+ * ผู้รับเหมาที่เคยออกใบ — ใช้เติมชื่อ/เลขภาษี/ที่อยู่/บัญชีให้อัตโนมัติ ไม่ต้องพิมพ์ใหม่ทุกงวด
+ * ✅ ดึงจากใบเดิม (ไม่มีทะเบียนผู้รับเหมาแยก) — ข้อมูลล่าสุดของแต่ละชื่อชนะ
+ * 🔒 เฉพาะคนที่ออกใบเบิกได้ · ช่างเห็นเฉพาะผู้รับเหมาในใบที่ตัวเองมองเห็นได้ (scopeFor)
+ */
+router.get("/contractors", verifyToken, async (req, res) => {
+  try {
+    if (!can(req.user, "requestExpense") && !can(req.user, "viewAllExpenses")) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์ใช้งานระบบเบิก" });
+    }
+    const rows = await Expense.find({ ...scopeFor(req), kind: "claim", claimType: "contractor", "contractor.name": { $ne: "" } })
+      .select("contractor payTo updatedAt")
+      .sort({ updatedAt: -1 })
+      .limit(500)
+      .lean();
+    const byName = new Map();
+    rows.forEach((r) => {
+      const key = String(r.contractor?.name || "").trim().toLowerCase();
+      if (!key || byName.has(key)) return;
+      byName.set(key, {
+        ...r.contractor,
+        payTo: r.payTo?.accountNo ? { bankCode: r.payTo.bankCode, accountNo: r.payTo.accountNo, accountName: r.payTo.accountName } : null,
+      });
+    });
+    res.json({ contractors: [...byName.values()].slice(0, 200) });
+  } catch (err) {
+    console.error("❌ ดึงรายชื่อผู้รับเหมาไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ดึงรายชื่อผู้รับเหมาไม่สำเร็จ" });
+  }
+});
+
+/**
+ * งวดที่เบิกไปแล้วของผู้รับเหมาคนนี้ในงานนี้ — ฟอร์มใช้เสนอ "งวดถัดไป" + มูลค่าสัญญา + ยอดสะสม
+ * ⚠️ ตอบเฉพาะงานที่ผู้ถามมองเห็นใบได้ — ช่างที่ไม่มีสิทธิ์ดูทั้งหมดจะเห็นเฉพาะใบในขอบเขตตัวเอง
+ */
+router.get("/contractor-history", verifyToken, async (req, res) => {
+  try {
+    if (!can(req.user, "requestExpense") && !can(req.user, "viewAllExpenses")) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์ใช้งานระบบเบิก" });
+    }
+    const linked = await resolveJob(req.query.eventId);
+    if (!linked || !linked.eventId) return res.json({ history: [] });
+    const excludeId = /^[a-f0-9]{24}$/i.test(String(req.query.excludeId || "")) ? String(req.query.excludeId) : null;
+    let history = await contractorHistoryOf({ eventId: linked.eventId, jobGroupKey: linked.jobGroupKey, name: req.query.name, excludeId });
+    if (!can(req.user, "viewAllExpenses") && history.length) {
+      const visible = await Expense.find({ _id: { $in: history.map((h) => h._id) }, ...scopeFor(req) }).select("_id").lean();
+      const ok = new Set(visible.map((v) => String(v._id)));
+      history = history.filter((h) => ok.has(String(h._id)));
+    }
+    res.json({ history });
+  } catch (err) {
+    console.error("❌ ดึงงวดที่เบิกแล้วไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ดึงงวดที่เบิกแล้วไม่สำเร็จ" });
+  }
+});
+
+/**
+ * ออกใบเบิกค่าจ้างผู้รับเหมา — ไม่มี Advance (เบิกค่าแรงตรง) · พนักงานกรอกแทนผู้รับเหมา
+ * ⚠️ requester = พนักงานผู้ออกใบ (หรือคนที่แอดมินเลือก) — ผู้รับเงินคือผู้รับเหมาใน contractor/payTo
+ * ⚠️ difference = ยอดจ่ายสุทธิ (หลัง VAT/หัก ณ ที่จ่าย/หักมัดจำ) → ขั้นอนุมัติเบิกจ่ายใช้ /settle เดิม
+ */
+router.post("/contractor-payments", verifyToken, upload.array("files", 15), async (req, res) => {
+  try {
+    if (!can(req.user, "requestExpense") && !can(req.user, "viewAllExpenses")) {
+      return res.status(403).json({ message: "คุณไม่มีสิทธิ์ออกใบเบิกค่าจ้างผู้รับเหมา" });
+    }
+    const me = actor(req);
+    const subject = String(req.body.subject || "").trim().slice(0, 300);
+    if (!subject) return res.status(400).json({ message: "กรุณาระบุเรื่องที่ขอเบิก" });
+
+    const c = readContractor(req.body);
+    if (c.error) return res.status(400).json({ message: c.error });
+    const inst = readInstallment(req.body);
+    if (inst.error) return res.status(400).json({ message: inst.error });
+
+    const items = await withPersons(sanitizeItems(req.body.items, "claim"));
+    if (!items.length) return res.status(400).json({ message: "กรุณาเพิ่มรายการค่าจ้างอย่างน้อย 1 รายการ" });
+    const total = sumItems(items);
+    if (total <= 0) return res.status(400).json({ message: "ยอดค่าจ้างต้องมากกว่า 0 บาท" });
+    const m = contractorMoney(total, req.body);
+    if (m.error) return res.status(400).json({ message: m.error });
+
+    // ── พนักงานผู้ออกใบ (ผู้เบิกในสายอนุมัติ) ───────────────────────────
+    let requesterUser = req.user;
+    const requesterId = String(req.body.requesterId || "").trim();
+    if (requesterId && requesterId !== me.userId) {
+      if (!can(req.user, "viewAllExpenses")) {
+        return res.status(403).json({ message: "เฉพาะแอดมิน/ผู้จัดการเท่านั้นที่เบิกแทนคนอื่นได้" });
+      }
+      requesterUser = /^[a-f0-9]{24}$/i.test(requesterId) ? await User.findById(requesterId).lean() : null;
+      if (!requesterUser) return res.status(400).json({ message: "ไม่พบผู้เบิกที่เลือก" });
+    }
+
+    const linked = await resolveJob(req.body.eventId);
+    if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
+    const payToResult = readContractorPayTo(req.body);
+    if (payToResult.error) return res.status(400).json({ message: payToResult.error });
+
+    const doc = new Expense({
+      kind: "claim",
+      claimType: "contractor",
+      payTo: payToResult.payTo,
+      docNo: await nextDocNo("contractor"),
+      status: "pending",
+      docDate: parseDay(req.body.docDate) || todayNoonUtc(),
+      to: String(req.body.to || "").trim().slice(0, 120),
+      subject,
+      note: String(req.body.note || "").trim().slice(0, 1000),
+      requester: {
+        userId: String(requesterUser._id),
+        name: personName(requesterUser),
+        position: String(req.body.position || "").trim().slice(0, 80) || positionOf(requesterUser),
+      },
+      createdBy: me,
+      ...linked,
+      contractor: c.contractor,
+      installment: inst.installment,
+      contractValue: inst.contractValue,
+      items,
+      total,
+      deductions: m.deductions,
+      advanceId: "",
+      advance: { docNo: "", subject: "", total: 0, paidAt: null },
+      difference: m.net,
+      submittedAt: new Date(),
+    });
+
+    await sealRequester(req, doc);
+    await attachUploads(req, doc, me, "invoice", "created");
+    const instText = doc.installment.no ? ` งวดที่ ${doc.installment.no}${doc.installment.total ? `/${doc.installment.total}` : ""}` : "";
+    log(doc, "created", `ออกใบเบิกค่าจ้างผู้รับเหมา ${c.contractor.name}${instText} · ค่าจ้าง ${fullBaht(total)} · จ่ายสุทธิ ${fullBaht(m.net)}`, me);
+    await saveWithDocNo(doc, "contractor");
+
+    const onBehalf = String(requesterUser._id) !== me.userId;
+    notifyNextStep("review", doc, me, { prevBy: onBehalf ? `ออกใบแทนโดย ${fullNameOf(req.user)}` : "" });
+    res.status(201).json({ expense: await withFullNames(doc.toObject()) });
+  } catch (err) {
+    console.error("❌ ออกใบเบิกค่าจ้างผู้รับเหมาไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ออกใบเบิกค่าจ้างผู้รับเหมาไม่สำเร็จ" });
+  }
+});
+
 // ══ /:id ══════════════════════════════════════════════════════════════════
 
 const loadVisible = async (req, res) => {
@@ -1336,6 +1615,12 @@ router.get("/:id", verifyToken, async (req, res) => {
       expense.claim = await Expense.findById(expense.claimId).select("-activityLog").lean();
     } else if (expense.kind === "claim" && expense.advanceId) {
       expense.advanceDoc = await Expense.findById(expense.advanceId).select("-activityLog").lean();
+    }
+    // ✅ ใบค่าจ้าง: งวดอื่นของผู้รับเหมาคนเดียวกันในงานเดียวกัน — เห็นยอดสะสม/คงเหลือตามสัญญาในใบเลย
+    if (isContractor(expense)) {
+      expense.contractorHistory = await contractorHistoryOf({
+        eventId: expense.eventId, jobGroupKey: expense.jobGroupKey, name: expense.contractor?.name, excludeId: expense._id,
+      });
     }
     res.json({ expense: await withFullNames(expense) });
   } catch (err) {
@@ -1404,7 +1689,7 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
       const items = await withPersons(sanitizeItems(req.body.items, doc.kind));
       // ⚠️ ใบสำรองจ่ายต้องมีรายการและยอด > 0 เหมือนใบ Advance — "ไม่ได้ใช้เงินเลย" ใช้ได้เฉพาะใบที่
       // เคลียร์ Advance (เงินออกไปแล้วจริง) ส่วนใบสำรองจ่ายยอด 0 ไม่มีอะไรให้จ่ายคืน = ไม่ควรมีใบ
-      const needItems = doc.kind === "advance" || isReimburse(doc);
+      const needItems = isStandalone(doc);
       if (needItems && !items.length) {
         return res.status(400).json({ message: "กรุณาเพิ่มรายการอย่างน้อย 1 รายการ" });
       }
@@ -1415,12 +1700,34 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
       }
       doc.items = items;
       doc.total = total;
-      if (doc.kind === "claim") doc.difference = money(total - (doc.advance?.total || 0));
+      if (doc.kind === "claim" && !isContractor(doc)) doc.difference = money(total - (doc.advance?.total || 0));
+    }
+
+    // ✅ ใบค่าจ้างผู้รับเหมา — ข้อมูลผู้รับเหมา · งวดงาน · ยอดหัก · บัญชีรับเงิน แล้วคำนวณยอดสุทธิใหม่ทุกครั้ง
+    if (isContractor(doc)) {
+      if (req.body.contractorName !== undefined) {
+        const c = readContractor(req.body);
+        if (c.error) return res.status(400).json({ message: c.error });
+        doc.contractor = c.contractor;
+      }
+      if (req.body.installmentNo !== undefined || req.body.contractValue !== undefined) {
+        const inst = readInstallment(req.body);
+        if (inst.error) return res.status(400).json({ message: inst.error });
+        doc.installment = inst.installment;
+        doc.contractValue = inst.contractValue;
+      }
+      const cur = doc.deductions || {};
+      const m = contractorMoney(doc.total, {
+        vatRate: req.body.vatRate ?? cur.vatRate, whtRate: req.body.whtRate ?? cur.whtRate, deposit: req.body.deposit ?? cur.deposit,
+      });
+      if (m.error) return res.status(400).json({ message: m.error });
+      doc.deductions = m.deductions;
+      doc.difference = m.net;
     }
 
     // ✅ ใบ Advance และใบสำรองจ่าย เป็น "ใบที่ตั้งต้นเอง" — ผูกงาน/เปลี่ยนผู้เบิกได้
     // ⚠️ ใบเคลมที่เคลียร์ Advance ทำสองอย่างนี้ไม่ได้ ทั้งงานและผู้เบิกต้องตามใบ Advance เสมอ
-    if (doc.kind === "advance" || isReimburse(doc)) {
+    if (isStandalone(doc)) {
       if (req.body.eventId !== undefined) {
         const linked = await resolveJob(req.body.eventId);
         if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
@@ -1450,7 +1757,14 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
     // ✅ บัญชีรับเงินของผู้เบิก (ทั้งใบ Advance และใบเคลม) — ส่ง payToAccountId เฉพาะตอนผู้ใช้เปลี่ยน
     // (ไม่ส่ง = คงสำเนาเดิมไว้ เช่นบัญชีนั้นถูกลบจากทะเบียนไปแล้ว ใบเดิมต้องยังแก้ช่องอื่นได้)
     // ⚠️ ผู้เบิกเปลี่ยน (แอดมินเปลี่ยนคน) แต่บัญชีเดิมเป็นของคนเก่า → ล้างทิ้ง กันโอนเงินผิดคน
-    {
+    if (isContractor(doc)) {
+      // ⚠️ บัญชีผู้รับเหมากรอกเองในใบ (ไม่ได้มาจากทะเบียนบัญชีพนักงาน) — ส่งมาเมื่อไรตรวจใหม่ทั้งชุด
+      if (req.body.payBankCode !== undefined) {
+        const r = readContractorPayTo(req.body);
+        if (r.error) return res.status(400).json({ message: r.error });
+        doc.payTo = r.payTo;
+      }
+    } else {
       if (req.body.payToAccountId !== undefined) {
         const r = await resolvePayTo(req.body.payToAccountId, doc.requester.userId);
         if (r.error) return res.status(400).json({ message: r.error });
@@ -1461,7 +1775,7 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
     }
 
     // ⚠️ ส่งใหม่หลังถูกตีกลับ = ไฟล์ของรอบ "ส่งใหม่" ไม่ใช่รอบออกใบครั้งแรก
-    await attachUploads(req, doc, me, doc.kind === "claim" ? "receipt" : "other", wasRejected ? "resubmitted" : "created");
+    await attachUploads(req, doc, me, isContractor(doc) ? "invoice" : doc.kind === "claim" ? "receipt" : "other", wasRejected ? "resubmitted" : "created");
 
     // ⚠️ เปลี่ยนผู้เบิก = ลายเซ็นของคนเดิมต้องหลุดออกจากใบทันที (เหตุผลเดียวกับบัญชีรับเงิน)
     if (doc.requester.userId !== requesterBefore && doc.signatures?.requester?.hash) {
@@ -1588,19 +1902,28 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
     } else {
       advance = doc.advanceId ? await Expense.findById(doc.advanceId) : null;
       // ⚠️ คำนวณส่วนต่างใหม่จากยอด snapshot ตอนอนุมัติเสมอ (กันกรณีแก้รายการแล้วค่าเก่าค้าง)
-      doc.difference = money(doc.total - (doc.advance?.total || 0));
+      if (isContractor(doc)) {
+        const m = contractorMoney(doc.total, doc.deductions || {});
+        if (m.error) return res.status(409).json({ message: m.error });
+        doc.deductions = m.deductions;
+        doc.difference = m.net;
+      } else {
+        doc.difference = money(doc.total - (doc.advance?.total || 0));
+      }
       if (doc.difference === 0) {
         // ✅ ไม่มีส่วนต่าง = จบในขั้นเดียว ไม่ต้องให้หัวหน้ากด "ชำระส่วนต่าง 0 บาท" อีกรอบ
         doc.status = "settled";
-        doc.payment = { method: "other", ref: "", note: "ไม่มีส่วนต่าง", at: new Date(), by: { userId: me.userId, name: me.name } };
-        log(doc, "approved", `อนุมัติ · ใช้จริงพอดีกับยอด Advance${note ? ` · ${note}` : ""}`, me);
+        doc.payment = { method: "other", ref: "", note: isContractor(doc) ? "หักมัดจำครบ ไม่มียอดจ่าย" : "ไม่มีส่วนต่าง", at: new Date(), by: { userId: me.userId, name: me.name } };
+        log(doc, "approved", isContractor(doc)
+          ? `อนุมัติ · หักมัดจำ/เบิกล่วงหน้าครบยอด ไม่มียอดต้องจ่าย${note ? ` · ${note}` : ""}`
+          : `อนุมัติ · ใช้จริงพอดีกับยอด Advance${note ? ` · ${note}` : ""}`, me);
         if (advance) {
           advance.status = "cleared";
           log(advance, "cleared", `เคลียร์เรียบร้อยด้วย ${doc.docNo}`, me);
         }
       } else {
         doc.status = "approved";
-        const waitText = isReimburse(doc) ? "รอจ่ายคืน" : doc.difference > 0 ? "รอจ่ายเพิ่ม" : "รอรับคืน";
+        const waitText = isContractor(doc) ? "รอจ่ายค่าจ้างสุทธิ" : isReimburse(doc) ? "รอจ่ายคืน" : doc.difference > 0 ? "รอจ่ายเพิ่ม" : "รอรับคืน";
         log(doc, "approved", `อนุมัติ · ${waitText} ${fullBaht(Math.abs(doc.difference))}${note ? ` · ${note}` : ""}`, me);
       }
     }
@@ -1610,12 +1933,14 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
     if (doc.status === "settled") {
       // ✅ ไม่มีส่วนต่าง = จบสายงานแล้ว — แจ้งผู้เบิกว่าเคลียร์เรียบร้อย (ไม่มีขั้นอนุมัติเบิกจ่ายให้ใครทำต่อ)
       notifyUsers(ownersOf(doc), me, {
-        title: "🏁 เคลียร์ Advance เรียบร้อย",
-        body: [
-          `${doc.docNo} · เคลียร์ ${doc.advance?.docNo || "Advance"}`,
-          `ใช้จริง ${fullBaht(doc.total)} พอดีกับยอดที่เบิก — ไม่มีส่วนต่าง`,
-          `อนุมัติโดย ${fullNameOf(req.user)}`,
-        ].join("\n"),
+        title: isContractor(doc) ? "🏁 ปิดใบค่าจ้างผู้รับเหมา (ไม่มียอดต้องจ่าย)" : "🏁 เคลียร์ Advance เรียบร้อย",
+        body: (isContractor(doc)
+          ? [`${doc.docNo} · ${doc.contractor?.name || ""}`, `ค่าจ้าง ${fullBaht(doc.total)} หักมัดจำ/เบิกล่วงหน้าครบยอด`, `อนุมัติโดย ${fullNameOf(req.user)}`]
+          : [
+            `${doc.docNo} · เคลียร์ ${doc.advance?.docNo || "Advance"}`,
+            `ใช้จริง ${fullBaht(doc.total)} พอดีกับยอดที่เบิก — ไม่มีส่วนต่าง`,
+            `อนุมัติโดย ${fullNameOf(req.user)}`,
+          ]).join("\n"),
         url: urlOf(doc),
         tag: `expense-${doc._id}`,
       });
@@ -1786,7 +2111,9 @@ router.post("/:id/settle", verifyToken, upload.array("files", 5), async (req, re
     doc.status = "settled";
     await sealDisburser(req, doc, me);
     await attachUploads(req, doc, me, "transfer_slip", "settle");
-    const diffText = isReimburse(doc)
+    const diffText = isContractor(doc)
+      ? `จ่ายค่าจ้างผู้รับเหมา ${doc.contractor?.name || ""} สุทธิ ${fullBaht(doc.difference)}`
+      : isReimburse(doc)
       ? `จ่ายคืนค่าสำรองจ่าย ${fullBaht(doc.difference)}`
       : doc.difference > 0 ? `จ่ายเพิ่ม ${fullBaht(doc.difference)}` : `รับคืน ${fullBaht(-doc.difference)}`;
     log(doc, "settled", `${diffText} (${PAYMENT_LABEL[doc.payment.method]}${doc.payment.ref ? ` ${doc.payment.ref}` : ""})`, me);
@@ -1799,7 +2126,9 @@ router.post("/:id/settle", verifyToken, upload.array("files", 5), async (req, re
     await doc.save();
     if (advance) await advance.save();
 
-    const title = isReimburse(doc)
+    const title = isContractor(doc)
+      ? "💸 อนุมัติเบิกจ่ายแล้ว · จ่ายค่าจ้างผู้รับเหมา"
+      : isReimburse(doc)
       ? "💸 อนุมัติเบิกจ่ายแล้ว · ได้รับเงินคืนค่าสำรองจ่าย"
       : doc.difference > 0
         ? "💸 อนุมัติเบิกจ่ายแล้ว · ได้รับส่วนต่างเพิ่ม"
@@ -1809,7 +2138,7 @@ router.post("/:id/settle", verifyToken, upload.array("files", 5), async (req, re
       body: [
         `${doc.docNo}${doc.advance?.docNo ? ` · เคลียร์ ${doc.advance.docNo}` : ` · ${doc.subject}`}`,
         `${diffText} (${paymentText(doc.payment)})`,
-        `${doc.difference < 0 && !isReimburse(doc) ? "ยืนยันรับเงินโดย" : "อนุมัติเบิกจ่ายโดย"} ${fullNameOf(req.user)}`,
+        `${doc.difference < 0 && !isStandalone(doc) ? "ยืนยันรับเงินโดย" : "อนุมัติเบิกจ่ายโดย"} ${fullNameOf(req.user)}`,
         "ปิดรายการเรียบร้อย",
       ].join("\n"),
       url: urlOf(doc),
@@ -1966,7 +2295,7 @@ router.post("/:id/files", verifyToken, upload.array("files", 10), async (req, re
     }
     if (!req.files?.length) return res.status(400).json({ message: "กรุณาเลือกไฟล์" });
     const me = actor(req);
-    await attachUploads(req, doc, me, doc.kind === "claim" ? "receipt" : "other", "added");
+    await attachUploads(req, doc, me, isContractor(doc) ? "invoice" : doc.kind === "claim" ? "receipt" : "other", "added");
     log(doc, "files_added", `แนบไฟล์ ${req.files.length} ไฟล์`, me);
     await doc.save();
     res.json({ expense: await withFullNames(doc.toObject()) });
