@@ -125,6 +125,7 @@ const TOPICS_BY_BASE = {
   "issued-documents": ["documents"],
   dispatch: ["dispatch", "events"],
   expenses: ["expenses"],
+  ot: ["ot"],
   settings: ["settings"],
   // เนื้อหาเว็บไซต์ + คำขอจากเว็บ (ป้ายตัวเลข "คำขอใหม่" บนเมนูขยับทันทีที่ลูกค้ากดส่ง)
   web: ["website", "leads"],

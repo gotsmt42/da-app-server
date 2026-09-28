@@ -32,6 +32,11 @@ const DEFAULTS = {
   letterheadUrl: "",
   stampUrl: "",
   advanceClearDays: 7,
+  // ✅ OT — ค่าเริ่มต้นตามกฎหมายคุ้มครองแรงงาน (ม.61–63) ผู้ใช้สั่งให้ "ตั้งค่าตัว x ได้"
+  otMultipliers: { workdayOT: 1.5, holidayWork: 1, holidayOT: 3 },
+  otHoursPerDay: 8,
+  /** วันหยุดประจำสัปดาห์ (0 = อาทิตย์ … 6 = เสาร์) ใช้เดาประเภทวันให้อัตโนมัติ */
+  otRestDays: [0],
 };
 
 const orgSettingSchema = new mongoose.Schema(
@@ -63,6 +68,18 @@ const orgSettingSchema = new mongoose.Schema(
      * ⚠️ ใช้ตอนบันทึกจ่ายเงินเมื่อผู้อนุมัติเบิกจ่ายไม่ได้ระบุวันเอง และใช้ยิงเตือนรายวัน
      */
     advanceClearDays: { type: Number, default: DEFAULTS.advanceClearDays, min: 1, max: 90 },
+    /**
+     * ตัวคูณ OT (เท่าของค่าจ้างต่อชั่วโมง) — ใบ OT เก็บสำเนาตัวคูณ ณ ตอนบันทึก แก้ตรงนี้ใบเก่าไม่เปลี่ยน
+     * ⚠️ ห้ามต่ำกว่ากฎหมายกำหนด (ตรวจที่ routes/settings.js)
+     */
+    otMultipliers: {
+      workdayOT: { type: Number, default: DEFAULTS.otMultipliers.workdayOT },
+      holidayWork: { type: Number, default: DEFAULTS.otMultipliers.holidayWork },
+      holidayOT: { type: Number, default: DEFAULTS.otMultipliers.holidayOT },
+    },
+    /** ชั่วโมงทำงานปกติต่อวัน — ใช้แปลงเงินเดือน/ค่าจ้างรายวันเป็นค่าจ้างต่อชั่วโมง */
+    otHoursPerDay: { type: Number, default: DEFAULTS.otHoursPerDay, min: 1, max: 12 },
+    otRestDays: { type: [Number], default: DEFAULTS.otRestDays },
     /**
      * ส่วนต่างของตารางสิทธิ์ที่ผู้ดูแลปรับเอง { role: { capability: true|false } }
      * ✅ ผู้ใช้สั่ง: "ตั้งค่ากำหนดสิทธิ์ได้ว่าใครมองเห็นเมนูอะไร จัดการอะไรได้บ้าง"

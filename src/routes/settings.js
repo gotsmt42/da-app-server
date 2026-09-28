@@ -88,6 +88,10 @@ const publicShape = (s) => ({
   contactLine: s.contactLine || "", contactFacebook: s.contactFacebook || "",
   logoUrl: s.logoUrl || "", letterheadUrl: s.letterheadUrl || "", stampUrl: s.stampUrl || "",
   advanceClearDays: s.advanceClearDays || OrgSetting.DEFAULTS.advanceClearDays,
+  // ✅ ค่าตั้งต้นของระบบ OT (ไม่ใช่ความลับ — เป็นกติกาที่พนักงานทุกคนควรรู้)
+  otMultipliers: { ...OrgSetting.DEFAULTS.otMultipliers, ...(s.otMultipliers?.toObject?.() || s.otMultipliers || {}) },
+  otHoursPerDay: s.otHoursPerDay || OrgSetting.DEFAULTS.otHoursPerDay,
+  otRestDays: Array.isArray(s.otRestDays) ? s.otRestDays : OrgSetting.DEFAULTS.otRestDays,
   // ✅ ชื่อ Rank (ตำแหน่งในองค์กร) ที่ตั้งเอง — หน้าจอทุกหน้าใช้แสดง (ไม่ใช่ความลับ)
   rankLabels: s.rankLabels || {},
   updatedAt: s.updatedAt || null,
@@ -146,6 +150,29 @@ router.put("/", verifyToken, requireCap("manageSystem"), async (req, res) => {
         return res.status(400).json({ message: "กำหนดเคลียร์ Advance ต้องอยู่ระหว่าง 1–90 วัน" });
       }
       update.advanceClearDays = days;
+    }
+    // ── OT ─────────────────────────────────────────────────────────────
+    // ⚠️ ตัวคูณต่ำสุดตามกฎหมาย: OT วันทำงาน 1.5 · ทำงานวันหยุด 1 · OT วันหยุด 3 — ตั้งสูงกว่าได้ ต่ำกว่าไม่ได้
+    if (req.body.otMultipliers !== undefined) {
+      const MIN = { workdayOT: 1.5, holidayWork: 1, holidayOT: 3 };
+      const LABEL = { workdayOT: "OT วันทำงาน", holidayWork: "ทำงานวันหยุด", holidayOT: "OT วันหยุด" };
+      const m = req.body.otMultipliers || {};
+      for (const k of Object.keys(MIN)) {
+        const v = Math.round(Number(m[k]) * 100) / 100;
+        if (!Number.isFinite(v) || v < MIN[k] || v > 10) {
+          return res.status(400).json({ message: `ตัวคูณ${LABEL[k]}ต้องอยู่ระหว่าง ${MIN[k]}–10 เท่า (ต่ำกว่ากฎหมายแรงงานกำหนดไม่ได้)` });
+        }
+        update[`otMultipliers.${k}`] = v;
+      }
+    }
+    if (req.body.otHoursPerDay !== undefined) {
+      const h = Number(req.body.otHoursPerDay);
+      if (!Number.isFinite(h) || h < 1 || h > 12) return res.status(400).json({ message: "ชั่วโมงทำงานต่อวันต้องอยู่ระหว่าง 1–12" });
+      update.otHoursPerDay = h;
+    }
+    if (req.body.otRestDays !== undefined) {
+      const days = [...new Set((Array.isArray(req.body.otRestDays) ? req.body.otRestDays : []).map(Number))].filter((d) => Number.isInteger(d) && d >= 0 && d <= 6);
+      update.otRestDays = days;
     }
     // ✅ ล้างรูปออก (กลับไปใช้โลโก้ที่ติดมากับแอป) — ส่งค่าว่างมาที่ช่องรูปได้
     // ✅ หรือเลือกรูปที่ติดมากับแอป (preset_<slot>) — ชุดเดิมที่เคยใช้อยู่ก็กลับมาได้ทุกเมื่อ
@@ -206,7 +233,7 @@ router.put("/", verifyToken, requireCap("manageSystem"), async (req, res) => {
       .filter(([field]) => field !== "updatedBy")
       .map(([field, to]) => ({
         field,
-        from: OrgSetting.forHistory(before?.[field]),
+        from: OrgSetting.forHistory(field.split(".").reduce((o, k) => o?.[k], before)),
         to: OrgSetting.forHistory(to),
       }))
       .filter((c) => c.from !== c.to);
