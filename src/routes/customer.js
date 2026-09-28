@@ -14,6 +14,7 @@ const upload = multer({ dest: UPLOAD_IMAGES_DIR, fileFilter, limits });
 
 const verifyToken = require("../middleware/auth");
 const { can } = require("../config/roles");
+const { resolveMapUrl } = require("../services/mapEmbed");
 const checkFile = require("../middleware/checkFile");
 
 // Route to get all products
@@ -130,6 +131,22 @@ router.patch("/map", verifyToken, async (req, res) => {
   } catch (err) {
     console.error("❌ แก้พิกัดโครงการไม่สำเร็จ:", err);
     res.status(500).json({ message: "แก้พิกัดโครงการไม่สำเร็จ" });
+  }
+});
+
+/**
+ * GET /api/customer/map/embed?url=<ลิงก์ Google Maps> — แปลงลิงก์ที่บันทึกไว้เป็นตำแหน่งสำหรับฝังแผนที่
+ * ✅ ใช้กับแผนที่ด้านบนฟอร์มงาน (ผู้ใช้สั่ง 28 ก.ย. 2569) · คืน { lat, lng, q } หรือ { location: null }
+ * ⚠️ ต้องอยู่ก่อน GET /:id เสมอ ไม่งั้น "map" ถูกตีความเป็น id
+ */
+router.get("/map/embed", verifyToken, async (req, res) => {
+  try {
+    const location = await resolveMapUrl(req.query.url);
+    res.set("Cache-Control", "private, max-age=3600");
+    res.json({ location });
+  } catch (err) {
+    console.error("⚠️ แปลงลิงก์แผนที่ไม่สำเร็จ:", err.message);
+    res.json({ location: null });
   }
 });
 

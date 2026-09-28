@@ -27,7 +27,7 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 148;   // +14 = /api/web (เว็บไซต์บริษัท: เนื้อหา 7 · คำขอจากเว็บ 6 · อัปโหลด 1)
+const EXPECTED_TOTAL = 149;   // +1 = GET /api/customer/map/embed (แผนที่บนฟอร์มงาน) ·   // +14 = /api/web (เว็บไซต์บริษัท: เนื้อหา 7 · คำขอจากเว็บ 6 · อัปโหลด 1)
 const EXPECTED_PER_PREFIX = {
   // ✅ +1 = PUT /reorder (จัดลำดับการ์ดงานในวันเดียวกันบนปฏิทิน)
   "/api/events": 32,
@@ -40,7 +40,7 @@ const EXPECTED_PER_PREFIX = {
   "/api/signatures": 4,
   "/api/auth": 9,
   "/api/files": 7,
-  "/api/customer": 6,
+  "/api/customer": 7,
   "/api/product": 5,
   "/api/jobtype": 4,
   "/api/systemtype": 4,
