@@ -12,6 +12,7 @@ const {
   cloudinary,
   streamifier,
 } = require("./shared");
+const { ALLOWED_TYPES, ALLOWED_IMAGE_TYPES } = require("../../config/upload");
 
 module.exports = (router) => {
   router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) => {
@@ -42,30 +43,25 @@ module.exports = (router) => {
         "utf8"
       );
       const sanitizedName = originalName.replace(/[^\w\-.]/g, "_"); // คงนามสกุลไว้
-      // ✅ ตรวจสอบประเภทไฟล์ที่รองรับ (สามารถปรับเพิ่มได้ตามต้องการ)
-      const allowedTypes = [
-        "application/pdf",
-        "image/jpeg",
-        "image/png",
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.ms-excel",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "text/plain",
-        "application/zip",
-        "application/x-rar-compressed",
-      ];
-
-      if (!allowedTypes.includes(fileType)) {
-        return res.status(400).json({ error: "Unsupported file type" });
+      /**
+       * 🐛 ผู้ใช้แจ้ง (28 ก.ย. 2569): "หน้าช่างอัปโหลดไฟล์ไม่ได้"
+       * สาเหตุ: แอปย่อรูปก่อนอัปโหลด (shared/utils/fileUpload.js) และได้ไฟล์ .webp บนเครื่องที่รองรับ
+       * (มือถือ Android/Chrome เกือบทุกเครื่อง) — แต่ route นี้มีรายการชนิดไฟล์ของตัวเองที่ไม่มี webp/heic
+       * รูปจากช่างจึงถูกปฏิเสธ 400 ทุกรูป ✅ ใช้รายการกลางชุดเดียวกับ multer (config/upload.js) แทน
+       */
+      // บางเครื่องส่ง mimetype เป็น application/octet-stream (เช่น .heic) — multer ผ่านให้ด้วยนามสกุลแล้ว ต้องผ่านตรงนี้ด้วย
+      const okByExt = ["jpg", "jpeg", "png", "webp", "heic", "heif", "pdf", "doc", "docx", "xls", "xlsx"]
+        .includes(String(originalName).split(".").pop().toLowerCase());
+      if (!ALLOWED_TYPES.includes(fileType) && !okByExt) {
+        return res.status(415).json({ message: "รองรับเฉพาะรูปภาพ (JPG, PNG, WebP, HEIC) และเอกสาร (PDF, Word, Excel)" });
       }
 
-      // ✅ perf: รูปภาพ (jpg/png) อัพโหลดด้วย resource_type "image" แทน "raw" — "raw" เป็น blob ดิบๆ
+      // ✅ perf: รูปภาพอัพโหลดด้วย resource_type "image" แทน "raw" — "raw" เป็น blob ดิบๆ
       // ไม่รองรับ Cloudinary URL transformation (resize/compress) เลย ทำให้ตอนเปิดดูรูปพรีวิวต้องโหลด
       // ไฟล์เต็มความละเอียดต้นฉบับเสมอ (รูปจากมือถือหลาย MB) รู้สึกหน่วง/ค้าง — "image" เปิดให้แปะ query
       // param (f_auto,q_auto,w_...) ตอนแสดงผลได้ ย่อ/บีบอัดแบบ on-the-fly โดยไม่กระทบไฟล์ต้นฉบับที่เก็บไว้
       // (เอกสารอื่น PDF/Word/Excel ไม่ได้ประโยชน์จาก transformation นี้ ใช้ "raw" เหมือนเดิม)
-      const isImage = ["image/jpeg", "image/png"].includes(fileType);
+      const isImage = ALLOWED_IMAGE_TYPES.includes(fileType);
       // resource_type "image" ให้ Cloudinary จัดการนามสกุลเองจากเนื้อไฟล์จริง — ต้องตัดนามสกุลออกจาก
       // public_id ก่อน ไม่งั้นจะได้ชื่อไฟล์ซ้อนนามสกุลสองต่อ (เช่น "photo.jpg.jpg")
       const imagePublicId = sanitizedName.replace(/\.[^.]+$/, "");
@@ -136,7 +132,7 @@ module.exports = (router) => {
       });
     } catch (err) {
       console.error("Upload error:", err);
-      res.status(500).send("Upload failed");
+      res.status(500).json({ message: "อัปโหลดขึ้นที่เก็บไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง" });
     }
   });
 
