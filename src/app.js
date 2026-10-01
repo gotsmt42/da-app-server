@@ -85,6 +85,11 @@ if (process.env.NODE_ENV !== "test") {
   require("./services/migrateUserFields")
     .migrateUserFields()
     .catch((err) => console.error("❌ ย้ายชื่อฟิลด์ผู้ใช้ไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
+
+  // ✅ ทุกวัน/ทุกครั้งของงานเดียวกันต้องมีผู้รับผิดชอบเดียวกับที่หน้า "ภาพรวมงาน" แสดง (ดู services/groupResponsible.js)
+  require("./services/groupResponsible")
+    .repairAllGroupResponsible()
+    .catch((err) => console.error("❌ ปรับผู้รับผิดชอบของกลุ่มงานไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
 }
 
 // ── ไฟล์นิ่ง (รูป/ไฟล์แนบที่เก็บบนดิสก์) ──────────────────────────────────────

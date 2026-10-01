@@ -22,6 +22,7 @@ const {
   withDepartmentScope,
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
+const { syncGroupsOf, syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
 
 /** ลายเซ็นของรายการกิจกรรมหนึ่งบรรทัด — ใช้เทียบว่าเป็นรายการเดียวกันไหม (_id ใช้ไม่ได้ ดูด้านล่าง) */
 const logSignature = (log) =>
@@ -286,6 +287,12 @@ module.exports = (router) => {
         );
       } else {
         events = [await new CalendarEvent(buildEventData()).save()];
+      }
+
+      // ✅ เพิ่มวัน/ครั้งเข้างานที่มีอยู่แล้ว (สัญญา/โปรเจคหลายวัน) → รับผู้รับผิดชอบของงานนั้นตามภาพรวมงาน
+      //    ไม่งั้นครั้งใหม่จะว่าง (หน้างานไปขึ้นชื่อทีมแทน) หรือเป็นชื่อคนที่กดเพิ่ม ไม่ตรงกับภาพรวมงาน
+      if (await syncGroupsOf(events)) {
+        events = await CalendarEvent.find({ _id: { $in: events.map((e) => e._id) } });
       }
 
       // ✅ แจ้งเตือนตอนเพิ่มงานใหม่ (ไม่ await เพื่อไม่ให้ response ช้าลง) — อ้างอิงจาก record แรก
@@ -755,12 +762,28 @@ module.exports = (router) => {
       };
 
       // ✅ สิทธิ์ตรวจสอบไปแล้วด้านบน (isOwner / isAssigned / admin) จึงใช้แค่ _id พอ
-      const updatedEvent = await CalendarEvent.findOneAndUpdate({ _id: id }, newEvent, {
+      let updatedEvent = await CalendarEvent.findOneAndUpdate({ _id: id }, newEvent, {
         new: true,
       }).exec();
 
       if (!updatedEvent) {
         return res.status(404).json("Event not found");
+      }
+
+      // ✅ ผู้รับผิดชอบเป็นของ "ทั้งงาน" (ทุกครั้ง/ทุกวันในกลุ่ม) — มอบหมายใหม่ที่ใบนี้ = มอบหมายทั้งกลุ่ม
+      //    ส่วนการแก้อื่น (ย้ายครั้งที่/ผูกกลุ่ม) ให้ใบนี้กลับมาตรงกับผู้รับผิดชอบของกลุ่ม
+      try {
+        const reassigned = req.body.responsiblePerson !== undefined &&
+          (req.body.responsiblePerson || "") !== (existingEvent.responsiblePerson || "");
+        const changed = reassigned
+          ? await syncGroupResponsible(groupFilterOf(updatedEvent), {
+              responsiblePerson: updatedEvent.responsiblePerson || "",
+              responsiblePersonId: updatedEvent.responsiblePersonId || "",
+            })
+          : await syncGroupsOf([updatedEvent]);
+        if (changed) updatedEvent = await CalendarEvent.findById(id);
+      } catch (err) {
+        console.error("⚠️ sync ผู้รับผิดชอบของกลุ่มไม่สำเร็จ:", err.message);
       }
 
       // ✅ แจ้งเตือนตามการเปลี่ยนแปลงสำคัญ (ไม่ await เพื่อไม่ให้ response ช้าลง)

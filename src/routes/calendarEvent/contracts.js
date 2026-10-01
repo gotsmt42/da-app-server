@@ -14,6 +14,7 @@ const {
   diffContractFields,
   DEPARTMENT,
 } = require("./shared");
+const { syncGroupsOf, syncGroupResponsible } = require("../../services/groupResponsible");
 
 // ✅ ค่าแผนกที่ยอมรับได้ — อ่านจากตารางกลาง (config/roles.js) ไม่ hardcode สตริงซ้ำ เพื่อให้เพิ่มแผนก
 // ใหม่ในอนาคตแก้ที่เดียวแล้วมีผลทั้ง schema/route/หน้าจอพร้อมกัน
@@ -72,7 +73,7 @@ module.exports = (router) => {
       });
       const resolvedVisitCount = Number(visitCount) > 0 ? Number(visitCount) : sortedRounds.length;
 
-      const updated = (
+      let updated = (
         await Promise.all(
           sortedRounds.map(async (docIds, idx) => {
             const time = String(idx + 1);
@@ -109,6 +110,10 @@ module.exports = (router) => {
         )
       ).flat();
 
+      // ✅ รวมเป็นสัญญาเดียว = ผู้รับผิดชอบคนเดียว (ตามครั้งที่ 1 แบบเดียวกับภาพรวมงาน)
+      if (await syncGroupsOf(updated)) {
+        updated = await CalendarEvent.find({ _id: { $in: updated.map((e) => e._id) } });
+      }
       res.json({ events: updated, contractGroupId });
     } catch (error) {
       console.error("❌ Error merging events into contract:", error);
@@ -206,6 +211,8 @@ module.exports = (router) => {
           },
         }
       );
+      // ✅ ย้ายเข้าสัญญาแล้วต้องใช้ผู้รับผิดชอบของสัญญานั้น
+      await syncGroupResponsible({ contractGroupId: String(contractGroupId) });
       const updated = await CalendarEvent.find({ _id: { $in: eventIds } });
 
       res.json({ events: updated });
@@ -318,6 +325,8 @@ module.exports = (router) => {
       if (targetIds.length > 0) {
         await CalendarEvent.updateMany({ _id: { $in: targetIds } }, { $set: { time: String(from) } });
       }
+      // ✅ สลับครั้งที่ไม่ควรทำให้ผู้รับผิดชอบเปลี่ยน — กลุ่มยังใช้ค่าเดียวกันทั้งหมด
+      await syncGroupResponsible({ contractGroupId: String(req.params.contractGroupId) });
 
       res.json({
         success: true,

@@ -576,6 +576,17 @@ const canManageUserOfRole = (actor, targetRole) =>
 
 
 /**
+ * ✅ สิทธิ์ที่ Super Admin ได้อัตโนมัติ "เฉพาะงานดูแลระบบ" (ข้อมูลหลัก · เว็บไซต์ · คำขอจากเว็บไซต์)
+ * 🐛 ที่แก้ (ผู้ใช้: "ทำไมช่างเทคนิคยังแก้ไขงานของคนอื่นได้"): เดิม Super Admin ผ่านทุกสิทธิ์ — บัญชีที่เป็น
+ *    Super Admin แต่ตำแหน่ง "ช่างเทคนิค" จึงแก้/อนุมัติงานของคนอื่นได้หมด ขัดกับนิยามที่ผู้ใช้กำหนด:
+ *      role (ชั้นในระบบ) = สิทธิ์ดูแลระบบ · rank (ตำแหน่งในองค์กร) = สิทธิ์ทำงาน (งาน/สัญญา/เอกสาร/การเงิน ฯลฯ)
+ *    ตอนนี้สิทธิ์ทำงานทุกตัวตัดสินจากตำแหน่ง (และตารางสิทธิ์ที่ผู้ดูแลปรับ) เท่านั้น
+ * ⚠️ จัดการผู้ใช้/ตั้งค่าระบบ/ตารางสิทธิ์ = manageAll · manageSystem (ตัดสินด้วยชั้นในระบบอยู่แล้ว ไม่เกี่ยวกับรายการนี้)
+ * ⚠️ ต้องตรงกันทั้งสองฝั่ง (da-app shared/utils/roles.js ↔ da-app-server config/roles.js)
+ */
+const SUPER_ADMIN_CAPS = ["manageMasterData", "manageWebsite", "viewLeads"];
+
+/**
  * ✅ ตัวเดียวที่โค้ดที่อื่นควรเรียก
  * @param {object|string} who   user object / req.user / สตริง role
  * @param {string} capability   ชื่อจาก CAPABILITIES
@@ -584,8 +595,8 @@ const can = (who, capability) => {
   // ✅ สิทธิ์ระดับระบบ (จัดการผู้ใช้/ตั้งค่าระบบ) ตัดสินด้วย "ชั้นในระบบ" ไม่เกี่ยวกับตำแหน่งในองค์กร
   if (isSystemCapability(capability)) return SYSTEM_CAPABILITIES[capability].includes(systemRoleOf(who));
   const allowed = CAPABILITIES[capability];
-  // ✅ Super Admin ผ่านทุกสิทธิ์ที่มีอยู่จริง (ผู้ใช้สั่ง) ยกเว้นสายอนุมัติค่าใช้จ่าย — ชื่อสิทธิ์ที่พิมพ์ผิดยังถูกปฏิเสธ
-  if (allowed && isSuperAdmin(who) && !EXPENSE_WORKFLOW_CAPS.includes(capability)) return true;
+  // ✅ Super Admin ได้อัตโนมัติเฉพาะสิทธิ์ดูแลระบบ (SUPER_ADMIN_CAPS) — สิทธิ์ทำงานตัดสินจากตำแหน่ง
+  if (allowed && isSuperAdmin(who) && SUPER_ADMIN_CAPS.includes(capability)) return true;
   if (allowed && SYSTEM_GRANTS[capability]?.includes(systemRoleOf(who))) return true;
   // ⚠️ พิมพ์ชื่อสิทธิ์ผิด = ปฏิเสธเสมอ (ปลอดภัยไว้ก่อน) แต่ต้องส่งเสียงดังพอให้เห็นตอน dev
   // ไม่งั้นจะกลายเป็นบั๊กเงียบแบบเดียวกับที่ไฟล์นี้ตั้งใจจะกำจัด

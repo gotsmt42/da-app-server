@@ -16,6 +16,7 @@ const streamifier = require("streamifier");
 const Dispatch = require("../models/Dispatch");
 const User = require("../models/User");
 const CalendarEvent = require("../models/Events");
+const { syncGroupsOf } = require("../services/groupResponsible");
 const { thaiDate } = require("../utils/thaiDate");
 const JobType = require("../models/JobType");
 const SystemType = require("../models/SystemType");
@@ -783,6 +784,7 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
       // (ว่างเปล่าเมื่อใบนี้ไม่ได้ผูกสัญญา จึงไม่กระทบเส้นทางเดิมเลย)
       ...contractFields,
     }).save();
+    await syncGroupsOf([event]); // ✅ ถ้าผูกกับงานที่มีอยู่แล้ว ใช้ผู้รับผิดชอบเดียวกับภาพรวมงาน
 
     // ✅ ค่าที่แจ้งมากลายเป็นตัวเลือกให้ครั้งถัดไป (เหมือนที่ฟอร์มของช่างทำตอนสร้างแผนงาน)
     await upsertLookups({

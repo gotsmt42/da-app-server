@@ -22,6 +22,7 @@ const {
   withDepartmentScope,
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
+const { syncGroupsOf } = require("../../services/groupResponsible");
 
 module.exports = (router) => {
   // ✅ งาน "วางแผนล่วงหน้า" (unscheduled) — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ ในเดือนไหน แต่ยังไม่รู้วันที่
@@ -155,6 +156,7 @@ module.exports = (router) => {
               approvalRequestedByUserId: req.userId,
             }),
       }).save();
+      await syncGroupsOf([draft]); // ✅ ครั้งใหม่ของสัญญาเดิม → ผู้รับผิดชอบตามภาพรวมงาน
 
       // ✅ เดิม route นี้ไม่แจ้งเตือนเลย — แจ้งแอดมิน/manager เฉพาะตอนรออนุมัติ (เทียบ pattern เดียวกับ
       // POST / เป๊ะๆ) ใช้ deep-link ?draft=<id>&month=<เดือน> ที่ EventCalendar/index.js เปิดฟังอยู่แล้ว
@@ -305,7 +307,8 @@ module.exports = (router) => {
           );
         }
 
-        return res.json({ event: existingEvent });
+        await syncGroupsOf([existingEvent]);
+        return res.json({ event: await CalendarEvent.findById(existingEvent._id) });
       }
 
       existingEvent.unscheduled = false;
@@ -330,7 +333,9 @@ module.exports = (router) => {
       }
 
       await existingEvent.save();
-      res.json({ event: existingEvent });
+      // ✅ ครั้งที่ลงตารางเข้าสัญญาที่มีผู้รับผิดชอบแล้ว → ใช้ผู้รับผิดชอบเดียวกับภาพรวมงาน
+      const synced = await syncGroupsOf([existingEvent]);
+      res.json({ event: synced ? await CalendarEvent.findById(existingEvent._id) : existingEvent });
     } catch (error) {
       console.error("❌ Error scheduling draft event:", error);
       res.status(500).send("Internal Server Error");

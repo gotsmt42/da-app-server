@@ -15,6 +15,8 @@ const {
   isServiceObserver,
   DEPARTMENT,
 } = require("./shared");
+const { totalRoundsOf } = require("../../utils/contractVisits");
+const { syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
 
 module.exports = (router) => {
   router.get("/event-op", verifyToken, async (req, res) => {
@@ -370,6 +372,20 @@ module.exports = (router) => {
         return res.status(400).json({ message: "ไม่มีข้อมูลให้แก้ไข" });
       }
       await CalendarEvent.updateMany({ _id: { $in: eventIds } }, { $set: update });
+      // ✅ มอบหมายจากภาพรวมงาน = มอบหมายทั้งงาน รวมวัน/ครั้งที่ไม่ได้ส่งมาในรายการนี้ด้วย
+      if (update.responsiblePerson !== undefined) {
+        const touched = await CalendarEvent.find({ _id: { $in: eventIds } }).select("contractGroupId jobGroupId").lean();
+        const seen = new Set();
+        for (const d of touched) {
+          const f = groupFilterOf(d);
+          if (!f || seen.has(JSON.stringify(f))) continue;
+          seen.add(JSON.stringify(f));
+          await syncGroupResponsible(f, {
+            responsiblePerson: update.responsiblePerson || "",
+            responsiblePersonId: update.responsiblePersonId || "",
+          });
+        }
+      }
       const updatedEvents = await CalendarEvent.find({ _id: { $in: eventIds } }).lean();
       res.json({ events: updatedEvents });
     } catch (error) {
@@ -414,7 +430,8 @@ module.exports = (router) => {
             quotationNo: e.quotationNo || "",
             contractStart: e.contractStart || "",
             contractEnd: e.contractEnd || "",
-            visitCount: e.visitCount || 0,
+            // ✅ กติกาเดียวกับหน้าภาพรวมงาน — สัญญาที่ครบแล้วต้องไม่โผล่ให้เลือกเพิ่มครั้งในฟอร์ม
+            visitCount: totalRoundsOf(e),
             intervalMonths: e.intervalMonths,
             jobValue: e.jobValue,
             responsiblePerson: e.responsiblePerson || e.team || "",

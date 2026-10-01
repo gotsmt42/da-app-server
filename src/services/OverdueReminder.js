@@ -5,7 +5,7 @@ const { sendPushToUsers, sendPushToRoles } = require("./PushNotify");
 const { SUPERVISOR_ROLES, DEPARTMENT } = require("../config/roles");
 const NotifyLog = require("../models/NotifyLog");
 const { billingStatus } = require("../utils/billing");
-const { DEFAULT_INTERVAL_MONTHS } = require("../utils/contractVisits");
+const { DEFAULT_INTERVAL_MONTHS, totalRoundsOf } = require("../utils/contractVisits");
 
 // ✅ เกณฑ์เดียวกับฝั่ง frontend (Operation/index.js) — เลยกำหนดวันสิ้นสุดงานตามแผนจริงมาแล้ว
 // อย่างน้อย 1 สัปดาห์ ถือว่า "ค้างงาน" ต้องแจ้งเตือน
@@ -250,7 +250,7 @@ async function checkAndNotifyStaleQuotations() {
 async function checkAndNotifyOverdueContracts() {
   try {
     const events = await CalendarEvent.find({ contractGroupId: { $exists: true, $nin: [null, ""] } })
-      .select("contractGroupId visitCount intervalMonths time start end allDay unscheduled resPerson team userId responsiblePersonId responsiblePerson")
+      .select("contractGroupId visitCount intervalMonths contractStart contractEnd time start end allDay unscheduled resPerson team userId responsiblePersonId responsiblePerson")
       .lean();
     if (events.length === 0) return;
 
@@ -264,7 +264,7 @@ async function checkAndNotifyOverdueContracts() {
     byContract.forEach((visits) => {
       const sorted = visits.slice().sort((a, b) => (Number(a.time) || 0) - (Number(b.time) || 0));
       const head = sorted[0];
-      const visitCount = Number(head.visitCount);
+      const visitCount = totalRoundsOf(head); // ✅ กติกาเดียวกับหน้าภาพรวมงาน (ไม่เตือนสัญญาที่ครบแล้ว)
       if (!visitCount) return;
       const usedRounds = new Set(
         sorted.map((v) => v.time).filter((t) => t !== undefined && t !== null && t !== "").map(String)
