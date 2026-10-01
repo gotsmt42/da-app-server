@@ -10,32 +10,60 @@ const { checkAndNotifyOverdueAdvances, checkAndNotifyPendingExpenses } = require
 const { scheduleDaily } = require("./services/DailySchedule");
 
 // ── แจ้งเตือนประจำวัน ────────────────────────────────────────────────────────
-// ✅ ทุกตัวยิงเวลาเดียวกันคือ 12:00 น. ตามเวลาไทย ทุกวัน ไม่ว่าจะ deploy/รีสตาร์ทกี่ครั้งก็ตาม
+// ✅ ยิงตาม "เวลาตามนาฬิกาไทย" เดิมทุกวัน ไม่ว่าจะ deploy/รีสตาร์ทกี่ครั้ง (ดู DailySchedule.js)
 //
-// 🐛 ปัญหาเดิม (ผู้ใช้แจ้งว่า "แจ้งมั่วสะเปะสะปะ"): ใช้ setTimeout(2 นาที) + setInterval(24 ชม.)
-// ซึ่งนับจากเวลาที่โปรเซสเริ่มทำงาน — deploy ตอนไหนก็ได้แจ้งเวลานั้นไปตลอด แล้วพอ deploy ใหม่เวลาก็
-// ย้ายอีก ผู้ใช้จึงไม่มีทางรู้เลยว่าจะได้รับแจ้งตอนไหน
+// 🔁 เปลี่ยนจาก "ทุกเรื่อง 12:00 พร้อมกัน" เป็น 3 รอบ เช้า · บ่าย · เย็น (ผู้ใช้ขอ — เดิมเที่ยงตรงเด้งรวด
+// 8 เรื่องติดกัน อ่านไม่ทัน และเรื่องสำคัญจมอยู่ในกองแจ้งเตือน)
+//   • จัดกลุ่มตาม "ใครต้องทำอะไรช่วงไหนของวัน":
+//       เช้า  — งานภาคสนาม ต้องรู้ก่อนออกหน้างาน/จัดคิวของวันนี้
+//       บ่าย — เอกสารการเงินที่ต้องตรวจ/อนุมัติ ยังมีเวลาทำให้เสร็จในวันทำการ
+//       เย็น — ฝ่ายขาย/บัญชี สรุปเรื่องที่ต้องตามต่อพรุ่งนี้
+//   • ในรอบเดียวกัน แต่ละหมวดห่างกัน 5 นาที — ไม่เด้งพร้อมกันเป็นพรืด แจ้งเตือนแต่ละอันอ่านแยกกันได้
 //
-// ✅ ทำไมเลือก 12:00: เป็นเวลาพักกลางวัน คนเปิดดูมือถืออยู่แล้ว และยังเหลือครึ่งวันให้ตามงานต่อได้ทัน
-// ต่างจากตอนเช้าตรู่/ดึกที่แจ้งไปก็ไม่มีใครทำอะไรต่อได้
-//
-// ⚠️ ถ้าจะเปลี่ยนเวลา แก้ที่ NOTIFY_HOUR ตัวเดียว มีผลกับทุกตัวพร้อมกัน — อย่าไปแก้ทีละตัว เพราะการ
-// ให้แต่ละเรื่องแจ้งคนละเวลาจะทำให้ผู้ใช้โดนรบกวนกระจายทั้งวันแทนที่จะจบในครั้งเดียว
-const NOTIFY_HOUR = 12;
+// ⚠️ ไม่แจ้งซ้ำแม้ deploy หลายรอบ/ตามเก็บตอนบูต — ชั้นส่งกันซ้ำด้วย NotifyLog.claimOncePerDay
+// (1 เรื่อง : 1 ผู้รับ : 1 วัน) อยู่แล้ว
+const STAGGER_MIN = 5;
 
-const DAILY_TASKS = [
-  { name: "งานค้าง", task: checkAndNotifyOverdueJobs },
-  { name: "ใบเสนอราคาค้าง", task: checkAndNotifyStaleQuotations },
-  { name: "สัญญาเลยกำหนดรอบ", task: checkAndNotifyOverdueContracts },
-  { name: "สัญญาใกล้หมดอายุ", task: checkAndNotifyExpiringContracts },
-  { name: "ใบวางบิลเลยกำหนด", task: checkAndNotifyOverdueInvoices },
-  { name: "คำขอแจ้งงานค้าง", task: checkAndNotifyUnassignedDispatch },
-  { name: "Advance เลยกำหนดเคลียร์", task: checkAndNotifyOverdueAdvances },
-  { name: "ใบเบิกรออนุมัติค้าง", task: checkAndNotifyPendingExpenses },
+const NOTIFY_SLOTS = [
+  {
+    slot: "เช้า", hour: 8, minute: 30,
+    tasks: [
+      { name: "คำขอแจ้งงานค้าง", task: checkAndNotifyUnassignedDispatch },
+      { name: "งานค้าง", task: checkAndNotifyOverdueJobs },
+      { name: "สัญญาเลยกำหนดรอบ", task: checkAndNotifyOverdueContracts },
+    ],
+  },
+  {
+    slot: "บ่าย", hour: 13, minute: 30,
+    tasks: [
+      { name: "ใบเบิกรออนุมัติค้าง", task: checkAndNotifyPendingExpenses },
+      { name: "Advance เลยกำหนดเคลียร์", task: checkAndNotifyOverdueAdvances },
+    ],
+  },
+  {
+    slot: "เย็น", hour: 16, minute: 30,
+    tasks: [
+      { name: "ใบเสนอราคาค้าง", task: checkAndNotifyStaleQuotations },
+      { name: "ใบวางบิลเลยกำหนด", task: checkAndNotifyOverdueInvoices },
+      { name: "สัญญาใกล้หมดอายุ", task: checkAndNotifyExpiringContracts },
+    ],
+  },
 ];
 
-function startSchedulers() {
-  DAILY_TASKS.forEach(({ name, task }) => scheduleDaily({ hour: NOTIFY_HOUR, name, task }));
+/** ตารางเวลาแบบแบน: [{ name, task, hour, minute }] — แยกออกมาให้ทดสอบ/ตรวจได้โดยไม่ต้องตั้ง timer จริง */
+function dailyPlan() {
+  return NOTIFY_SLOTS.flatMap(({ slot, hour, minute, tasks }) => tasks.map(({ name, task }, i) => {
+    const total = hour * 60 + minute + i * STAGGER_MIN;
+    return { slot, name, task, hour: Math.floor(total / 60), minute: total % 60 };
+  }));
 }
 
-module.exports = { startSchedulers, NOTIFY_HOUR };
+function startSchedulers() {
+  dailyPlan().forEach(({ slot, name, task, hour, minute }, i) => scheduleDaily({
+    hour, minute, name: `${slot} · ${name}`, task,
+    // ⚠️ ตามเก็บตอนบูตก็เว้นระยะเหมือนกัน (ทีละ 2 นาที) — ไม่งั้นเซิร์ฟเวอร์ที่ดับคร่อมเวลา พอขึ้นมาจะยิงทุกเรื่องพร้อมกัน
+    bootDelayMs: 60 * 1000 + i * 2 * 60 * 1000,
+  }));
+}
+
+module.exports = { startSchedulers, dailyPlan, NOTIFY_SLOTS };
