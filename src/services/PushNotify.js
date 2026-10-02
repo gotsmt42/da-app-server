@@ -2,6 +2,8 @@ const crypto = require("crypto");
 const webpush = require("web-push");
 const PushSubscription = require("../models/PushSubscription");
 const User = require("../models/User");
+const Notification = require("../models/Notification");
+const { publish } = require("./realtime");
 const { rankFilter } = require("../config/roles");
 
 webpush.setVapidDetails(
@@ -33,22 +35,66 @@ function deliveryOptions(payload = {}) {
   return opts;
 }
 
-// ✅ ส่ง push ให้ผู้ใช้ตาม userId ทุกอุปกรณ์/เบราว์เซอร์ที่เคย subscribe ไว้
+/**
+ * เก็บข้อความลงกล่องแจ้งเตือนของแต่ละคน แล้วคืน { userId → { nid, unread } }
+ * ⚠️ tag เดียวกันที่ยังไม่อ่าน = แทนที่ของเดิม (ดัน createdAt ขึ้นบนสุด) — ตรงกับพฤติกรรมแจ้งเตือนบนมือถือ
+ * ⚠️ ล้มเหลวต้องไม่ทำให้ push ไม่ถูกส่ง — กล่องแจ้งเตือนเป็นของเสริม ตัวเด้งบนจอสำคัญกว่า
+ */
+async function saveToInbox(ids, payload) {
+  const out = new Map();
+  if (payload.inbox === false) return out;
+  const doc = {
+    title: String(payload.title || "แจ้งเตือน").slice(0, 200),
+    body: String(payload.body || "").slice(0, 600),
+    url: String(payload.url || "/").slice(0, 300),
+    tag: String(payload.tag || "").slice(0, 120),
+    kind: String(payload.kind || "").slice(0, 40),
+  };
+  try {
+    await Promise.all(ids.map(async (userId) => {
+      const n = doc.tag
+        ? await Notification.findOneAndUpdate(
+          { userId, tag: doc.tag, readAt: null },
+          { $set: { ...doc, userId, createdAt: new Date() } },
+          { upsert: true, new: true, timestamps: false, setDefaultsOnInsert: true },
+        )
+        : await Notification.create({ ...doc, userId });
+      out.set(userId, { nid: String(n._id) });
+    }));
+    const counts = await Notification.aggregate([
+      { $match: { userId: { $in: ids }, readAt: null } },
+      { $group: { _id: "$userId", n: { $sum: 1 } } },
+    ]);
+    counts.forEach((c) => { if (out.has(c._id)) out.get(c._id).unread = c.n; });
+    publish({ topic: "inbox", userIds: ids, action: "new" });
+  } catch (err) {
+    console.error("❌ บันทึกกล่องแจ้งเตือนไม่สำเร็จ:", err.message);
+  }
+  return out;
+}
+
+// ✅ ส่ง push ให้ผู้ใช้ตาม userId ทุกอุปกรณ์/เบราว์เซอร์ที่เคย subscribe ไว้ + เก็บลงกล่องแจ้งเตือน
+// ✅ แนบ nid (ไว้ทำเครื่องหมายอ่านแล้วตอนกด) + badge (จำนวนที่ยังไม่อ่าน → ตัวเลขบนไอคอนแอปแบบ LINE)
 // ถ้า endpoint หมดอายุ/ถูกยกเลิก (404/410) ให้ลบ subscription นั้นทิ้งจาก DB ไปเลย
 async function sendPushToUsers(userIds, payload) {
   const ids = [...new Set((Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean).map(String))];
   if (ids.length === 0) return;
 
+  const inbox = await saveToInbox(ids, payload);
   const subs = await PushSubscription.find({ userId: { $in: ids } });
-  const body = JSON.stringify(payload);
   const options = deliveryOptions(payload);
+  const { inbox: _skip, ...rest } = payload;
+  const bodyFor = (userId) => {
+    const meta = inbox.get(userId) || {};
+    return JSON.stringify({ ...rest, ...(meta.nid ? { nid: meta.nid } : {}), ...(meta.unread !== undefined ? { badge: meta.unread } : {}) });
+  };
 
   await Promise.all(
     subs.map(async (sub) => {
       try {
         await webpush.sendNotification(
           { endpoint: sub.endpoint, keys: sub.keys },
-          body,
+          bodyFor(sub.userId),
           options
         );
       } catch (err) {
