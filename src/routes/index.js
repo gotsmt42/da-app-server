@@ -23,6 +23,7 @@ const dispatchRouter = require("./dispatch");
 // ✅ เบิกเงินล่วงหน้า (Advance) / เคลียร์ค่าใช้จ่าย (Claim) ของพนักงาน — คอลเลกชันของตัวเอง (models/Expense.js)
 const expensesRouter = require("./expenses");
 const otRouter = require("./ot");
+const purchaseRouter = require("./purchase");
 // ✅ ลายเซ็นอิเล็กทรอนิกส์ของพนักงาน (ตั้งค่าเอง แล้วระบบผนึกลงเอกสาร PDF ที่คนนั้นออก/อนุมัติ)
 const signaturesRouter = require("./signatures");
 // ✅ อัปเดตหน้าจอแบบเรียลไทม์ — ช่องสัญญาณ + ตัวประกาศหลังข้อมูลเปลี่ยน (services/realtime.js)
@@ -68,6 +69,8 @@ router.use("/dispatch", dispatchRouter);
 router.use("/expenses", expensesRouter);
 // ✅ ใบขออนุมัติ OT (ผู้ใช้สั่ง 28 ก.ย. 2569) — สิทธิ์ชุดเดียวกับระบบเบิก ดู routes/ot.js
 router.use("/ot", otRouter);
+// ✅ ใบขอซื้อสินค้า PR (ผู้ใช้สั่ง 2 ต.ค. 2569) — ดู routes/purchase.js
+router.use("/purchase", purchaseRouter);
 // ✅ เช็คอินเทอร์เน็ตเฉพาะเส้นทางนี้เส้นเดียว (ตัวเดียวที่ต้องยิงออกไปข้างนอก) ไม่ใช่ทั้งแอป
 router.use("/holidays", checkInternetConnection, holidayRouter);
 

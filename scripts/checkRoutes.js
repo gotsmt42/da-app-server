@@ -27,7 +27,7 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 167;   // +15 = /api/ot (ใบขออนุมัติ OT) ·   // +3 = ใบค่าจ้างผู้รับเหมา (/api/expenses: contractors · contractor-history · contractor-payments) · +1 = GET /api/customer/map/embed (แผนที่บนฟอร์มงาน) ·   // +14 = /api/web (เว็บไซต์บริษัท: เนื้อหา 7 · คำขอจากเว็บ 6 · อัปโหลด 1)
+const EXPECTED_TOTAL = 181;   // +14 = /api/purchase (ใบขอซื้อ PR) ·   // +15 = /api/ot (ใบขออนุมัติ OT) ·   // +3 = ใบค่าจ้างผู้รับเหมา (/api/expenses: contractors · contractor-history · contractor-payments) · +1 = GET /api/customer/map/embed (แผนที่บนฟอร์มงาน) ·   // +14 = /api/web (เว็บไซต์บริษัท: เนื้อหา 7 · คำขอจากเว็บ 6 · อัปโหลด 1)
 const EXPECTED_PER_PREFIX = {
   // ✅ +1 = PUT /reorder (จัดลำดับการ์ดงานในวันเดียวกันบนปฏิทิน)
   "/api/events": 32,
@@ -38,6 +38,8 @@ const EXPECTED_PER_PREFIX = {
   "/api/expenses": 29,
   // ✅ ใบขออนุมัติ OT: config/summary/people/wages×2/report/payroll-close/list/create + /:id 6 ตัว
   "/api/ot": 15,
+  // ✅ ใบขอซื้อ PR: summary/suggest/list/create + /:id 10 ตัว (get/put/review/approve/reject/order/receive/cancel/files×2)
+  "/api/purchase": 14,
   // ✅ ลายเซ็นอิเล็กทรอนิกส์: GET/PUT/DELETE /me + GET /status
   "/api/signatures": 4,
   "/api/auth": 9,
