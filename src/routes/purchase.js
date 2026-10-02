@@ -24,6 +24,7 @@ const { can, titleOf, rankFilter, effectiveCapabilities, CAPABILITIES } = requir
 const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers } = require("../services/PushNotify");
+const { sealFor, imagesFor } = require("../services/signatureSeal");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), fileFilter, limits });
@@ -132,6 +133,19 @@ const attachUploads = async (req, doc, me, fallback) => {
     doc.attachments.push(await uploadToCloud(f, `purchase/${doc._id}`, me.name, kinds[i] || fallback));
   }
 };
+
+/** ผู้กดติ๊กใช้ลายเซ็นไหม (ไม่ส่งมา = ใช้) */
+const wantsSignature = (req) => {
+  const v = req.body?.useSignature;
+  return !(v === false || v === "false" || v === "0" || v === 0);
+};
+/** ผนึกลายเซ็นของ "ผู้กดเอง" ลงช่องที่กำหนด — ⚠️ ห้ามผนึกให้คนอื่น */
+const sealSlot = async (req, doc, slot) => {
+  if (!wantsSignature(req)) return;
+  const seal = await sealFor(req.userId, { name: fullNameOf(req.user), position: titleOf(req.user) });
+  if (seal) doc.set(`signatures.${slot}`, seal);
+};
+const EMPTY_SEAL = { userId: "", name: "", position: "", signedAt: null, hash: "" };
 
 // ── ขอบเขต/สิทธิ์ ──────────────────────────────────────────────────────
 const canUse = (req) => can(req.user, "requestExpense") || can(req.user, "viewAllExpenses");
@@ -263,6 +277,7 @@ router.post("/", verifyToken, upload.array("files", 15), async (req, res) => {
       submittedAt: new Date(),
     });
     applyTotals(doc);
+    await sealSlot(req, doc, "requester");
     await attachUploads(req, doc, me, "quotation");
     log(doc, "created", `ออกใบขอซื้อ ${items.length} รายการ · ประมาณการ ${fullBaht(doc.estTotal)}`, me);
     await saveWithDocNo(doc);
@@ -294,6 +309,28 @@ router.get("/:id", verifyToken, async (req, res) => {
   } catch (err) {
     console.error("❌ ดึงใบขอซื้อไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงใบขอซื้อไม่สำเร็จ" });
+  }
+});
+
+/**
+ * รูปลายเซ็นที่ผนึกไว้ในใบนี้ — ใช้ตอนสร้าง PDF
+ * 🔒 คืนเฉพาะลายเซ็นที่ผนึกในใบนี้จริง และเฉพาะผู้ที่มีสิทธิ์เห็นใบ (เหมือน /api/expenses/:id/signatures)
+ */
+router.get("/:id/signatures", verifyToken, async (req, res) => {
+  try {
+    const doc = await loadVisible(req, res);
+    if (!doc) return;
+    const seals = { requester: doc.signatures?.requester, reviewer: doc.signatures?.reviewer, approver: doc.signatures?.approver, purchaser: doc.signatures?.purchaser };
+    const images = await imagesFor(Object.values(seals));
+    const out = {};
+    Object.entries(seals).forEach(([role, seal]) => {
+      const img = seal?.hash ? images.get(seal.hash) : null;
+      if (img) out[role] = { image: img.image, width: img.width, height: img.height, name: seal.name, position: seal.position, signedAt: seal.signedAt };
+    });
+    res.json({ signatures: out });
+  } catch (err) {
+    console.error("❌ ดึงลายเซ็นใบขอซื้อไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ดึงลายเซ็นไม่สำเร็จ" });
   }
 });
 
@@ -329,6 +366,11 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
     }
     applyTotals(doc);
     await attachUploads(req, doc, me, "quotation");
+    // ลายเซ็นผู้ขอ: ติ๊กไม่ใช้ = ถอดออก · ส่งใหม่หลังตีกลับ = ผนึกใหม่ (เนื้อหาเปลี่ยน)
+    if (doc.requester?.userId === me.userId && req.body.useSignature !== undefined) {
+      if (!wantsSignature(req)) doc.set("signatures.requester", EMPTY_SEAL);
+      else if (wasRejected || !doc.signatures?.requester?.hash) await sealSlot(req, doc, "requester");
+    }
     if (wasRejected) {
       doc.status = "pending"; doc.submittedAt = new Date(); doc.rejectReason = "";
       log(doc, "resubmitted", `แก้ไขและส่งใหม่ · ประมาณการ ${fullBaht(doc.estTotal)}`, me);
@@ -354,6 +396,7 @@ router.post("/:id/review", verifyToken, async (req, res) => {
     const me = actor(req);
     const note = str(req.body?.note, 500);
     doc.status = "reviewed"; doc.reviewedBy = me; doc.reviewedAt = new Date();
+    await sealSlot(req, doc, "reviewer");
     log(doc, "reviewed", `ตรวจสอบแล้ว${note ? ` · ${note}` : ""}`, me);
     await doc.save();
     notifyCap("approveExpense", me, { title: "🔎 รออนุมัติ · ใบขอซื้อ", body: `${line1(doc)}\nประมาณการ ${fullBaht(doc.estTotal)}\nตรวจสอบโดย ${fullNameOf(req.user)}`, url: urlOf(doc), tag: `pr-${doc._id}`, renotify: true });
@@ -377,6 +420,7 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
     const me = actor(req);
     const note = str(req.body?.note, 500);
     doc.status = "approved"; doc.approvedBy = me; doc.approvedAt = new Date();
+    await sealSlot(req, doc, "approver");
     log(doc, "approved", `อนุมัติ · ประมาณการ ${fullBaht(doc.estTotal)}${note ? ` · ${note}` : ""}`, me);
     await doc.save();
     notifyUsers([doc.requester.userId, doc.createdBy.userId], me, { title: "✅ ใบขอซื้อได้รับอนุมัติ", body: `${line1(doc)}\nรอฝ่ายจัดซื้อสั่งซื้อ`, url: urlOf(doc), tag: `pr-${doc._id}` });
@@ -401,6 +445,9 @@ router.post("/:id/reject", verifyToken, async (req, res) => {
     doc.reviewedBy = { userId: "", name: "" }; doc.reviewedAt = null;
     doc.approvedBy = { userId: "", name: "" }; doc.approvedAt = null;
     doc.rejectedBy = me; doc.rejectedAt = new Date(); doc.rejectReason = reason;
+    // ⚠️ ตีกลับ = เนื้อหาจะถูกแก้ ลายเซ็นผู้ตรวจสอบ/ผู้อนุมัติของเนื้อหาเดิมใช้ไม่ได้อีก
+    doc.set("signatures.reviewer", EMPTY_SEAL);
+    doc.set("signatures.approver", EMPTY_SEAL);
     log(doc, "rejected", `ตีกลับ · ${reason}`, me);
     await doc.save();
     notifyUsers([doc.requester.userId, doc.createdBy.userId], me, { title: "↩️ ใบขอซื้อถูกตีกลับ", body: `${doc.docNo}\nเหตุผล: ${reason}`, url: urlOf(doc), tag: `pr-${doc._id}`, renotify: true });
@@ -440,6 +487,9 @@ router.post("/:id/order", verifyToken, upload.array("files", 10), async (req, re
       expectedAt: parseDay(req.body.expectedAt), by: me, note: str(req.body.note, 500),
     };
     if (doc.status === "approved") doc.status = "ordered";
+    if (first || req.body.useSignature !== undefined) {
+      if (wantsSignature(req)) await sealSlot(req, doc, "purchaser"); else doc.set("signatures.purchaser", EMPTY_SEAL);
+    }
     applyTotals(doc);
     await attachUploads(req, doc, me, "po");
     log(doc, first ? "ordered" : "order_updated", `${first ? "สั่งซื้อแล้ว" : "แก้ข้อมูลการสั่งซื้อ"} · ${supplier}${doc.order.poNo ? ` · PO ${doc.order.poNo}` : ""}${doc.actualTotal ? ` · ${fullBaht(doc.actualTotal)}` : ""}`, me);

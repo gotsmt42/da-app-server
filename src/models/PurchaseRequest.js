@@ -18,6 +18,11 @@ const PRIORITIES = ["normal", "urgent", "critical"];
 const FILE_KINDS = ["quotation", "spec", "photo", "po", "delivery", "invoice", "other"];
 
 const personSchema = { userId: { type: String, default: "" }, name: { type: String, default: "" } };
+/** สำเนาลายเซ็นที่ผนึกในใบ (ดู services/signatureSeal.js) — เหมือนระบบเบิก */
+const sealSchema = {
+  userId: { type: String, default: "" }, name: { type: String, default: "" }, position: { type: String, default: "" },
+  signedAt: { type: Date, default: null }, hash: { type: String, default: "" },
+};
 
 const itemSchema = new mongoose.Schema(
   {
@@ -98,6 +103,11 @@ const purchaseRequestSchema = new mongoose.Schema(
     receivedAt: { type: Date, default: null },
     cancelledBy: personSchema, cancelledAt: { type: Date, default: null }, cancelReason: { type: String, default: "" },
     attachments: { type: [fileSchema], default: [] },
+    /**
+     * ✅ ลายเซ็นอิเล็กทรอนิกส์ 4 ช่องบน PDF (ผู้ใช้ขอให้ใบขอซื้อ "เหมือนใบอื่นๆ")
+     * ผนึกตอนผู้นั้นกดเองเท่านั้น และเฉพาะเมื่อติ๊กเลือกใช้ · ตีกลับ = ล้างช่องผู้ตรวจสอบ/ผู้อนุมัติ
+     */
+    signatures: { requester: sealSchema, reviewer: sealSchema, approver: sealSchema, purchaser: sealSchema },
     activityLog: [{ action: String, detail: String, userId: String, userName: String, timestamp: { type: Date, default: Date.now } }],
   },
   { timestamps: true }
