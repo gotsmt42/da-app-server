@@ -15,6 +15,8 @@ const mongoose = require("../db");
  */
 const STATUS = ["pending", "reviewed", "rejected", "approved", "ordered", "partial", "received", "cancelled"];
 const PRIORITIES = ["normal", "urgent", "critical"];
+/** ประเภทการซื้อ — ช่องมาตรฐานของแบบฟอร์ม PR (ฝ่ายบัญชีใช้แยกบันทึกค่าใช้จ่าย/สินทรัพย์) */
+const CATEGORIES = ["material", "tool", "consumable", "asset", "service", "other"];
 const FILE_KINDS = ["quotation", "spec", "photo", "po", "delivery", "invoice", "other"];
 
 const personSchema = { userId: { type: String, default: "" }, name: { type: String, default: "" } };
@@ -26,6 +28,8 @@ const sealSchema = {
 
 const itemSchema = new mongoose.Schema(
   {
+    /** รหัสสินค้า / Part No. (ไม่บังคับ) */
+    code: { type: String, default: "", trim: true },
     description: { type: String, required: true, trim: true },
     /** ยี่ห้อ / รุ่น / สเปก — ฝ่ายจัดซื้อต้องสั่งได้ถูกตัวโดยไม่ต้องโทรถามกลับ */
     spec: { type: String, default: "", trim: true },
@@ -60,14 +64,22 @@ const purchaseRequestSchema = new mongoose.Schema(
     /** เหตุผล/วัตถุประสงค์การซื้อ */
     purpose: { type: String, default: "", trim: true },
     priority: { type: String, enum: PRIORITIES, default: "normal" },
+    category: { type: String, enum: CATEGORIES, default: "material" },
     /** ต้องการใช้ภายในวันที่ */
     neededBy: { type: Date, default: null },
     /** สถานที่ส่งของ */
     deliverTo: { type: String, default: "", trim: true },
+    /** ผู้รับของ ณ จุดส่ง + เบอร์ติดต่อ — ร้านค้า/คนส่งของโทรหาได้ตรง */
+    contactName: { type: String, default: "", trim: true },
+    contactPhone: { type: String, default: "", trim: true },
     /** ร้านค้าที่แนะนำ (ผู้ขอเสนอ — ฝ่ายจัดซื้อเลือกจริงตอนสั่ง) */
     suggestedSupplier: { type: String, default: "", trim: true },
     note: { type: String, default: "", trim: true },
-    requester: { userId: { type: String, index: true, default: "" }, name: { type: String, default: "" }, position: { type: String, default: "" } },
+    requester: {
+      userId: { type: String, index: true, default: "" }, name: { type: String, default: "" }, position: { type: String, default: "" },
+      /** ฝ่าย/แผนก + เบอร์โทร (snapshot ตอนออกใบ) */
+      department: { type: String, default: "" }, phone: { type: String, default: "" },
+    },
     createdBy: personSchema,
     /** งาน/โครงการที่ซื้อให้ (snapshot) */
     eventId: { type: String, default: "", index: true },
@@ -116,5 +128,6 @@ const purchaseRequestSchema = new mongoose.Schema(
 const PurchaseRequest = mongoose.model("PurchaseRequest", purchaseRequestSchema);
 PurchaseRequest.STATUS = STATUS;
 PurchaseRequest.PRIORITIES = PRIORITIES;
+PurchaseRequest.CATEGORIES = CATEGORIES;
 PurchaseRequest.FILE_KINDS = FILE_KINDS;
 module.exports = PurchaseRequest;

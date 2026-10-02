@@ -20,7 +20,7 @@ const User = require("../models/User");
 const CalendarEvent = require("../models/Events");
 const DocCounter = require("../models/DocCounter");
 const verifyToken = require("../middleware/auth");
-const { can, titleOf, rankFilter, effectiveCapabilities, CAPABILITIES } = require("../config/roles");
+const { can, titleOf, rankFilter, effectiveCapabilities, CAPABILITIES, departmentOf, DEPARTMENT_LABEL } = require("../config/roles");
 const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers } = require("../services/PushNotify");
@@ -60,6 +60,7 @@ const sanitizeItems = (raw, prev = []) => (Array.isArray(parseJson(raw)) ? parse
     const old = prev.find((p) => String(p._id) === String(it?._id || ""));
     return {
       ...(old ? { _id: old._id } : {}),
+      code: str(it?.code, 60),
       description: str(it?.description, 300),
       spec: str(it?.spec, 500),
       qty,
@@ -217,7 +218,7 @@ router.get("/suggest", verifyToken, async (req, res) => {
     const products = new Map();
     recent.forEach((d) => d.items.forEach((it) => {
       const key = it.description.toLowerCase();
-      if (!products.has(key)) products.set(key, { description: it.description, spec: it.spec, unit: it.unit, lastPrice: it.actualUnitPrice ?? it.estUnitPrice ?? 0 });
+      if (!products.has(key)) products.set(key, { code: it.code || "", description: it.description, spec: it.spec, unit: it.unit, lastPrice: it.actualUnitPrice ?? it.estUnitPrice ?? 0 });
     }));
     res.json({
       suppliers: uniq(recent.flatMap((d) => [d.order?.supplier, d.suggestedSupplier])).slice(0, 50),
@@ -267,9 +268,15 @@ router.post("/", verifyToken, upload.array("files", 15), async (req, res) => {
       priority: PurchaseRequest.PRIORITIES.includes(req.body.priority) ? req.body.priority : "normal",
       neededBy: parseDay(req.body.neededBy),
       deliverTo: str(req.body.deliverTo, 300),
+      category: PurchaseRequest.CATEGORIES.includes(req.body.category) ? req.body.category : "material",
+      contactName: str(req.body.contactName, 120),
+      contactPhone: str(req.body.contactPhone, 40),
       suggestedSupplier: str(req.body.suggestedSupplier, 200),
       note: str(req.body.note, 1000),
-      requester: { userId: me.userId, name: me.name, position: titleOf(req.user) },
+      requester: {
+        userId: me.userId, name: me.name, position: titleOf(req.user),
+        department: DEPARTMENT_LABEL[departmentOf(req.user)] || "", phone: str(req.user?.tel, 40),
+      },
       createdBy: me,
       ...linked,
       items,
@@ -348,7 +355,10 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
       if (!s) return res.status(400).json({ message: "กรุณาระบุเรื่องที่ขอซื้อ" });
       doc.subject = s;
     }
-    ["purpose", "deliverTo", "suggestedSupplier", "note"].forEach((f) => { if (req.body[f] !== undefined) doc[f] = str(req.body[f], f === "purpose" || f === "note" ? 1000 : 300); });
+    ["purpose", "deliverTo", "suggestedSupplier", "note", "contactName", "contactPhone"].forEach((f) => {
+      if (req.body[f] !== undefined) doc[f] = str(req.body[f], { purpose: 1000, note: 1000, contactName: 120, contactPhone: 40 }[f] || 300);
+    });
+    if (req.body.category !== undefined && PurchaseRequest.CATEGORIES.includes(req.body.category)) doc.category = req.body.category;
     if (req.body.priority !== undefined && PurchaseRequest.PRIORITIES.includes(req.body.priority)) doc.priority = req.body.priority;
     if (req.body.neededBy !== undefined) doc.neededBy = parseDay(req.body.neededBy);
     if (req.body.docDate !== undefined) doc.docDate = parseDay(req.body.docDate) || doc.docDate;
