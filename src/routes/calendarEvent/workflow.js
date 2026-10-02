@@ -15,6 +15,17 @@ const {
   isJobParticipant,
 } = require("./shared");
 
+const FOLLOWUP_CHANNELS = ["phone", "line", "email", "visit", "other"];
+/** "YYYY-MM-DD" → เที่ยงวัน UTC (กันวันเลื่อนข้ามโซนเวลา) · withTime = รับ ISO เต็มด้วย · ว่าง/ผิด = null */
+const parseDay = (v, withTime = false) => {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T12:00:00.000Z`);
+  if (!withTime) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
 module.exports = (router) => {
   // ✅ บันทึกการติดตามลูกค้าเรื่องใบเสนอราคาแบบเป็นครั้งๆ (ครั้งที่ 1, 2, 3...) พร้อมหลักฐานแนบได้ถ้ามี
   // (หน้า /quotations) — ผู้ใช้ต้องการให้เป็นสิทธิ์ของ "ผู้รับผิดชอบ" (responsiblePerson) โดยเฉพาะ ไม่ใช่
@@ -45,10 +56,13 @@ module.exports = (router) => {
       if (!note || !note.trim()) {
         return res.status(400).json({ message: "กรุณากรอกรายละเอียดการติดตาม" });
       }
+      const channel = FOLLOWUP_CHANNELS.includes(req.body.channel) ? req.body.channel : "";
+      const nextAt = parseDay(req.body.nextFollowUpAt);
 
       const followUp = {
         attemptNumber: (existingEvent.quotationFollowUps?.length || 0) + 1,
         note: note.trim(),
+        channel,
         contactedAt: new Date(),
         userId,
         userName: [req.user.fname, req.user.lname].filter(Boolean).join(" ") || req.user.username,
@@ -89,7 +103,8 @@ module.exports = (router) => {
 
       const updatedEvent = await CalendarEvent.findByIdAndUpdate(
         id,
-        { $push: { quotationFollowUps: followUp, activityLog: logEntry } },
+        // ✅ นัดติดตามครั้งถัดไป — ไม่ระบุ = ล้างทิ้ง (กลับไปใช้เกณฑ์ 7 วันหลังติดต่อล่าสุด)
+        { $push: { quotationFollowUps: followUp, activityLog: logEntry }, $set: { quotationNextFollowUpAt: nextAt } },
         { new: true },
       );
 
@@ -97,6 +112,104 @@ module.exports = (router) => {
     } catch (err) {
       console.error("❌ Error adding quotation follow-up:", err);
       res.status(500).json({ message: "บันทึกการติดตามไม่สำเร็จ" });
+    }
+  });
+
+  /**
+   * ✅ ข้อมูล + สถานะใบเสนอราคา (หน้า /finance → ติดตามใบเสนอราคา) — ผู้ใช้สั่ง 2 ต.ค. 2569
+   *    "ข้อมูลไม่สมบูรณ์ ปรับปรุงให้สมบูรณ์และมืออาชีพ"
+   *    เดิมหน้าจอยิง PUT /:id ทีละวันของงานแล้วต่อ activityLog เอง — ไม่มีการตรวจค่า และเพิ่มฟิลด์ใหม่
+   *    ต้องไปแก้ route ใหญ่ที่คุมงานทั้งหมด ตอนนี้แยกเป็น route เฉพาะ ตรวจค่า + บันทึกทั้งกลุ่มวันเดียวกัน
+   *
+   * body: { action?: "send"|"approve"|"reject"|"reset", ...ฟิลด์ข้อมูลใบเสนอราคา }
+   * สิทธิ์: ผู้เกี่ยวข้องกับงาน หรือ editFinance · มูลค่า/ย้อนสถานะ = editFinance เท่านั้น
+   */
+  router.put("/:id/quotation", verifyToken, async (req, res) => {
+    try {
+      const anchor = await CalendarEvent.findById(req.params.id);
+      if (!anchor) return res.status(404).json({ message: "ไม่พบงานนี้" });
+      const isFinance = can(req.user, "editFinance");
+      if (!isFinance && !isJobParticipant(anchor, req.userId, req.user.fname)) {
+        return res.status(403).json({ message: "แก้ไขใบเสนอราคาได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
+      }
+      const body = req.body || {};
+      const actorName = [req.user.fname, req.user.lname].filter(Boolean).join(" ") || req.user.username;
+      const now = new Date();
+      const $set = {};
+      const changes = [];
+      const str = (v, max) => String(v ?? "").trim().slice(0, max);
+
+      if (body.quotationNo !== undefined) { $set.quotationNo = str(body.quotationNo, 60); changes.push("เลขที่"); }
+      if (body.quotationDate !== undefined) { $set.quotationDate = parseDay(body.quotationDate); changes.push("วันที่ใบเสนอราคา"); }
+      if (body.quotationValidUntil !== undefined) { $set.quotationValidUntil = parseDay(body.quotationValidUntil); changes.push("ยืนราคา"); }
+      if (body.quotationVatIncluded !== undefined) $set.quotationVatIncluded = body.quotationVatIncluded === true || body.quotationVatIncluded === "true";
+      if (body.quotationContact !== undefined) {
+        const c = body.quotationContact || {};
+        $set.quotationContact = { name: str(c.name, 120), phone: str(c.phone, 40), email: str(c.email, 120) };
+        changes.push("ผู้ติดต่อ");
+      }
+      if (body.quotationNextFollowUpAt !== undefined) { $set.quotationNextFollowUpAt = parseDay(body.quotationNextFollowUpAt); changes.push("นัดติดตาม"); }
+      if (body.quotationAmount !== undefined) {
+        if (!isFinance) return res.status(403).json({ message: "แก้มูลค่าใบเสนอราคาได้เฉพาะฝ่ายบริหาร/การเงิน" });
+        const amount = body.quotationAmount === null || body.quotationAmount === "" ? null : Number(body.quotationAmount);
+        if (amount !== null && (!Number.isFinite(amount) || amount < 0)) return res.status(400).json({ message: "มูลค่าใบเสนอราคาไม่ถูกต้อง" });
+        $set.quotationAmount = amount === null ? null : Math.round(amount * 100) / 100;
+        changes.push("มูลค่า");
+      }
+      const qDate = $set.quotationDate !== undefined ? $set.quotationDate : anchor.quotationDate;
+      const qValid = $set.quotationValidUntil !== undefined ? $set.quotationValidUntil : anchor.quotationValidUntil;
+      if (qDate && qValid && qValid < qDate) return res.status(400).json({ message: "วันยืนราคาต้องไม่ก่อนวันที่ใบเสนอราคา" });
+
+      let log = changes.length ? ["quotation_updated", `แก้ข้อมูลใบเสนอราคา (${changes.join(" · ")})`] : null;
+      const action = String(body.action || "");
+      if (action) {
+        const hasFiles = (anchor.quotationFiles || []).length > 0;
+        if (action === "send") {
+          if (!hasFiles) return res.status(409).json({ message: "ต้องแนบไฟล์ใบเสนอราคาก่อนบันทึกว่าส่งลูกค้าแล้ว" });
+          Object.assign($set, {
+            quotationStatus: "sent", quotationSentAt: parseDay(body.sentAt, true) || now,
+            quotationDecisionAt: null, quotationDecisionBy: null, quotationDecisionNote: "", quotationPoNo: "",
+          });
+          log = ["quotation_sent", anchor.quotationStatus ? "ส่งใบเสนอราคา (ฉบับแก้ไข) ให้ลูกค้าอีกครั้ง" : "ส่งใบเสนอราคาให้ลูกค้า"];
+        } else if (action === "approve" || action === "reject") {
+          if (!anchor.quotationStatus) return res.status(409).json({ message: "ยังไม่ได้บันทึกว่าส่งใบเสนอราคาให้ลูกค้า" });
+          const note = str(body.decisionNote, 500);
+          if (action === "reject" && !note) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ลูกค้าปฏิเสธ" });
+          Object.assign($set, {
+            quotationStatus: action === "approve" ? "approved" : "rejected",
+            quotationDecisionAt: parseDay(body.decidedAt, true) || now, quotationDecisionBy: actorName,
+            quotationDecisionNote: note, quotationPoNo: action === "approve" ? str(body.poNo, 60) : "",
+            quotationNextFollowUpAt: null,
+          });
+          log = action === "approve"
+            ? ["quotation_approved", `ลูกค้าอนุมัติใบเสนอราคา${$set.quotationPoNo ? ` (PO ${$set.quotationPoNo})` : ""}`]
+            : ["quotation_rejected", `ลูกค้าปฏิเสธใบเสนอราคา — ${note}`];
+        } else if (action === "reset") {
+          if (!isFinance) return res.status(403).json({ message: "ย้อนสถานะใบเสนอราคาได้เฉพาะฝ่ายบริหาร/การเงิน" });
+          Object.assign($set, {
+            quotationStatus: null, quotationSentAt: null, quotationDecisionAt: null, quotationDecisionBy: null,
+            quotationDecisionNote: "", quotationPoNo: "", quotationNextFollowUpAt: null,
+          });
+          log = ["quotation_reset", "ย้อนสถานะใบเสนอราคากลับเป็น \"ยังไม่ส่งลูกค้า\""];
+        } else {
+          return res.status(400).json({ message: "คำสั่งไม่ถูกต้อง" });
+        }
+      }
+      if (!Object.keys($set).length) return res.status(400).json({ message: "ไม่มีข้อมูลที่จะบันทึก" });
+
+      // ✅ งานหลายวัน (jobGroupId เดียวกัน) = ใบเสนอราคาใบเดียว — บันทึกทุกวันของงานพร้อมกัน
+      const filter = anchor.jobGroupId ? { jobGroupId: anchor.jobGroupId } : { _id: anchor._id };
+      await CalendarEvent.updateMany(filter, { $set });
+      if (log) {
+        await CalendarEvent.updateOne({ _id: anchor._id }, {
+          $push: { activityLog: { action: log[0], detail: log[1], userId: String(req.userId), userName: actorName, timestamp: now } },
+        });
+      }
+      const event = await CalendarEvent.findById(anchor._id).lean();
+      res.json({ event });
+    } catch (err) {
+      console.error("❌ บันทึกใบเสนอราคาไม่สำเร็จ:", err);
+      res.status(500).json({ message: "บันทึกใบเสนอราคาไม่สำเร็จ" });
     }
   });
 

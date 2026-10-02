@@ -190,6 +190,19 @@ const eventSchema = new mongoose.Schema(
     quotationDecisionBy: { type: String },
     quotationAmount: { type: Number },
     quotationFollowUpNote: { type: String },
+    // ✅ ข้อมูลใบเสนอราคาให้ครบแบบที่ใช้ทั่วไป (ผู้ใช้สั่ง 2 ต.ค. 2569 "ข้อมูลไม่สมบูรณ์") — แก้ผ่าน PUT /:id/quotation
+    //    ⚠️ quotationNo ใช้ฟิลด์เดียวกับข้อมูลสัญญา (ประกาศไว้ด้านล่าง) — คือเลขที่ใบเสนอราคาเหมือนกัน
+    quotationDate: Date,              // วันที่ในใบเสนอราคา
+    quotationValidUntil: Date,        // ยืนราคาถึงวันที่
+    quotationVatIncluded: { type: Boolean, default: false }, // มูลค่ารวม VAT แล้วหรือยัง
+    quotationContact: {               // ผู้ติดต่อฝั่งลูกค้าที่รับใบเสนอราคา
+      name: { type: String, default: "" },
+      phone: { type: String, default: "" },
+      email: { type: String, default: "" },
+    },
+    quotationDecisionNote: { type: String, default: "" }, // เหตุผลที่ปฏิเสธ / หมายเหตุตอนอนุมัติ
+    quotationPoNo: { type: String, default: "" },         // เลขที่ PO ของลูกค้าเมื่ออนุมัติ
+    quotationNextFollowUpAt: Date,    // นัดติดตามครั้งถัดไป (ว่าง = ครบ 7 วันหลังติดต่อล่าสุด)
 
     // ✅ ประวัติการติดตามลูกค้าเรื่องใบเสนอราคาแบบเป็นครั้งๆ (ครั้งที่ 1, 2, 3...) — ช่างหรือแอดมิน/
     // manager คนไหนก็บันทึกได้ (คนที่โทร/คุยกับลูกค้าจริงมักเป็นช่าง) แนบหลักฐานได้ถ้ามี (ไม่บังคับ)
@@ -198,6 +211,8 @@ const eventSchema = new mongoose.Schema(
       {
         attemptNumber: Number,
         note: String,
+        /** ช่องทาง: phone / line / email / visit / other */
+        channel: { type: String, default: "" },
         contactedAt: { type: Date, default: Date.now },
         userId: String,
         userName: String,

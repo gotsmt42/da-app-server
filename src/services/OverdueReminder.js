@@ -165,7 +165,7 @@ async function checkAndNotifyStaleQuotations() {
   try {
     // ⚠️ ต้อง select quotationFollowUps มาด้วย ไม่งั้นคำนวณ "ติดต่อครั้งล่าสุด" ไม่ได้ (เดิมไม่ได้ดึงมา)
     const events = await CalendarEvent.find({ quotationStatus: "sent" })
-      .select("company site title system team time jobGroupId quotationSentAt quotationFollowUps resPerson userId responsiblePersonId responsiblePerson")
+      .select("company site title system team time jobGroupId quotationSentAt quotationFollowUps quotationNextFollowUpAt resPerson userId responsiblePersonId responsiblePerson")
       .lean();
 
     if (events.length === 0) return;
@@ -188,8 +188,12 @@ async function checkAndNotifyStaleQuotations() {
       const lastContact = sessions
         .map(getLastContactAt)
         .reduce((a, b) => (b.isAfter(a) ? b : a));
-      const days = moment().startOf("day").diff(lastContact.startOf("day"), "days");
-      if (days > QUOTATION_WARNING_DAYS) staleJobs.push({ sessions, jobId: head._id.toString() });
+      // ✅ นัดติดตามครั้งถัดไป (ถ้าตั้งไว้และอยู่หลังการติดต่อล่าสุด) แทนเกณฑ์ 7 วัน — ตรงกับหน้าจอ
+      const next = head.quotationNextFollowUpAt ? moment(head.quotationNextFollowUpAt) : null;
+      const dueAt = next && next.isValid() && next.isAfter(lastContact)
+        ? next.clone().startOf("day")
+        : lastContact.clone().startOf("day").add(QUOTATION_WARNING_DAYS, "days");
+      if (moment().startOf("day").isAfter(dueAt)) staleJobs.push({ sessions, jobId: head._id.toString() });
     });
 
     if (staleJobs.length === 0) return;
