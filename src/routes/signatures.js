@@ -57,6 +57,8 @@ const readImage = (raw) => {
 };
 
 const view = (sig, img) => ({
+  // ✅ บอกเจ้าของลายเซ็นทุกครั้ง — หน้าจอใช้ตรวจซ้ำว่าเป็นของคนที่ล็อกอินอยู่จริง (กันแคชข้ามบัญชี)
+  userId: sig.userId,
   hash: sig.hash,
   image: img?.image || "",
   width: img?.width || 0,
@@ -82,6 +84,9 @@ const storeImage = async (userId, img) => {
 
 /** ลายเซ็นปัจจุบันของตัวเอง (พร้อมรูป) — ใช้ในหน้าตั้งค่า และตอนออกเอกสารที่ตัวเองเป็นผู้ลงนาม */
 router.get("/me", verifyToken, async (req, res) => {
+  // 🔒 ข้อมูลส่วนตัวต่อบัญชี — ห้ามเบราว์เซอร์/พร็อกซีเก็บคำตอบไว้ใช้ซ้ำ (สลับบัญชีแล้วได้ของคนเก่า)
+  res.set("Cache-Control", "no-store, private");
+  res.set("Vary", "Authorization");
   try {
     const sig = await Signature.findOne({ userId: String(req.userId) }).lean();
     if (!sig) return res.json({ signature: null });
@@ -99,6 +104,7 @@ router.get("/me", verifyToken, async (req, res) => {
  * แทนการเซ็นด้วยมือ (จำเป็นเมื่อเอกสารถูกใช้ทางการเงิน/ส่งให้ลูกค้า)
  */
 router.put("/me", verifyToken, async (req, res) => {
+  res.set("Cache-Control", "no-store, private");
   try {
     if (req.body.consent !== true && req.body.consent !== "true") {
       return res.status(400).json({ message: "กรุณายอมรับเงื่อนไขการใช้ลายเซ็นอิเล็กทรอนิกส์ก่อน" });
