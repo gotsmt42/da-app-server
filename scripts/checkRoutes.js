@@ -27,7 +27,7 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 188;   // +1 = PUT /api/events/:id/quotation ·   // +5 = /api/push กล่องแจ้งเตือน (inbox · inbox/read ×2 · status · test) ·   // +1 = GET /api/purchase/:id/signatures ·   // +14 = /api/purchase (ใบขอซื้อ PR) ·   // +15 = /api/ot (ใบขออนุมัติ OT) ·   // +3 = ใบค่าจ้างผู้รับเหมา (/api/expenses: contractors · contractor-history · contractor-payments) · +1 = GET /api/customer/map/embed (แผนที่บนฟอร์มงาน) ·   // +14 = /api/web (เว็บไซต์บริษัท: เนื้อหา 7 · คำขอจากเว็บ 6 · อัปโหลด 1)
+const EXPECTED_TOTAL = 191;   // +3 = /api/mail (status · document · log) ·   // +1 = PUT /api/events/:id/quotation ·   // +5 = /api/push กล่องแจ้งเตือน (inbox · inbox/read ×2 · status · test) ·   // +1 = GET /api/purchase/:id/signatures ·   // +14 = /api/purchase (ใบขอซื้อ PR) ·   // +15 = /api/ot (ใบขออนุมัติ OT) ·   // +3 = ใบค่าจ้างผู้รับเหมา (/api/expenses: contractors · contractor-history · contractor-payments) · +1 = GET /api/customer/map/embed (แผนที่บนฟอร์มงาน) ·   // +14 = /api/web (เว็บไซต์บริษัท: เนื้อหา 7 · คำขอจากเว็บ 6 · อัปโหลด 1)
 const EXPECTED_PER_PREFIX = {
   // ✅ +1 = PUT /reorder (จัดลำดับการ์ดงานในวันเดียวกันบนปฏิทิน)
   "/api/events": 33,
@@ -50,6 +50,8 @@ const EXPECTED_PER_PREFIX = {
   "/api/systemtype": 4,
   "/api/issued-documents": 3,
   "/api/push": 8,
+  // ✅ ส่งเอกสารทางอีเมล: status · document · log
+  "/api/mail": 3,
   "/api/stockproduct": 3,
   "/api/doc-number": 2,
   "/api/holidays": 1,

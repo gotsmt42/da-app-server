@@ -107,13 +107,15 @@ router.get("/alluser", verifyToken, async (req, res) => {
 router.get("/staff-directory", verifyToken, async (req, res) => {
   try {
     // ⚠️ ตำแหน่งที่พิมพ์ใต้ชื่อเก็บที่ jobTitle (ข้อมูลเก่าอยู่ที่ rank) — ดึงมาทั้งสองช่อง ไม่งั้นคนเก่าจะได้ค่าว่าง
-    const users = await User.find({}).select("_id fname lname rank jobTitle role tel imageUrl").sort({ fname: 1 }).lean();
+    const users = await User.find({}).select("_id fname lname rank jobTitle role tel email imageUrl").sort({ fname: 1 }).lean();
     res.json({
       users: users.map((u) => ({
         userId: String(u._id),
         name: [u.fname, u.lname].filter(Boolean).join(" ").trim() || u.fname || "",
         position: titleOf(u),
         tel: u.tel || "",
+        // ✅ อีเมลงาน — ให้ช่อง "สำเนาถึง" ตอนส่งเอกสารทางอีเมลเลือกเพื่อนร่วมงานได้ (routes/mail.js)
+        email: u.email || "",
         rank: normalizeRank(u),          // Rank — ตำแหน่งในองค์กร
         role: normalizeRank(u),          // ⚠️ ชื่อเดิมของ Rank — คงไว้ให้หน้าจอรุ่นเก่าไม่พัง
         imageUrl: u.imageUrl || "",

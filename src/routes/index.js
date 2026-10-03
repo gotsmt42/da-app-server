@@ -33,6 +33,8 @@ const settingsRouter = require("./settings");
 const searchRouter = require("./search");
 // ✅ เว็บไซต์บริษัท (da-web): เนื้อหาที่แก้จากหลังบ้าน + คำขอจากฟอร์มบนเว็บ
 const webRouter = require("./web");
+// ✅ ส่งเอกสาร PDF ทางอีเมล (ผู้ใช้สั่ง 3 ต.ค. 2569)
+const mailRouter = require("./mail");
 const { publishMutations } = require("../services/realtime");
 
 /**
@@ -71,6 +73,7 @@ router.use("/expenses", expensesRouter);
 router.use("/ot", otRouter);
 // ✅ ใบขอซื้อสินค้า PR (ผู้ใช้สั่ง 2 ต.ค. 2569) — ดู routes/purchase.js
 router.use("/purchase", purchaseRouter);
+router.use("/mail", mailRouter);
 // ✅ เช็คอินเทอร์เน็ตเฉพาะเส้นทางนี้เส้นเดียว (ตัวเดียวที่ต้องยิงออกไปข้างนอก) ไม่ใช่ทั้งแอป
 router.use("/holidays", checkInternetConnection, holidayRouter);
 

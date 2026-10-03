@@ -59,4 +59,40 @@ async function sendMail({ to, subject, html, text, replyTo }) {
   }
 }
 
-module.exports = { sendMail, isConfigured, esc };
+/**
+ * ✅ ส่งเอกสารทางอีเมล (routes/mail.js) — ต่างจาก sendMail ตรงที่รองรับ cc/bcc/ไฟล์แนบ
+ *    และคืนสาเหตุที่ส่งไม่สำเร็จ ให้หน้าจอบอกผู้ใช้ได้ว่าพังเพราะอะไร (ไม่ใช่แค่ true/false)
+ * @returns {Promise<{ ok: boolean, error?: string, messageId?: string }>}
+ */
+async function sendMailDetailed({ to, cc, bcc, subject, html, text, replyTo, attachments, fromName }) {
+  if (!isConfigured()) return { ok: false, error: "ยังไม่ได้ตั้งค่าเซิร์ฟเวอร์อีเมล (SMTP)" };
+  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  try {
+    const info = await getTransporter().sendMail({
+      // ✅ ชื่อผู้ส่งเป็นชื่อพนักงานที่กดส่ง แต่ที่อยู่ยังเป็นบัญชี SMTP (ปลอมที่อยู่คนอื่นจะโดนตีเป็นสแปม)
+      from: fromName ? { name: fromName, address: from.replace(/^.*<([^>]+)>.*$/, "$1") } : from,
+      to,
+      ...(cc?.length ? { cc } : {}),
+      ...(bcc?.length ? { bcc } : {}),
+      subject,
+      html,
+      text,
+      ...(replyTo ? { replyTo } : {}),
+      ...(attachments?.length ? { attachments } : {}),
+    });
+    return { ok: true, messageId: info?.messageId };
+  } catch (err) {
+    console.error("❌ ส่งอีเมลเอกสารไม่สำเร็จ:", err.message);
+    const msg = String(err?.message || "");
+    let error = "เซิร์ฟเวอร์อีเมลปฏิเสธการส่ง — ลองใหม่อีกครั้ง";
+    if (/auth|535|534/i.test(msg)) error = "เข้าสู่ระบบเซิร์ฟเวอร์อีเมลไม่สำเร็จ (ตรวจ SMTP_USER/SMTP_PASS)";
+    else if (/timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND/i.test(msg)) error = "เชื่อมต่อเซิร์ฟเวอร์อีเมลไม่ได้ — ลองใหม่อีกครั้ง";
+    else if (/recipient|550|553/i.test(msg)) error = "ที่อยู่อีเมลผู้รับไม่ถูกต้องหรือถูกปฏิเสธ";
+    return { ok: false, error };
+  }
+}
+
+/** ที่อยู่ผู้ส่งที่ผู้รับจะเห็น — ให้หน้าจอแสดง "ส่งจาก ..." */
+const fromAddress = () => (isConfigured() ? (process.env.SMTP_FROM || process.env.SMTP_USER) : "");
+
+module.exports = { sendMail, sendMailDetailed, isConfigured, fromAddress, esc };
