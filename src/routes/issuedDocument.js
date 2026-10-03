@@ -91,6 +91,20 @@ router.get("/", verifyToken, async (req, res) => {
   }
 });
 
+// GET /api/issued-documents/by-event/:eventId?docType=notice
+// ✅ ใบที่ยังใช้อยู่ของงานนี้ — กล่องออกเอกสารใช้ตรวจ "ออกไปแล้วหรือยัง" ก่อนให้ออก (ห้ามออกซ้ำ)
+router.get("/by-event/:eventId", verifyToken, async (req, res) => {
+  try {
+    const docType = String(req.query.docType || "");
+    if (!DOC_TYPES.includes(docType)) return res.status(400).json({ message: "ชนิดเอกสารไม่ถูกต้อง" });
+    const doc = await IssuedDocument.activeFor(req.params.eventId, docType);
+    res.json({ doc });
+  } catch (err) {
+    console.error("❌ ตรวจเอกสารของงานไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ตรวจเอกสารของงานไม่สำเร็จ" });
+  }
+});
+
 // POST /api/issued-documents  — บันทึกใบที่เพิ่งออกจริง
 router.post("/", verifyToken, async (req, res) => {
   try {
@@ -104,6 +118,14 @@ router.post("/", verifyToken, async (req, res) => {
     }
     if (!String(b.docNumber || "").trim()) {
       return res.status(400).json({ message: "ไม่มีเลขที่เอกสาร" });
+    }
+    // ✅ ห้ามออกซ้ำ — งานเดียวกันมีใบชนิดเดียวกันที่ยังใช้อยู่ได้ใบเดียว (ดู IssuedDocument.activeFor)
+    const existing = await IssuedDocument.activeFor(b.eventId, b.docType);
+    if (existing) {
+      return res.status(409).json({
+        message: `งานนี้ออกเอกสารนี้ไปแล้ว (เลขที่ ${existing.docNumber}) — ถ้าต้องออกใหม่ ให้ยกเลิกใบเดิมในทะเบียนเอกสารก่อน`,
+        doc: existing,
+      });
     }
 
     const doc = await IssuedDocument.create({

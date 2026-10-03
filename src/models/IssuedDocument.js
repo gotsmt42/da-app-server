@@ -59,7 +59,21 @@ const issuedDocumentSchema = new mongoose.Schema(
 
 // ✅ ดัชนีคู่ — หน้าทะเบียนเรียงตาม "ออกล่าสุดขึ้นก่อน" เสมอ และมักกรองด้วยชนิดเอกสารควบคู่กันไป
 issuedDocumentSchema.index({ docType: 1, issuedAt: -1 });
+issuedDocumentSchema.index({ eventId: 1, docType: 1 });
 
 const IssuedDocument = mongoose.model("IssuedDocument", issuedDocumentSchema);
+
+/**
+ * ✅ ผู้ใช้สั่ง (3 ต.ค. 2569): "ถ้างานนี้มีการออกใบไปแล้วไม่ให้ออกซ้ำ" — หนึ่งงานมีใบแต่ละชนิดที่ยังใช้อยู่ได้ใบเดียว
+ *    ใบที่ถูก "ยกเลิก" ในทะเบียนไม่นับ (ทางออกเมื่อจำเป็นต้องออกใหม่จริง: ยกเลิกใบเดิมก่อน)
+ * @returns {Promise<object|null>} ใบที่ยังใช้อยู่ของงานนี้ (ล่าสุด) หรือ null
+ */
+IssuedDocument.activeFor = async function activeFor(eventId, docType) {
+  if (!eventId || !mongoose.isValidObjectId(eventId)) return null;
+  return IssuedDocument.findOne({ eventId, docType, status: { $ne: "cancelled" } })
+    .sort({ issuedAt: -1, createdAt: -1 })
+    .select("docType docNumber issuedAt status issuedByName site subject formSnapshot eventId customerCompany")
+    .lean();
+};
 module.exports = IssuedDocument;
 module.exports.DOC_STATUSES = DOC_STATUSES;

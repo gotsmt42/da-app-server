@@ -6,6 +6,7 @@ const mongoose = require("mongoose");
 const DocCounter = require("../models/DocCounter");
 // ✅ ใช้ตรวจว่า "ผู้ขอเลข" เกี่ยวข้องกับงานที่อ้างอิงจริงไหม ตอนคนขอไม่ใช่ admin/manager (ดู POST /next)
 const CalendarEvent = require("../models/Events");
+const IssuedDocument = require("../models/IssuedDocument");
 const verifyToken = require("../middleware/auth");
 const { can } = require("../config/roles");
 
@@ -65,6 +66,15 @@ router.post("/next", verifyToken, async (req, res) => {
     const docType = String(req.body?.docType || "delivery");
     const cfg = DOC_TYPES[docType];
     if (!cfg) return res.status(400).json({ message: "ชนิดเอกสารไม่ถูกต้อง" });
+
+    // ✅ ห้ามออกซ้ำ (ผู้ใช้สั่ง 3 ต.ค. 2569) — ตรวจก่อนกินเลข ไม่งั้นเลขถูกกินทิ้งแล้วทะเบียนปฏิเสธทีหลัง
+    const existing = await IssuedDocument.activeFor(req.body?.eventId, docType);
+    if (existing) {
+      return res.status(409).json({
+        message: `งานนี้ออก${cfg.label}ไปแล้ว (เลขที่ ${existing.docNumber}) — ถ้าต้องออกใหม่ ให้ยกเลิกใบเดิมในทะเบียนเอกสารก่อน`,
+        doc: existing,
+      });
+    }
 
     const year = buddhistYear();
     const key = `${docType}:${year}`;
