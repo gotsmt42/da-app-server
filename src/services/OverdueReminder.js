@@ -163,6 +163,8 @@ function getLastContactAt(event) {
 
 async function checkAndNotifyStaleQuotations() {
   try {
+    // ✅ เก็บตกงานที่แนบใบเสนอราคา + ส่งงานแล้วแต่ยังไม่เริ่มนับ (เช่น ปิดงานผ่านช่องทางอื่น) ก่อนเช็คเกินกำหนด
+    await require("./quotationAutoStart").syncQuotationStartSafe();
     // ⚠️ ต้อง select quotationFollowUps มาด้วย ไม่งั้นคำนวณ "ติดต่อครั้งล่าสุด" ไม่ได้ (เดิมไม่ได้ดึงมา)
     const events = await CalendarEvent.find({ quotationStatus: "sent" })
       .select("company site title system team time jobGroupId quotationSentAt quotationFollowUps quotationNextFollowUpAt resPerson userId responsiblePersonId responsiblePerson")

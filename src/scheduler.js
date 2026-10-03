@@ -59,6 +59,9 @@ function dailyPlan() {
 }
 
 function startSchedulers() {
+  // ✅ ตอนบูต: เริ่มนับติดตามใบเสนอราคาที่เข้าเงื่อนไขแล้ว (ข้อมูลเดิมก่อนตัดขั้นตอน "ส่งลูกค้า") — ดู services/quotationAutoStart.js
+  setTimeout(() => require("./services/quotationAutoStart").syncQuotationStartSafe()
+    .then((n) => n && console.log(`📄 เริ่มนับติดตามใบเสนอราคาอัตโนมัติ ${n} งาน`)), 20 * 1000);
   dailyPlan().forEach(({ slot, name, task, hour, minute }, i) => scheduleDaily({
     hour, minute, name: `${slot} · ${name}`, task,
     // ⚠️ ตามเก็บตอนบูตก็เว้นระยะเหมือนกัน (ทีละ 2 นาที) — ไม่งั้นเซิร์ฟเวอร์ที่ดับคร่อมเวลา พอขึ้นมาจะยิงทุกเรื่องพร้อมกัน

@@ -4,6 +4,7 @@
  * แยกออกมาจาก routes/calendarEvent.js เดิมที่ยาว 2,708 บรรทัดในไฟล์เดียว (29 route)
  * ⚠️ ลำดับการประกาศ route ภายในไฟล์นี้ = ลำดับเดิม ห้ามสลับ (ดูเหตุผลที่ index.js)
  */
+const { syncQuotationStartSafe } = require("../../services/quotationAutoStart");
 const {
   CalendarEvent,
   verifyToken,
@@ -120,6 +121,9 @@ module.exports = (router) => {
         { $push: { [arrField]: newFileEntry }, $set: setFields },
         { new: true }
       );
+
+      // ✅ แนบใบเสนอราคาของงานที่ส่งงานแล้ว = เริ่มนับติดตามทันที (services/quotationAutoStart.js)
+      if (type === "quotation") await syncQuotationStartSafe({ ids: [eventId] });
 
       const savedFiles = updatedEvent[arrField] || [];
       const savedFile = savedFiles[savedFiles.length - 1];
