@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require("../models/User");
 const BOOT_TIME = require("../config/bootTime");
+const loginSessions = require("../services/loginSessions");
 
 // ⚠️ เดิมเขียนว่า `module.exports = verifyToken = async (...)` ซึ่ง verifyToken ไม่เคยถูกประกาศ
 // = สร้างตัวแปร global ขึ้นมาโดยไม่ตั้งใจ (implicit global) ไปทับ/ชนกับที่อื่นได้ และถ้าวันไหนเปลี่ยนมา
@@ -37,9 +38,16 @@ const verifyToken = async (req, res, next) => {
       return res.status(401).json({ message: "Token expired" });
     }
 
+    // ✅ อุปกรณ์ที่เข้าสู่ระบบ (หน้าตั้งค่า) — ถูกสั่ง "ออกจากระบบอุปกรณ์นี้" แล้ว = token นี้ใช้ไม่ได้อีก
+    const session = await loginSessions.touch({ decoded, token, req });
+    if (!session.ok) {
+      return res.status(401).json({ message: "Token expired" });
+    }
+
     req.userId = decoded.userId;
     req.user = user;
     req.token = token;
+    req.sid = session.sid;
 
     next();
   } catch (error) {

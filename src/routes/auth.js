@@ -13,6 +13,8 @@ const { fileFilter, limits } = require("../config/upload");
 const upload = multer({ storage, fileFilter, limits });
 
 const checkFile = require("../middleware/checkFile");
+const LoginSession = require("../models/LoginSession");
+const loginSessions = require("../services/loginSessions");
 
 // 🔒 ตารางสิทธิ์กลางของระบบ — ใช้ requireCap แทนการเช็ค role เขียนสดตามที่ config/roles.js กำหนดไว้
 const {
@@ -247,11 +249,14 @@ router.post("/login", async (req, res) => {
       systemRole: systemRoleOf(user),        // Role — ตำแหน่งในระบบ (ส่งชื่อนี้เพื่อกันสับสนกับ role ที่เป็น Rank ใน payload)
       imageUrl: user.imageUrl, // ✅ เพิ่มตรงนี้
       sessionVersion: user.sessionVersion || 0,
+      sid: loginSessions.newSid(), // ✅ รหัสอุปกรณ์ที่เข้าสู่ระบบ (ดู models/LoginSession.js)
     };
 
     const token = jwt.sign(payload, process.env.APP_SECRET, {
       expiresIn: "30d",
     });
+    // บันทึกอุปกรณ์แบบไม่รอ — หน้าเข้าสู่ระบบส่งข้อมูลรุ่นเครื่อง (Client Hints) มาใน body.device
+    loginSessions.recordLogin({ sid: payload.sid, userId: user._id, req, hints: req.body?.device || {} });
 
     res.status(200).json({ token, payload, message: "เข้าสู่ระบบสำเร็จ!" });
   } catch (err) {
@@ -497,9 +502,62 @@ router.delete("/user/:id", verifyToken, requireCap("manageAll"), async (req, res
   }
 });
 
-router.get("/logout", (req, res) => {
-  // ✅ ไม่ต้องลบ token ที่ฝั่ง server ถ้าใช้ JWT แบบ stateless
+router.get("/logout", async (req, res) => {
+  // ✅ ออกจากระบบ = ปิดอุปกรณ์นี้ในรายการ "อุปกรณ์ที่เข้าสู่ระบบ" ด้วย (token เดิมใช้ต่อไม่ได้)
+  try {
+    const token = String(req.header("Authorization") || "").replace("Bearer ", "").trim();
+    if (token) {
+      const decoded = jwt.verify(token, process.env.APP_SECRET);
+      await loginSessions.revoke({ sid: loginSessions.sidOf(decoded, token) }, "logout");
+    }
+  } catch { /* token หมดอายุ/ไม่ถูกต้อง — ออกฝั่งหน้าจออย่างเดียวพอ */ }
   res.status(200).json({ message: "Logged out successfully" });
+});
+
+/**
+ * ── อุปกรณ์ที่เข้าสู่ระบบ (ผู้ใช้ขอ 5 ต.ค. 2569: "อยากเห็นว่าบัญชีเข้าไว้ที่อุปกรณ์อะไรบ้าง ชื่ออะไร ที่ไหน") ──
+ * เห็น/สั่งออกได้เฉพาะของบัญชีตัวเอง
+ */
+const sessionView = (s, currentSid) => ({
+  sid: s.sid,
+  current: s.sid === currentSid,
+  legacy: Boolean(s.legacy),
+  browser: s.browser, browserVersion: s.browserVersion,
+  os: s.os, osVersion: s.osVersion,
+  deviceType: s.deviceType, deviceVendor: s.deviceVendor, deviceModel: s.deviceModel,
+  standalone: Boolean(s.standalone),
+  ip: s.ip, location: s.location || {},
+  createdAt: s.createdAt, lastSeenAt: s.lastSeenAt,
+});
+
+router.get("/sessions", verifyToken, async (req, res) => {
+  try {
+    const list = await LoginSession.find({ userId: req.userId, revokedAt: null }).sort({ lastSeenAt: -1 }).limit(50).lean();
+    // อุปกรณ์ปัจจุบันขึ้นก่อนเสมอ
+    const sorted = list.sort((a, b) => (b.sid === req.sid) - (a.sid === req.sid));
+    res.json({ sessions: sorted.map((s) => sessionView(s, req.sid)) });
+  } catch (err) {
+    res.status(500).json({ message: "โหลดรายการอุปกรณ์ไม่สำเร็จ" });
+  }
+});
+
+router.post("/sessions/revoke-others", verifyToken, async (req, res) => {
+  try {
+    const count = await loginSessions.revoke({ userId: req.userId, sid: { $ne: req.sid } }, "user");
+    res.json({ revoked: count });
+  } catch (err) {
+    res.status(500).json({ message: "ออกจากระบบอุปกรณ์อื่นไม่สำเร็จ" });
+  }
+});
+
+router.delete("/sessions/:sid", verifyToken, async (req, res) => {
+  try {
+    const count = await loginSessions.revoke({ userId: req.userId, sid: String(req.params.sid) }, "user");
+    if (!count) return res.status(404).json({ message: "ไม่พบอุปกรณ์นี้ หรือออกจากระบบไปแล้ว" });
+    res.json({ revoked: count, self: String(req.params.sid) === req.sid });
+  } catch (err) {
+    res.status(500).json({ message: "ออกจากระบบอุปกรณ์นี้ไม่สำเร็จ" });
+  }
 });
 
 // ใช้ Middleware ใน Endpoint สำหรับ Logout
