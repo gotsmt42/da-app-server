@@ -541,6 +541,16 @@ router.get("/sessions", verifyToken, async (req, res) => {
   }
 });
 
+// แอปส่งข้อมูลรุ่นเครื่อง (Client Hints) ทุกครั้งที่เปิด — ให้ชื่อเครื่องถูก เช่น SM-S938B แทน "Android 10"
+router.post("/sessions/device", verifyToken, async (req, res) => {
+  try {
+    const parsed = await loginSessions.updateDevice({ sid: req.sid, req, hints: req.body?.device || {} });
+    res.json({ ok: true, device: parsed });
+  } catch (err) {
+    res.status(500).json({ message: "บันทึกข้อมูลอุปกรณ์ไม่สำเร็จ" });
+  }
+});
+
 router.post("/sessions/revoke-others", verifyToken, async (req, res) => {
   try {
     const count = await loginSessions.revoke({ userId: req.userId, sid: { $ne: req.sid } }, "user");

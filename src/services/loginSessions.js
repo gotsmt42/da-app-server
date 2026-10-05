@@ -32,7 +32,10 @@ const parseUA = (ua = "", hints = {}) => {
   if ((x = m(/Windows NT ([\d.]+)/))) { os = "Windows"; osVersion = { "10.0": "10/11", "6.3": "8.1", "6.2": "8", "6.1": "7" }[x[1]] || x[1]; }
   else if ((x = m(/(iPhone|iPad|iPod).*?OS ([\d_]+)/))) { os = "iOS"; osVersion = x[2].replace(/_/g, "."); vendor = "Apple"; model = x[1]; deviceType = x[1] === "iPad" ? "tablet" : "mobile"; }
   else if ((x = m(/Android ([\d.]+)/))) {
-    os = "Android"; osVersion = x[1];
+    os = "Android";
+    // ⚠️ Chrome รุ่นใหม่ "ลดข้อมูล" UA เหลือ "Android 10; K" ทุกเครื่อง (ผู้ใช้เจอ S25 Ultra ขึ้น Android 10)
+    //    เลขรุ่นจาก UA แบบนี้เชื่อไม่ได้ — เว้นว่างไว้ ให้ Client Hints (platformVersion) เติมเลขจริงแทน
+    osVersion = /Android [\d.]+; K\)/.test(s) ? "" : x[1];
     deviceType = /Mobile/.test(s) ? "mobile" : "tablet";
     const mm = s.match(/Android [\d.]+;(?: [a-z]{2}-[a-z]{2};)? ([^;)]+?)(?: Build|\))/i);
     if (mm && !/^K$/.test(mm[1].trim())) model = mm[1].trim();
@@ -53,6 +56,7 @@ const parseUA = (ua = "", hints = {}) => {
   // Client Hints จากเบราว์เซอร์ (Chrome/Edge บน Android ส่งรุ่นเครื่องจริงมาได้ เช่น SM-S918B)
   if (hints.model) model = String(hints.model).slice(0, 60);
   if (hints.platformVersion && os === "Windows") osVersion = Number(String(hints.platformVersion).split(".")[0]) >= 13 ? "11" : "10";
+  if (hints.platformVersion && os === "Android") osVersion = String(hints.platformVersion).split(".")[0];
   if (hints.platformVersion && os === "macOS") osVersion = String(hints.platformVersion).slice(0, 12);
   if (hints.mobile === true && deviceType === "desktop") deviceType = "mobile";
   if (/^SM-|^Galaxy/i.test(model)) vendor = "Samsung";
@@ -110,6 +114,17 @@ const recordLogin = async ({ sid, userId, req, hints = {} }) => {
 };
 
 /**
+ * อัปเดตรุ่นเครื่องของอุปกรณ์ปัจจุบันจาก Client Hints — แอปส่งมาทุกครั้งที่เปิด
+ * (แก้แถวที่บันทึกตอนเข้าสู่ระบบแบบไม่มี hints เช่น token รุ่นเก่า ให้ได้ชื่อรุ่นจริง)
+ */
+const updateDevice = async ({ sid, req, hints = {} }) => {
+  const ua = String(req.headers["user-agent"] || "").slice(0, 500);
+  const parsed = parseUA(ua, hints);
+  await LoginSession.updateOne({ sid, revokedAt: null }, { $set: { userAgent: ua, standalone: Boolean(hints.standalone), ...parsed } });
+  return parsed;
+};
+
+/**
  * ตรวจ+อัปเดตอุปกรณ์ในทุกคำขอ (เรียกจาก middleware/auth.js)
  * @returns {Promise<{ ok: boolean, sid: string }>} ok=false เมื่อถูกสั่งออกจากระบบแล้วเท่านั้น
  */
@@ -154,4 +169,4 @@ const revoke = async (filter, by = "") => {
   return docs.length;
 };
 
-module.exports = { sidOf, newSid, clientIp, parseUA, recordLogin, touch, revoke };
+module.exports = { sidOf, newSid, clientIp, parseUA, recordLogin, updateDevice, touch, revoke };
