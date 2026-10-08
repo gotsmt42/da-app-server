@@ -257,6 +257,24 @@ const eventSchema = new mongoose.Schema(
       },
     ],
 
+    // ✅ นัดหมายฝ่ายขาย (7 ต.ค. 2569 ผู้ใช้: "เซลเข้างานแล้ว จะกดเข้าพบแล้ว และปิดงาน ต้องให้อัพรูปหน้างานก่อน")
+    //    รูปหน้างาน (อัปโหลดผ่าน PUT /upload/:id type=sitePhoto) · ผลการเข้าพบ · เวลาที่เปลี่ยนสถานะ
+    //    ⚠️ เปลี่ยนเป็น "เข้าพบแล้ว"/"ปิดงานแล้ว" ต้องผ่าน PUT /:id/sales-status เท่านั้น (ตรวจรูป/ผลการเข้าพบ)
+    sitePhotoFiles: [
+      {
+        fileName: String,
+        fileUrl: String,
+        fileType: String,
+        uploadedAt: { type: Date, default: Date.now },
+        uploadedBy: String,
+      },
+    ],
+    visitResult: { type: String, default: "" },
+    visitedAt: { type: Date, default: null },
+    visitedBy: { type: String, default: "" },
+    salesClosedAt: { type: Date, default: null },
+    salesClosedBy: { type: String, default: "" },
+
     statusFileName: { type: String },
     statusFileUrl: { type: String },
     statusFileType: { type: String },

@@ -220,6 +220,67 @@ module.exports = (router) => {
   // เพราะเป็นการจัดหมวดหมู่เชิงบริหารจัดการ
   // (เดิมชื่อ "/general" รับแค่ true/false สำหรับ "งานทั่วไป" อย่างเดียว — เปลี่ยนเป็น "/classify" รองรับ
   // 3 หมวดหมู่แทน ตอนนี้ยังไม่มีใครเรียก path เดิมนอกจากหน้านี้ จึงเปลี่ยน path ตรงๆ ได้เลยไม่ต้องเก็บของเก่าไว้คู่กัน)
+  /**
+   * ✅ ขั้นตอนนัดหมายฝ่ายขาย (7 ต.ค. 2569 ผู้ใช้: "เซลเข้างานแล้ว จะกดเข้าพบแล้ว และปิดงาน ต้องให้อัพรูปหน้างานก่อน")
+   *    นัดหมายแล้ว → เข้าพบแล้ว (ต้องมีรูปหน้างาน ≥ 1) → ปิดงานแล้ว (ต้องมีรูป + ผลการเข้าพบ)
+   *    เลื่อนนัด / ยกเลิกนัด ได้ตลอดก่อนปิดงาน · เปิดงานที่ปิดแล้วอีกครั้งได้เฉพาะแอดมิน/ผู้จัดการ
+   *    สิทธิ์: เจ้าของนัด/ผู้เกี่ยวข้อง หรือแอดมิน/ผู้จัดการ
+   */
+  const SALES_FLOW = ["นัดหมายแล้ว", "เข้าพบแล้ว", "ปิดงานแล้ว", "เลื่อนนัด", "ยกเลิกนัด"];
+  router.put("/:id/sales-status", verifyToken, async (req, res) => {
+    try {
+      const event = await CalendarEvent.findById(req.params.id);
+      if (!event) return res.status(404).json({ message: "ไม่พบนัดหมายนี้" });
+      if (event.department !== "sales") return res.status(400).json({ message: "ใช้ได้กับนัดหมายฝ่ายขายเท่านั้น" });
+
+      const isAdminOrManager = can(req.user, "editAnyJob");
+      if (!isAdminOrManager && !isJobParticipant(event, req.userId, req.user.fname)) {
+        return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขนัดหมายนี้" });
+      }
+
+      const status = String(req.body.status || "").trim();
+      const hasResult = typeof req.body.visitResult === "string";
+      const visitResult = hasResult ? req.body.visitResult.trim().slice(0, 4000) : (event.visitResult || "");
+      if (status && !SALES_FLOW.includes(status)) return res.status(400).json({ message: "สถานะไม่ถูกต้อง" });
+
+      const photos = (event.sitePhotoFiles || []).length;
+      const by = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "";
+      const set = {};
+      if (hasResult) set.visitResult = visitResult;
+
+      if (status && status !== event.status) {
+        if (event.status === "ปิดงานแล้ว" && !isAdminOrManager) {
+          return res.status(403).json({ message: "นัดนี้ปิดงานแล้ว — เปิดใหม่ได้เฉพาะแอดมิน/ผู้จัดการ" });
+        }
+        if ((status === "เข้าพบแล้ว" || status === "ปิดงานแล้ว") && photos === 0) {
+          return res.status(400).json({ message: "ต้องแนบรูปหน้างานอย่างน้อย 1 รูปก่อน" });
+        }
+        if (status === "ปิดงานแล้ว" && !visitResult) {
+          return res.status(400).json({ message: "กรุณาสรุปผลการเข้าพบก่อนปิดงาน" });
+        }
+        set.status = status;
+        set.manualStatus = true;
+        if (status === "เข้าพบแล้ว" || (status === "ปิดงานแล้ว" && !event.visitedAt)) {
+          set.visitedAt = event.visitedAt || new Date();
+          set.visitedBy = event.visitedBy || by;
+        }
+        if (status === "ปิดงานแล้ว") { set.salesClosedAt = new Date(); set.salesClosedBy = by; }
+        else { set.salesClosedAt = null; set.salesClosedBy = ""; }
+        if (status === "นัดหมายแล้ว" || status === "เลื่อนนัด" || status === "ยกเลิกนัด") {
+          set.visitedAt = null; set.visitedBy = "";
+        }
+      } else if (event.status === "ปิดงานแล้ว" && hasResult && !isAdminOrManager) {
+        return res.status(403).json({ message: "นัดนี้ปิดงานแล้ว แก้ผลการเข้าพบไม่ได้" });
+      }
+
+      const updated = await CalendarEvent.findByIdAndUpdate(event._id, { $set: set }, { new: true }).lean();
+      res.json({ event: updated });
+    } catch (error) {
+      console.error("❌ Error updating sales status:", error);
+      res.status(500).json({ message: "บันทึกสถานะไม่สำเร็จ" });
+    }
+  });
+
   router.put("/:id/classify", verifyToken, async (req, res) => {
     try {
       if (!can(req.user, "editAnyJob")) {

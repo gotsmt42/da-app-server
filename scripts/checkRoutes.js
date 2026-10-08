@@ -27,10 +27,10 @@ if (!process.env.APP_DATABASE) process.env.APP_DATABASE = "mongodb://127.0.0.1:2
 
 const app = require("../src/app");
 
-const EXPECTED_TOTAL = 196;   // +1 = POST /api/auth/sessions/device (ชื่อรุ่นเครื่องจาก Client Hints) ·   // +3 = /api/auth/sessions (อุปกรณ์ที่เข้าสู่ระบบ: list · revoke-others · delete) ·   // +1 = GET /api/issued-documents/by-event/:eventId (ห้ามออกซ้ำ) ·   // +3 = /api/mail (status · document · log) ·   // +1 = PUT /api/events/:id/quotation ·   // +5 = /api/push กล่องแจ้งเตือน (inbox · inbox/read ×2 · status · test) ·   // +1 = GET /api/purchase/:id/signatures ·   // +14 = /api/purchase (ใบขอซื้อ PR) ·   // +15 = /api/ot (ใบขออนุมัติ OT) ·   // +3 = ใบค่าจ้างผู้รับเหมา (/api/expenses: contractors · contractor-history · contractor-payments) · +1 = GET /api/customer/map/embed (แผนที่บนฟอร์มงาน) ·   // +14 = /api/web (เว็บไซต์บริษัท: เนื้อหา 7 · คำขอจากเว็บ 6 · อัปโหลด 1)
+const EXPECTED_TOTAL = 197;   // +1 = PUT /api/events/:id/sales-status (ขั้นตอนนัดเซล ต้องมีรูปหน้างาน) ·   // +1 = POST /api/auth/sessions/device (ชื่อรุ่นเครื่องจาก Client Hints) ·   // +3 = /api/auth/sessions (อุปกรณ์ที่เข้าสู่ระบบ: list · revoke-others · delete) ·   // +1 = GET /api/issued-documents/by-event/:eventId (ห้ามออกซ้ำ) ·   // +3 = /api/mail (status · document · log) ·   // +1 = PUT /api/events/:id/quotation ·   // +5 = /api/push กล่องแจ้งเตือน (inbox · inbox/read ×2 · status · test) ·   // +1 = GET /api/purchase/:id/signatures ·   // +14 = /api/purchase (ใบขอซื้อ PR) ·   // +15 = /api/ot (ใบขออนุมัติ OT) ·   // +3 = ใบค่าจ้างผู้รับเหมา (/api/expenses: contractors · contractor-history · contractor-payments) · +1 = GET /api/customer/map/embed (แผนที่บนฟอร์มงาน) ·   // +14 = /api/web (เว็บไซต์บริษัท: เนื้อหา 7 · คำขอจากเว็บ 6 · อัปโหลด 1)
 const EXPECTED_PER_PREFIX = {
   // ✅ +1 = PUT /reorder (จัดลำดับการ์ดงานในวันเดียวกันบนปฏิทิน)
-  "/api/events": 33,
+  "/api/events": 34,
   // ✅ ฝ่ายขาย: ท่อขาย 10 + ปฏิทินนัดหมาย 5
   // ✅ ใบมอบหมายงานข้ามแผนก — แทน /api/workorder เดิมที่ไม่เคยถูกใช้จริงเลย (0 document)
   "/api/dispatch": 15,

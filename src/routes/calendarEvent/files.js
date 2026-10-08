@@ -106,9 +106,11 @@ module.exports = (router) => {
         fileUrl: result.secure_url,
         fileType: fileType,
         uploadedAt: new Date(),
+        ...(type === "sitePhoto" ? { uploadedBy: [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") } : {}),
       };
 
-      const setFields = {
+      // ⚠️ รูปหน้างานของนัดเซลไม่มีแนวคิด "ส่งเอกสารแล้ว" — ไม่ตั้ง documentSentSitePhoto
+      const setFields = type === "sitePhoto" ? {} : {
         [`documentSent${capitalize(type)}`]: true,
       };
       // ถ้ามีไฟล์แนบจริง แปลว่าเอกสารนี้ "มี" แน่นอน ไม่ว่าจะเคยติ๊ก "ไม่มี" ไว้ก่อนหรือไม่
@@ -171,10 +173,12 @@ module.exports = (router) => {
       }
 
       const remaining = updatedEvent[arrField]?.length || 0;
-      await CalendarEvent.updateOne(
-        { _id: id },
-        { $set: { [`documentSent${capitalize(type)}`]: remaining > 0 } }
-      );
+      if (type !== "sitePhoto") {
+        await CalendarEvent.updateOne(
+          { _id: id },
+          { $set: { [`documentSent${capitalize(type)}`]: remaining > 0 } }
+        );
+      }
 
       res.status(200).send("ไฟล์ถูกลบแล้ว");
     } catch (err) {
