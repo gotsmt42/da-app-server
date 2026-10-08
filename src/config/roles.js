@@ -65,7 +65,7 @@ const RANK_LABEL = {
   [ROLES.MANAGER]: "ผู้จัดการแผนกช่าง",
   [ROLES.TECH_LEAD]: "หัวหน้าช่างเทคนิค",
   [ROLES.TECHNICIAN]: "ช่างเทคนิค",
-  [ROLES.SALE]: "เซล",
+  [ROLES.SALE]: "ฝ่ายขาย",
   [ROLES.USER]: "ผู้ใช้ทั่วไป",
 };
 
