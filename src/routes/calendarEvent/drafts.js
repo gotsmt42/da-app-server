@@ -20,6 +20,7 @@ const {
   departmentOf,
   DEPARTMENT,
   withDepartmentScope,
+  MAX_VISIT_COUNT,
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
 const { syncGroupsOf } = require("../../services/groupResponsible");
@@ -38,7 +39,7 @@ module.exports = (router) => {
         // (ดู PUT /:id/schedule) — ไม่ต้องสร้าง event ที่มีวันที่ปลอมๆ ขึ้นมาแค่เพื่อให้มี record
         // ✅ contractGroupId: รับจาก client ได้ด้วย (ใช้ตอนวางแผนล่วงหน้าครั้งถัดไปของ "สัญญาที่มีอยู่แล้ว"
         // จากหน้าแผนงานล่วงหน้า) ถ้าไม่ส่งมาค่อยสุ่มใหม่ (กรณีสร้างสัญญาใหม่ทั้งชุดจากหน้าภาพรวมสัญญา)
-        isContractBatch, contractGroupId, contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue,
+        isContractBatch, contractGroupId, contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, contractYears, jobValue,
         // ✅ เลือกหมวดหมู่ "งานทั่วไป"/"งานโปรเจค" ได้ตั้งแต่ตอนสร้างแผนงานเลย (ขั้นตอนที่ 1 ในฟอร์ม
         // AddDraftEvent.js) แทนที่จะต้องไปกดจัดหมวดหมู่ย้อนหลังทีหลังในหน้า "ภาพรวมงาน" เสมอ — ไม่เกี่ยวกับ
         // งานตามสัญญา (isContractBatch) ซึ่งไม่มีแนวคิดหมวดหมู่นี้อยู่แล้ว (เป็นสัญญาจริงเสมอ)
@@ -70,8 +71,8 @@ module.exports = (router) => {
       // เกินจำเป็นจนหน้าพัง (ดู maxVisitCount ใน ContractOverview.js)
       if (visitCount !== undefined && visitCount !== "" && visitCount !== null) {
         const n = Number(visitCount);
-        if (!n || n < 1 || n > 12) {
-          return res.status(400).json({ message: "จำนวนครั้งทั้งหมดต้องอยู่ระหว่าง 1-12 ครั้ง" });
+        if (!n || n < 1 || n > MAX_VISIT_COUNT) {
+          return res.status(400).json({ message: `จำนวนครั้งทั้งหมดต้องอยู่ระหว่าง 1-${MAX_VISIT_COUNT} ครั้ง` });
         }
       }
 
@@ -143,6 +144,7 @@ module.exports = (router) => {
         ...(isContractBatch ? {
           contractGroupId: contractGroupId || crypto.randomUUID(),
           contractNo, quotationNo, contractStart, contractEnd, intervalMonths, visitCount, jobValue,
+          ...(Number(contractYears) > 0 ? { contractYears: Number(contractYears) } : {}),
         } : (jobClassification ? { jobClassification } : {})),
         // ✅ ห้ามรับ approvalStatus จาก client ตรงๆ (ไม่อยู่ใน destructure ด้านบนเลย) คำนวณเองจาก role
         // ของผู้เรียกเท่านั้น — เทียบ pattern เดียวกับ POST / (buildEventData) เป๊ะๆ

@@ -21,6 +21,7 @@ const {
   departmentOf,
   DEPARTMENT,
   withDepartmentScope,
+  MAX_VISIT_COUNT,
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
 const { syncGroupsOf, syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
@@ -109,6 +110,7 @@ module.exports = (router) => {
         "contractEnd",
         "visitCount",
         "intervalMonths",
+        "contractYears",
         "jobValue",
         // ✅ เลือกหมวดหมู่ "งานทั่วไป"/"งานโปรเจค" ได้ตั้งแต่ตอนสร้างงานเลย (ขั้นตอนที่ 1 ในฟอร์ม
         // AddEvent.js) แทนที่จะต้องไปกดจัดหมวดหมู่ย้อนหลังทีหลังในหน้า "ภาพรวมงาน" เสมอ
@@ -661,6 +663,7 @@ module.exports = (router) => {
         // — ผู้ใช้แก้แล้วกดบันทึก ได้ข้อความ "สำเร็จ" แต่ค่าไม่เคยถูกเก็บ ต้องไปแก้ที่หน้า "ภาพรวมงาน"
         // (PUT /contract/:contractGroupId ซึ่งรับฟิลด์นี้อยู่แล้ว) เท่านั้นถึงจะได้ผลจริง
         intervalMonths,
+        contractYears,
         jobValue,
       } = req.body;
 
@@ -677,8 +680,8 @@ module.exports = (router) => {
       }
       if (visitCount !== undefined && visitCount !== "" && visitCount !== null) {
         const n = Number(visitCount);
-        if (!n || n < 1 || n > 12) {
-          return res.status(400).json({ message: "จำนวนครั้งทั้งหมดต้องอยู่ระหว่าง 1-12 ครั้ง" });
+        if (!n || n < 1 || n > MAX_VISIT_COUNT) {
+          return res.status(400).json({ message: `จำนวนครั้งทั้งหมดต้องอยู่ระหว่าง 1-${MAX_VISIT_COUNT} ครั้ง` });
         }
       }
 
@@ -755,6 +758,7 @@ module.exports = (router) => {
         contractEnd,
         visitCount,
         intervalMonths, // ✅ เดิมตกหล่นไป ทำให้ค่าที่แก้จากฟอร์มในปฏิทินไม่เคยถูกบันทึก (ดูคอมเมนต์ด้านบน)
+        ...(contractYears !== undefined && contractYears !== "" && contractYears !== null ? { contractYears: Number(contractYears) } : {}),
         jobValue,
 
         // ✅ ส่งขออนุมัติใหม่อัตโนมัติ (ดู shouldResubmit ด้านบน) — ไม่เข้าเงื่อนไขก็ไม่ใส่ key พวกนี้เลย

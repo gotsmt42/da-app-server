@@ -32,7 +32,7 @@ const crypto = require("crypto");
 
 // ✅ จำนวนครั้งสูงสุดต่อสัญญา — ต้องตรงกับ MAX_VISIT_COUNT ฝั่งหน้าจอ (ContractOverview.js) เป๊ะๆ
 // ใช้จำกัดเลข "ครั้งที่" ปลายทางตอนย้ายครั้ง (ดู PUT /contract/:contractGroupId/move-round)
-const MAX_VISIT_COUNT = 12;
+const MAX_VISIT_COUNT = 60; // ปีละสูงสุด 12 ครั้ง × สูงสุด 5 ปี
 const { sendPushToUsers, sendPushToRoles, sendPushToAllUsers } = require("../../services/PushNotify");
 // ⚠️ findResPersonConflicts (เช็คช่างชนกัน/double-booking กับงานอื่นในระบบ) ถูกตัดออกจากทุก route
 // แล้วตามที่ผู้ใช้ขอ — 1 ทีมรับหลายงานในวันเดียวกันได้ตามปกติ เหลือไว้แค่ findMutualOverlaps (เช็คว่า
@@ -72,6 +72,7 @@ const CONTRACT_FIELD_LABELS = {
   contractEnd: "วันสิ้นสุดสัญญา",
   visitCount: "จำนวนครั้งทั้งหมด",
   intervalMonths: "ระยะห่างระหว่างรอบ (เดือน)",
+  contractYears: "จำนวนปีของสัญญา",
   jobValue: "มูลค่างาน",
   commission: "ค่าคอมมิชชั่น",
   team: "ทีมที่เข้างาน",
@@ -90,7 +91,7 @@ const CONTRACT_FIELD_LABELS = {
 // บรรทัดรหัสยาวๆ ที่ไม่มีความหมายกับผู้อ่านซ้อนมาอีกรายการทุกครั้งที่เปลี่ยนผู้รับผิดชอบ
 
 const DATE_CONTRACT_FIELDS = new Set(["contractStart", "contractEnd"]);
-const NUMBER_CONTRACT_FIELDS = new Set(["visitCount", "intervalMonths", "jobValue", "commission"]);
+const NUMBER_CONTRACT_FIELDS = new Set(["visitCount", "intervalMonths", "contractYears", "jobValue", "commission"]);
 
 // ทำให้ค่าเทียบกันได้จริง — ค่าที่ "ไม่มี" มาได้ทั้ง undefined / null / "" ต้องถือว่าเท่ากันหมด
 // และวันที่ที่เก็บเป็น Date กับที่ส่งมาเป็นสตริง "YYYY-MM-DD" ต้องเทียบกันได้ด้วย

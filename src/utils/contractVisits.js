@@ -13,10 +13,27 @@ const DEFAULT_INTERVAL_MONTHS = 3;
  *        และการแก้รอบเข้าบันทึกไว้) ไม่งั้นใช้ visitCount ที่กรอกไว้ตรงๆ
  * ⚠️ ฝั่งแอปมีตัวเดียวกันที่ shared/utils/contractRounds.js (totalRoundsOf) — แก้ต้องแก้คู่กัน
  */
+/**
+ * ✅ (8 ต.ค. 2569 ผู้ใช้: "ลงเป็นแบบ เข้าปีละกี่ครั้ง และเข้ากี่ปี เช่น ปีละ 4 ครั้ง 2 ปี") จำนวนปีของสัญญา
+ *    contractYears ที่เลือกในฟอร์ม → ไม่มี (สัญญาเก่า) คิดจากช่วงวันที่สัญญา → ไม่มีวันที่ = 1 ปี
+ * ⚠️ ฝั่งแอปมีตัวเดียวกันที่ shared/utils/contractRounds.js (contractYearsOf) — แก้ต้องแก้คู่กัน
+ */
+const MAX_CONTRACT_YEARS = 5;
+const contractYearsOf = (c) => {
+  const y = Number(c && c.contractYears);
+  if (Number.isInteger(y) && y >= 1) return Math.min(y, MAX_CONTRACT_YEARS);
+  const a = c && c.contractStart ? new Date(c.contractStart) : null;
+  const b = c && c.contractEnd ? new Date(c.contractEnd) : null;
+  if (!a || !b || Number.isNaN(a.getTime()) || Number.isNaN(b.getTime()) || b < a) return 1;
+  const days = (b - a) / 86400000 + 1;
+  return Math.min(MAX_CONTRACT_YEARS, Math.max(1, Math.round(days / 365.25)));
+};
+
+/** จำนวนครั้งทั้งหมดของสัญญา = (ปีละกี่ครั้ง × จำนวนปี) เมื่อรอบเข้าหาร 12 ลงตัว · ไม่งั้นใช้ visitCount ที่กรอกไว้ */
 const totalRoundsOf = (c) => {
   const n = Number(c && c.intervalMonths);
-  if (n >= 1 && 12 % n === 0) return 12 / n;
+  if (n >= 1 && 12 % n === 0) return (12 / n) * contractYearsOf(c);
   return Number(c && c.visitCount) || 0;
 };
 
-module.exports = { DEFAULT_INTERVAL_MONTHS, totalRoundsOf };
+module.exports = { DEFAULT_INTERVAL_MONTHS, MAX_CONTRACT_YEARS, contractYearsOf, totalRoundsOf };

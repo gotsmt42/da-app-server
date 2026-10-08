@@ -15,6 +15,7 @@ const {
   DEPARTMENT,
 } = require("./shared");
 const { syncGroupsOf, syncGroupResponsible } = require("../../services/groupResponsible");
+const { totalRoundsOf } = require("../../utils/contractVisits");
 
 // ✅ ค่าแผนกที่ยอมรับได้ — อ่านจากตารางกลาง (config/roles.js) ไม่ hardcode สตริงซ้ำ เพื่อให้เพิ่มแผนก
 // ใหม่ในอนาคตแก้ที่เดียวแล้วมีผลทั้ง schema/route/หน้าจอพร้อมกัน
@@ -39,13 +40,13 @@ module.exports = (router) => {
       // (idx+1 ต่อ document) — แต่ "งานทั่วไป" ที่เข้าหลายวันไม่ติดกัน (ผูกกันด้วย jobGroupId เดียวกัน)
       // 1 แถวในตารางอาจมีหลาย document ที่ควรรวมเป็น "ครั้งเดียวกัน" ไม่ใช่แยกคนละครั้ง — เปลี่ยนมารับ
       // rounds เป็น array ของ array (แต่ละกลุ่มย่อย = document ทั้งหมดที่ควรอยู่ครั้งเดียวกัน) แทน
-      const { rounds, contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue } = req.body;
+      const { rounds, contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, contractYears, jobValue } = req.body;
       if (!Array.isArray(rounds) || rounds.length === 0 || rounds.some((r) => !Array.isArray(r) || r.length === 0)) {
         return res.status(400).json({ message: "กรุณาเลือกงานอย่างน้อย 1 รายการ" });
       }
       // ✅ ห้ามใส่จำนวนครั้งทั้งหมดเกิน 12 — เทียบ pattern เดียวกับ PUT /contract/:contractGroupId
-      if (Number(visitCount) > 12) {
-        return res.status(400).json({ message: "จำนวนครั้งทั้งหมดต้องไม่เกิน 12 ครั้ง" });
+      if (Number(visitCount) > MAX_VISIT_COUNT) {
+        return res.status(400).json({ message: `จำนวนครั้งทั้งหมดต้องไม่เกิน ${MAX_VISIT_COUNT} ครั้ง` });
       }
 
       const allEventIds = rounds.flat();
@@ -96,6 +97,7 @@ module.exports = (router) => {
                       contractStart: contractStart || undefined,
                       contractEnd: contractEnd || undefined,
                       intervalMonths: Number(intervalMonths) > 0 ? Number(intervalMonths) : undefined,
+                      contractYears: Number(contractYears) > 0 ? Number(contractYears) : undefined,
                       visitCount: resolvedVisitCount,
                       jobValue: jobValue != null && jobValue !== "" ? Number(jobValue) : undefined,
                       time,
@@ -179,14 +181,15 @@ module.exports = (router) => {
         // ✅ ครั้งใหม่ล้วนๆ (ยังไม่มีใครจับจองอยู่) — กินโควตาครั้งใหม่จริง ต้องเช็คเพดานจำนวนครั้ง
         // นับ "จำนวนครั้งที่ไม่ซ้ำกัน" (ไม่ใช่จำนวน record ดิบ) เทียบ pattern เดียวกับที่แก้ไว้ใน
         // PUT /contract/:contractGroupId — กันนับเกินจริงตอนบางครั้งเข้างานไม่ต่อเนื่องมีหลาย record
-        if (Number(contractHead.visitCount) > 0) {
+        const headTotal = totalRoundsOf(contractHead);
+        if (headTotal > 0) {
           const scheduledEvents = await CalendarEvent.find({ contractGroupId, unscheduled: { $ne: true } })
             .select("time")
             .lean();
           const usedRounds = new Set(
             scheduledEvents.map((e) => e.time).filter((t) => t !== undefined && t !== null && t !== "").map(String)
           );
-          if (usedRounds.size >= Number(contractHead.visitCount)) {
+          if (usedRounds.size >= headTotal) {
             return res.status(409).json({ message: "สัญญานี้ครบตามจำนวนครั้งที่กำหนดไว้แล้ว" });
           }
         }
@@ -205,6 +208,8 @@ module.exports = (router) => {
             contractStart: contractHead.contractStart,
             contractEnd: contractHead.contractEnd,
             visitCount: contractHead.visitCount,
+            intervalMonths: contractHead.intervalMonths,
+            contractYears: contractHead.contractYears,
             jobValue: contractHead.jobValue,
             time: String(time),
             ...(jobGroupId ? { jobGroupId } : {}),
@@ -367,7 +372,7 @@ module.exports = (router) => {
       // สัญญาอื่นๆ ด้านล่าง (เดิม route นี้แก้ได้แค่ข้อมูลสัญญา ไม่รวมสองอย่างนี้ ซึ่งจริงๆ ก็ควรผูกกับ
       // สัญญาทั้งก้อนเหมือนกัน ไม่ใช่รายครั้ง — ดูหน้า "ภาพรวมสัญญา" ที่แก้ inline ผ่านตารางได้เลย)
       const {
-        contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, jobValue, commission,
+        contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, contractYears, jobValue, commission,
         team, resPerson, responsiblePerson, responsiblePersonId, departmentTag, statusNote, remark, contactName, contactTel,
       } = req.body;
 
@@ -403,13 +408,18 @@ module.exports = (router) => {
       // checkAndNotifyOverdueContracts/nextVisitOverdueInfo) ไม่ผูก/คำนวณทับ visitCount ให้เอง เพราะ
       // งานจริงเลื่อน/ชนกันได้เสมอ จำนวนครั้งจริงต้องให้ผู้ใช้เป็นคนกำหนดเองเท่านั้น
       if (intervalMonths !== undefined) update.intervalMonths = intervalMonths;
+      if (contractYears !== undefined && contractYears !== "" && contractYears !== null) {
+        const y = Number(contractYears);
+        if (!Number.isInteger(y) || y < 1 || y > 5) return res.status(400).json({ message: "จำนวนปีของสัญญาต้องอยู่ระหว่าง 1-5 ปี" });
+        update.contractYears = y;
+      }
       if (visitCount !== undefined) {
         // ✅ ห้ามใส่จำนวนครั้งทั้งหมดเกิน 12 — ป้องกันไม่ให้ตาราง "ภาพรวมงาน" ต้องเรนเดอร์คอลัมน์
         // "ครั้งที่ N" เกินจำเป็น (maxVisitCount ในหน้านั้นคำนวณจากค่าสูงสุดของทุกแถวที่กรองอยู่ ถ้ามี
         // สัญญาไหนตั้งไว้สูงมากๆ ตารางทั้งหน้าจะกว้างจนพังไปด้วย) เทียบ pattern เดียวกับ intervalMonths
         // ด้านบนที่ backend เช็คซ้ำอีกชั้นเสมอ ไม่พึ่งฝั่งจอเช็คอย่างเดียว
-        if (Number(visitCount) > 12) {
-          return res.status(400).json({ message: "จำนวนครั้งทั้งหมดต้องไม่เกิน 12 ครั้ง" });
+        if (Number(visitCount) > MAX_VISIT_COUNT) {
+          return res.status(400).json({ message: `จำนวนครั้งทั้งหมดต้องไม่เกิน ${MAX_VISIT_COUNT} ครั้ง` });
         }
         // ✅ ห้ามลดจำนวนครั้งต่ำกว่าที่ลงตารางจริงไปแล้ว — ไม่งั้นครั้งที่เกินจะโดนคอลัมน์ "ครั้งที่ N"
         // ในหน้าภาพรวมสัญญาตัดทิ้งจากที่แสดงผลไปเลยทั้งที่ข้อมูลยังอยู่จริงในฐานข้อมูล (ข้อมูลไม่ตรงจอ)

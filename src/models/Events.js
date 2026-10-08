@@ -338,6 +338,8 @@ const eventSchema = new mongoose.Schema(
     // nextVisitOverdueInfo/checkAndNotifyOverdueContracts) — สัญญาเก่าที่ไม่มีค่านี้ยังคงใช้ค่า
     // เริ่มต้น 3 เดือนเหมือนเดิมทุกประการ ไม่ต้อง migrate ข้อมูลเก่า
     intervalMonths: Number,
+    // ✅ จำนวนปีของสัญญา (ปีละ N ครั้ง × กี่ปี) — ไม่มีค่า = คิดจากช่วงวันที่สัญญา (ดู utils/contractVisits.js)
+    contractYears: Number,
     jobValue: Number,
     // ✅ ค่าคอมมิชชั่นที่จ่ายให้ฝั่งลูกค้า/ผู้แนะนำงาน — เก็บเป็น "จำนวนเงิน" ไม่ใช่เปอร์เซ็นต์
     // ⚠️ เก็บเปอร์เซ็นต์ไม่ได้ เพราะฐานที่ใช้คิดไม่ตายตัว (บางงานคิดจากมูลค่าสัญญา บางงานคิดจากยอด

@@ -256,7 +256,7 @@ async function checkAndNotifyStaleQuotations() {
 async function checkAndNotifyOverdueContracts() {
   try {
     const events = await CalendarEvent.find({ contractGroupId: { $exists: true, $nin: [null, ""] } })
-      .select("contractGroupId visitCount intervalMonths contractStart contractEnd time start end allDay unscheduled resPerson team userId responsiblePersonId responsiblePerson")
+      .select("contractGroupId visitCount intervalMonths contractYears contractStart contractEnd time start end allDay unscheduled resPerson team userId responsiblePersonId responsiblePerson")
       .lean();
     if (events.length === 0) return;
 

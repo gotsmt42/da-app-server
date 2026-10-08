@@ -27,6 +27,7 @@ const { can, SUPERVISOR_ROLES, DEPARTMENT, TECHNICIAN_ROLES, normalizeRank, rank
 const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers, sendPushToRoles } = require("../services/PushNotify");
+const { totalRoundsOf } = require("../utils/contractVisits");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), fileFilter, limits });
@@ -331,13 +332,13 @@ router.post("/", verifyToken, upload.array("files", 10), async (req, res) => {
     const contractGroupId = String(req.body.contractGroupId || "").trim();
     if (contractGroupId) {
       const visits = await CalendarEvent.find({ contractGroupId })
-        .select("visitCount contractNo time company site system title")
+        .select("visitCount intervalMonths contractYears contractStart contractEnd contractNo time company site system title")
         .lean();
       if (!visits.length) {
         return res.status(400).json({ message: "ไม่พบสัญญาที่เลือก — อาจถูกลบไปแล้ว กรุณาเลือกใหม่" });
       }
       const head = visits.find((v) => v.visitCount) || visits[0];
-      const visitCount = head.visitCount || 0;
+      const visitCount = totalRoundsOf(head) || head.visitCount || 0;
       // นับ "ครั้งที่ไม่ซ้ำกัน" ให้ตรงกับที่ฝั่งหน้าจอ/endpoint รายชื่อสัญญาใช้ (countUsedRounds)
       const usedRounds = new Set(
         visits
@@ -691,13 +692,13 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
     const linkedGroupId = dispatch.contract?.groupId || "";
     if (linkedGroupId) {
       const visits = await CalendarEvent.find({ contractGroupId: linkedGroupId })
-        .select("visitCount contractNo quotationNo contractStart contractEnd intervalMonths jobValue time")
+        .select("visitCount contractNo quotationNo contractStart contractEnd intervalMonths contractYears jobValue time")
         .lean();
       if (!visits.length) {
         return res.status(409).json({ message: "สัญญาที่ผูกกับใบนี้ถูกลบไปแล้ว — ตีกลับให้ผู้แจ้งเลือกใหม่" });
       }
       const head = visits.find((v) => v.visitCount) || visits[0];
-      const visitCount = head.visitCount || 0;
+      const visitCount = totalRoundsOf(head) || head.visitCount || 0;
       const used = new Set(
         visits
           .filter((v) => v.time !== undefined && v.time !== null && v.time !== "")
@@ -717,6 +718,7 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
         contractStart: head.contractStart || undefined,
         contractEnd: head.contractEnd || undefined,
         intervalMonths: head.intervalMonths,
+        contractYears: head.contractYears,
         jobValue: head.jobValue,
         visitCount,
         time: nextRound,

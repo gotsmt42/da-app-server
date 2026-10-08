@@ -412,7 +412,7 @@ module.exports = (router) => {
         req
       );
       const rows = await CalendarEvent.find(query)
-        .select("contractGroupId company site system title contractNo quotationNo contractStart contractEnd visitCount intervalMonths jobValue responsiblePerson responsiblePersonId team resPerson userId time")
+        .select("contractGroupId company site system title contractNo quotationNo contractStart contractEnd visitCount intervalMonths contractYears jobValue responsiblePerson responsiblePersonId team resPerson userId time")
         .lean();
 
       // จัดกลุ่มตาม contractGroupId — เทียบตรรกะเดียวกับ contractMap ใน AddEvent.js/ContractOverview.js
@@ -433,6 +433,7 @@ module.exports = (router) => {
             // ✅ กติกาเดียวกับหน้าภาพรวมงาน — สัญญาที่ครบแล้วต้องไม่โผล่ให้เลือกเพิ่มครั้งในฟอร์ม
             visitCount: totalRoundsOf(e),
             intervalMonths: e.intervalMonths,
+            contractYears: e.contractYears,
             jobValue: e.jobValue,
             responsiblePerson: e.responsiblePerson || e.team || "",
             responsiblePersonId: e.responsiblePersonId || e.resPerson || "",
