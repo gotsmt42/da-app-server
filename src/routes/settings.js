@@ -113,6 +113,13 @@ const historyShape = (s) => (s.history || []).map((h) => ({
  * ⚠️ จึงห้ามใส่อะไรที่เป็นความลับลงใน publicShape() เด็ดขาด — ข้อมูลชุดนี้คือสิ่งที่พิมพ์อยู่บนหัวกระดาษ
  * เอกสารที่ส่งให้ลูกค้าอยู่แล้ว (ชื่อบริษัท ที่อยู่ เลขผู้เสียภาษี โลโก้)
  */
+/** สิทธิ์ที่ต้องมีคู่กัน: { สิทธิ์แก้ไข: สิทธิ์เปิดเมนูที่ต้องมีก่อน } */
+const CAP_REQUIRES = {
+  editFinance: "viewFinance",
+  editContracts: "viewContracts",
+  editDocuments: "viewDocuments",
+};
+
 router.get("/", async (req, res) => {
   try {
     // builtinImages = รูปที่เลือกได้ทันทีโดยไม่ต้องอัปโหลด (หน้าจอจะได้ไม่ต้องจำพาธไฟล์เอง)
@@ -363,9 +370,22 @@ router.put("/permissions", verifyToken, requireCap("manageSystem"), async (req, 
     const doc = await OrgSetting.current({ fresh: true });
     const overrides = { ...(doc?.capabilityOverrides || {}) };
     const forRole = { ...(overrides[role] || {}) };
-    // ✅ ตรงกับค่าเริ่มต้นอยู่แล้ว = ลบส่วนต่างทิ้ง (ตารางจะได้ไม่บวมด้วยค่าที่ไม่ได้ต่างอะไร)
-    if ((CAPABILITIES[capability] || []).includes(role) === allowed) delete forRole[capability];
-    else forRole[capability] = allowed;
+    const setCap = (cap, val) => {
+      // ✅ ตรงกับค่าเริ่มต้นอยู่แล้ว = ลบส่วนต่างทิ้ง (ตารางจะได้ไม่บวมด้วยค่าที่ไม่ได้ต่างอะไร)
+      if ((CAPABILITIES[cap] || []).includes(role) === val) delete forRole[cap];
+      else forRole[cap] = val;
+    };
+    setCap(capability, allowed);
+    /**
+     * ✅ (8 ต.ค. 2569 ผู้ใช้: "บางจุดใช้ได้ บางจุดใช้ไม่ได้") สิทธิ์ "แก้ไข" ใช้ไม่ได้ถ้าไม่มีสิทธิ์ "เปิดเมนู" คู่กัน
+     *    (เปิดหน้าไม่ได้ก็กดปุ่มแก้ไม่ได้) — ติ๊กแก้ไข = เปิดเมนูให้ด้วย · เอาเมนูออก = เอาสิทธิ์แก้ไขออกด้วย
+     */
+    const linked = [];
+    const isOnNow = (cap) => (cap in forRole ? forRole[cap] : (CAPABILITIES[cap] || []).includes(role));
+    Object.entries(CAP_REQUIRES).forEach(([dep, need]) => {
+      if (allowed && capability === dep && !isOnNow(need)) { setCap(need, true); linked.push(need); }
+      if (!allowed && capability === need && isOnNow(dep)) { setCap(dep, false); linked.push(dep); }
+    });
 
     if (Object.keys(forRole).length) overrides[role] = forRole;
     else delete overrides[role];
@@ -377,7 +397,7 @@ router.put("/permissions", verifyToken, requireCap("manageSystem"), async (req, 
     );
     OrgSetting.clearCache();
     setCapabilityOverrides(overrides); // มีผลกับคำขอถัดไปทันที ไม่ต้องรอรอบรีเฟรช
-    res.json({ overrides, effective: Object.fromEntries(EDITABLE_CAPABILITIES.map((c) => [c, effectiveCapabilities()[c]])) });
+    res.json({ overrides, linked, effective: Object.fromEntries(EDITABLE_CAPABILITIES.map((c) => [c, effectiveCapabilities()[c]])) });
   } catch (err) {
     console.error("❌ บันทึกตารางสิทธิ์ไม่สำเร็จ:", err);
     res.status(500).json({ message: "บันทึกตารางสิทธิ์ไม่สำเร็จ" });
