@@ -2,10 +2,10 @@ const moment = require("moment");
 const CalendarEvent = require("../models/Events");
 const User = require("../models/User");
 const { sendPushToUsers, sendPushToRoles } = require("./PushNotify");
-const { SUPERVISOR_ROLES, DEPARTMENT } = require("../config/roles");
+const { SUPERVISOR_ROLES, DEPARTMENT, effectiveCapabilities, normalizeRank } = require("../config/roles");
 const NotifyLog = require("../models/NotifyLog");
 const { billingStatus } = require("../utils/billing");
-const { DEFAULT_INTERVAL_MONTHS, totalRoundsOf } = require("../utils/contractVisits");
+const { DEFAULT_INTERVAL_MONTHS, totalRoundsOf, roundLabelOf } = require("../utils/contractVisits");
 
 // ✅ เกณฑ์เดียวกับฝั่ง frontend (Operation/index.js) — เลยกำหนดวันสิ้นสุดงานตามแผนจริงมาแล้ว
 // อย่างน้อย 1 สัปดาห์ ถือว่า "ค้างงาน" ต้องแจ้งเตือน
@@ -254,9 +254,17 @@ async function checkAndNotifyStaleQuotations() {
 // ในตารางจะไม่ตรงกัน — query ด้วย contractGroupId เฉยๆ (ไม่กรอง unscheduled) เพราะ countUsedRounds
 // ฝั่งจอนับรวมแผนงานล่วงหน้าด้วย
 async function checkAndNotifyOverdueContracts() {
+  /**
+   * ✅ (8 ต.ค. 2569 ผู้ใช้เลือก) แจ้งเตือนรอบเข้างาน 3 ระดับ — เกณฑ์ "ระดับเดือน" ตรงกับ nextVisitOverdueInfo ฝั่งแอป
+   *   🗓️ ใกล้ถึงรอบ  (รอบตกเดือนหน้า)     → เดือนละครั้ง · ให้นัดลูกค้าล่วงหน้า
+   *   🔔 ถึงรอบแล้ว   (รอบตกเดือนนี้)      → เดือนละครั้ง
+   *   ⛔ เลยกำหนด     (รอบเลยเดือนมาแล้ว)   → วันละครั้ง จนกว่าจะลงแผนงาน
+   * ผู้รับ: ผู้รับผิดชอบสัญญา (เฉพาะสัญญาของตัวเอง) + ตำแหน่งที่มีสิทธิ์ "จัดคิวคำขอลงงาน" (สรุปทุกสัญญา)
+   * ⚠️ ไม่เตือนสัญญาที่ครบจำนวนครั้งแล้ว / ยังไม่เคยลงตารางจริงสักครั้ง / ลงแผนงานล่วงหน้าครั้งถัดไปไว้แล้ว
+   */
   try {
     const events = await CalendarEvent.find({ contractGroupId: { $exists: true, $nin: [null, ""] } })
-      .select("contractGroupId visitCount intervalMonths contractYears contractStart contractEnd time start end allDay unscheduled resPerson team userId responsiblePersonId responsiblePerson")
+      .select("contractGroupId site company contractNo visitCount intervalMonths contractYears contractStart contractEnd time start end allDay unscheduled resPerson team userId responsiblePersonId responsiblePerson")
       .lean();
     if (events.length === 0) return;
 
@@ -266,69 +274,106 @@ async function checkAndNotifyOverdueContracts() {
       byContract.get(e.contractGroupId).push(e);
     });
 
-    const overdueContracts = []; // { visits, monthsOverdue }
+    const thisMonth = moment().utcOffset(7 * 60).startOf("month");
+    const found = { soon: [], now: [], overdue: [] }; // { visits, site, round, dueMonth, monthsOverdue }
     byContract.forEach((visits) => {
       const sorted = visits.slice().sort((a, b) => (Number(a.time) || 0) - (Number(b.time) || 0));
       const head = sorted[0];
-      const visitCount = totalRoundsOf(head); // ✅ กติกาเดียวกับหน้าภาพรวมงาน (ไม่เตือนสัญญาที่ครบแล้ว)
+      const visitCount = totalRoundsOf(head);
       if (!visitCount) return;
       const usedRounds = new Set(
         sorted.map((v) => v.time).filter((t) => t !== undefined && t !== null && t !== "").map(String)
       );
       if (usedRounds.size >= visitCount) return;
+      // สัญญาที่หมดอายุไปแล้วไม่เตือนรอบ (มีแจ้งเตือนต่อสัญญาแยกอยู่แล้ว)
+      if (head.contractEnd && moment(head.contractEnd).isBefore(thisMonth)) return;
       const realVisits = sorted.filter((v) => !v.unscheduled);
       if (realVisits.length === 0) return;
-      // ⚠️ BUG ที่แก้: เดิมใช้ v.end ตรงๆ — แต่ end ของงาน allDay ถูกบวกไป 1 วันตอนบันทึกเสมอ (ค่า end
-      // แบบ exclusive ของ FullCalendar) ทำให้ "รอบล่าสุด" ที่ใช้คำนวณเพี้ยนไปวันหนึ่งเสมอ ไม่ตรงกับ
-      // nextVisitOverdueInfo ฝั่ง frontend ที่แก้จุดนี้ไปแล้วก่อนหน้านี้ — ต้องแก้ให้ตรงกันเป๊ะๆ ตามคอมเมนต์
-      // ด้านบนของฟังก์ชัน ไม่งั้นตัวเลขในแจ้งเตือนจะไม่ตรงกับจุดแดงในตาราง "ภาพรวมงาน"
       const lastVisitDate = realVisits.reduce((latest, v) => {
-        const d = v.end
-          ? moment(v.end).subtract(v.allDay ? 1 : 0, "days")
-          : moment(v.start);
+        const d = v.end ? moment(v.end).subtract(v.allDay ? 1 : 0, "days") : moment(v.start);
         return !latest || d.isAfter(latest) ? d : latest;
       }, null);
       const dueDate = lastVisitDate.clone().add(Number(head.intervalMonths) || DEFAULT_INTERVAL_MONTHS, "months");
-      if (dueDate.isAfter(moment())) return;
-      overdueContracts.push({ visits: sorted, monthsOverdue: Math.max(1, moment().diff(dueDate, "months") + 1) });
+      const monthsUntilDue = dueDate.clone().utcOffset(7 * 60).startOf("month").diff(thisMonth, "months");
+      if (monthsUntilDue > 1) return;
+      let nextRound = 1;
+      while (usedRounds.has(String(nextRound))) nextRound += 1;
+      const item = {
+        visits: sorted,
+        site: head.site || head.company || head.contractNo || "สัญญา",
+        round: roundLabelOf(nextRound, head),
+        dueMonth: dueDate.clone().utcOffset(7 * 60),
+        monthsOverdue: Math.max(0, -monthsUntilDue),
+      };
+      if (monthsUntilDue === 1) found.soon.push(item);
+      else if (monthsUntilDue === 0) found.now.push(item);
+      else found.overdue.push(item);
     });
-    if (overdueContracts.length === 0) return;
 
-    // ✅ ?view=overdue — เปิดหน้า "ภาพรวมงาน" มาที่แท็บ "เลยกำหนด/คงค้าง" ให้เลยทันที (ดู viewFilter
-    // ใน ContractOverview.js) แทนที่จะเปิดมาแท็บ "งานสัญญา/งานรายปี" เริ่มต้นแล้วต้องกดกรองเอง
-    // ⚠️ กันแจ้งซ้ำในวันเดียวกัน (ดู models/NotifyLog.js)
-    if (await NotifyLog.claimOncePerDay("overdue-contracts", "broadcast", "admin+manager")) {
-    await sendPushToRoles(SUPERVISOR_ROLES, {
-      title: "📋 มีสัญญาที่ยังไม่ได้วางแผนรอบถัดไป",
-      body: `มี ${overdueContracts.length} สัญญาที่เลยกำหนดรอบถัดไปแล้ว (นานสุด ${Math.max(...overdueContracts.map((c) => c.monthsOverdue))} เดือน) กรุณาตรวจสอบและลงแผนงานครั้งถัดไป`,
-      url: "/contracts?view=overdue",
-      tag: "contract-round-reminder",
-      renotify: true,
-    });
+    const monthTH = (m) => `${["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."][m.month()]} ${String(m.year() + 543).slice(-2)}`;
+    const listOf = (items) => {
+      const names = items.slice(0, 3).map((x) => `${x.site} (${x.round})`);
+      return names.join(", ") + (items.length > 3 ? ` และอีก ${items.length - 3} สัญญา` : "");
+    };
+    const LEVELS = [
+      {
+        key: "soon", items: found.soon, once: "month", url: "/contracts",
+        title: (n) => `🗓️ เดือนหน้าถึงรอบเข้างาน ${n} สัญญา`,
+        body: (items) => `นัดลูกค้าล่วงหน้า: ${listOf(items)}`,
+      },
+      {
+        key: "now", items: found.now, once: "month", url: "/contracts?view=overdue",
+        title: (n) => `🔔 เดือนนี้ถึงรอบเข้างาน ${n} สัญญา`,
+        body: (items) => `ยังไม่ได้ลงแผนงาน: ${listOf(items)}`,
+      },
+      {
+        key: "overdue", items: found.overdue, once: "day", url: "/contracts?view=overdue",
+        title: (n) => `⛔ เลยกำหนดรอบเข้างาน ${n} สัญญา`,
+        body: (items) => `นานสุด ${Math.max(...items.map((x) => x.monthsOverdue))} เดือน — ${listOf(items)} · กรุณาลงแผนงานครั้งถัดไป`,
+      },
+    ];
+
+    const claim = (once, kind, subject, recipient) => (once === "month"
+      ? NotifyLog.claimOncePerMonth(kind, subject, recipient)
+      : NotifyLog.claimOncePerDay(kind, subject, recipient));
+
+    // ── ผู้จัดคิว (ตำแหน่งที่มีสิทธิ์ assignDispatch) — สรุปทุกสัญญา ──
+    const dispatchRanks = effectiveCapabilities().assignDispatch || SUPERVISOR_ROLES;
+    for (const lv of LEVELS) {
+      if (!lv.items.length) continue;
+      if (!(await claim(lv.once, `contract-round-${lv.key}`, "broadcast", "dispatchers"))) continue;
+      await sendPushToRoles(dispatchRanks, {
+        title: lv.title(lv.items.length), body: lv.body(lv.items), url: lv.url,
+        tag: `contract-round-${lv.key}`, renotify: true,
+      });
     }
 
-    // ✅ แจ้งผู้รับผิดชอบของแต่ละสัญญาเป็นรายคนด้วย (เทียบ pattern เดียวกับ checkAndNotifyOverdueJobs)
+    // ── ผู้รับผิดชอบสัญญา — เฉพาะสัญญาของตัวเอง (ทุกตำแหน่ง) ──
     const allUsers = await User.find({}).select("fname rank role").lean();
     const userById = new Map(allUsers.map((u) => [u._id.toString(), u]));
     const userByFname = new Map(allUsers.map((u) => [u.fname, u]));
-
-    const overdueByTech = new Map();
-    overdueContracts.forEach(({ visits }) => {
-      const user = resolveResponsibleUser(visits, userById, userByFname);
-      if (!user || user.role !== "technician") return;
-      const techId = user._id.toString();
-      overdueByTech.set(techId, (overdueByTech.get(techId) || 0) + 1);
-    });
-
-    for (const [techId, count] of overdueByTech.entries()) {
-      if (!(await NotifyLog.claimOncePerDay("overdue-contracts", "self", techId))) continue;
-      await sendPushToUsers(techId, {
-        title: "📋 มีสัญญาที่ยังไม่ได้วางแผนรอบถัดไป",
-        body: `มี ${count} สัญญาที่คุณรับผิดชอบเลยกำหนดรอบถัดไปแล้ว กรุณาตรวจสอบและลงแผนงานครั้งถัดไป`,
-        url: "/contracts?view=overdue",
-        tag: "contract-round-reminder",
-        renotify: true,
+    for (const lv of LEVELS) {
+      const mine = new Map();
+      lv.items.forEach((it) => {
+        const user = resolveResponsibleUser(it.visits, userById, userByFname);
+        if (!user) return;
+        // ผู้จัดคิวได้สรุปทุกสัญญาไปแล้ว — ไม่ส่งซ้ำอีกฉบับ
+        if (dispatchRanks.includes(normalizeRank(user))) return;
+        const id = user._id.toString();
+        if (!mine.has(id)) mine.set(id, []);
+        mine.get(id).push(it);
       });
+      for (const [uid, items] of mine.entries()) {
+        if (!(await claim(lv.once, `contract-round-${lv.key}`, "self", uid))) continue;
+        await sendPushToUsers(uid, {
+          title: lv.title(items.length).replace("สัญญา", "สัญญาที่คุณรับผิดชอบ"),
+          body: lv.body(items), url: lv.url,
+          tag: `contract-round-${lv.key}`, renotify: true,
+        });
+      }
+    }
+    if (found.soon.length || found.now.length || found.overdue.length) {
+      console.log(`📋 รอบเข้างาน: ใกล้ถึง ${found.soon.length} · เดือนนี้ ${found.now.length} · เลยกำหนด ${found.overdue.length} (${monthTH(thisMonth)})`);
     }
   } catch (err) {
     console.error("❌ Contract round reminder check error:", err);

@@ -36,4 +36,25 @@ const totalRoundsOf = (c) => {
   return Number(c && c.visitCount) || 0;
 };
 
-module.exports = { DEFAULT_INTERVAL_MONTHS, MAX_CONTRACT_YEARS, contractYearsOf, totalRoundsOf };
+/** ปีละกี่ครั้ง — ตรงกับ perYearOf ฝั่งแอป */
+const perYearOf = (c) => {
+  const n = Number(c && c.intervalMonths);
+  if (n >= 1 && 12 % n === 0) return 12 / n;
+  const total = Number(c && c.visitCount) || 0;
+  const years = contractYearsOf(c);
+  return years > 1 && total % years === 0 ? total / years : total;
+};
+
+/** "ครั้งที่ 2/4 - 2569" — นับใหม่ทุกปีของสัญญา (ตรงกับ formatRoundLabel ฝั่งแอป) */
+const roundLabelOf = (t, c) => {
+  const per = perYearOf(c);
+  const n = Number(t);
+  if (!per || !Number.isInteger(n) || n < 1) return `ครั้งที่ ${t}`;
+  const yearIdx = Math.ceil(n / per);
+  const inYear = ((n - 1) % per) + 1;
+  const start = c && c.contractStart ? new Date(c.contractStart) : null;
+  const year = start && !Number.isNaN(start.getTime()) ? start.getFullYear() + 543 + yearIdx - 1 : null;
+  return `ครั้งที่ ${inYear}/${per}${year ? ` - ${year}` : ""}`;
+};
+
+module.exports = { DEFAULT_INTERVAL_MONTHS, MAX_CONTRACT_YEARS, contractYearsOf, totalRoundsOf, perYearOf, roundLabelOf };

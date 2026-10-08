@@ -51,4 +51,18 @@ NotifyLog.claimOncePerDay = async function claimOncePerDay(kind, subject, recipi
   }
 };
 
+/** เหมือน claimOncePerDay แต่ "เดือนละครั้ง" (เดือนตามเวลาไทย) — ใช้กับการเตือนรอบเข้างานล่วงหน้า/ต้นเดือน */
+NotifyLog.claimOncePerMonth = async function claimOncePerMonth(kind, subject, recipient) {
+  const month = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 7);
+  const key = `${kind}:${subject}:${recipient}:${month}`;
+  try {
+    await NotifyLog.create({ key, kind });
+    return true;
+  } catch (err) {
+    if (err?.code === 11000) return false;
+    console.error("❌ NotifyLog claim error:", err);
+    return true;
+  }
+};
+
 module.exports = NotifyLog;
