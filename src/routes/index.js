@@ -4,8 +4,6 @@ const checkInternetConnection = require("../middleware/checkInternetConnection")
 
 const authRouter = require("./auth");
 const customerRouter = require("./customer");
-const productRouter = require("./product");
-const stockProductRouter = require("./stockProduct");
 const fileRouter = require("./file");
 const holidayRouter = require("./fetchHolidays");
 const calendarEventRouter = require("./calendarEvent");
@@ -58,8 +56,6 @@ router.use("/web", webRouter);
 router.use("/auth", authRouter);
 router.use("/signatures", signaturesRouter);
 router.use("/customer", customerRouter);
-router.use("/product", productRouter);
-router.use("/stockproduct", stockProductRouter);
 router.use("/files", fileRouter);
 router.use("/events", calendarEventRouter);
 router.use("/push", pushRouter);

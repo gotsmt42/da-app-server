@@ -116,8 +116,6 @@ function publish({ topic, id = "", action = "", origin = "", by = "", userIds = 
 const TOPICS_BY_BASE = {
   auth: ["users"],
   customer: ["customers"],
-  product: ["products"],
-  stockproduct: ["products"],
   files: ["files"],
   events: ["events"],
   jobtype: ["lookups"],
