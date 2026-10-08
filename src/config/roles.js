@@ -258,14 +258,14 @@ const CAPABILITIES = {
   // ✅ ผู้ใช้สั่ง (25 ก.ย. 2569): "การตั้งค่า และการแสดงเมนู ให้ทำได้แค่ Super Admin ก่อน"
   //    ไม่ให้ตำแหน่งใดในองค์กรโดยค่าเริ่มต้น — Super Admin ผ่านทุกสิทธิ์อยู่แล้ว (ดู can())
   //    ถ้าวันหลังจะให้ตำแหน่งไหน ติ๊กเพิ่มได้จากหน้าตั้งค่าสิทธิ์ ไม่ต้องแก้โค้ด
-  manageWebsite: [],
+  manageWebsite: [ROLES.DIRECTOR, ROLES.MANAGER],
   /**
    * ✅ เห็นและจัดการ "คำขอจากเว็บไซต์" (ฟอร์มติดต่อ/ขอใบเสนอราคา) — รวมฝ่ายขายด้วย
    *    เพราะเป็นคนโทรกลับลูกค้าและทำใบเสนอราคาจริง
    * ⚠️ ข้อมูลในนี้เป็นข้อมูลส่วนบุคคลของลูกค้า (ชื่อ เบอร์ อีเมล) — ห้ามเปิดให้ช่าง/ผู้ใช้ทั่วไป
    */
   // ✅ ผู้ใช้สั่ง: "เซลไม่ต้อง ให้แก้และดูอะไรได้ในตั้งค่า" — เหลือ Super Admin เท่านั้นเหมือน manageWebsite
-  viewLeads: [],
+  viewLeads: [ROLES.DIRECTOR, ROLES.MANAGER],
 };
 
 /**
@@ -295,7 +295,7 @@ const SYSTEM_ROLE_LABEL = {
 /** คำอธิบายเป็นภาษาไทย — ชื่อชั้นเป็นอังกฤษ แต่คำอธิบายต้องอ่านเข้าใจทันทีว่าทำอะไรได้ */
 const SYSTEM_ROLE_DESC = {
   [SYSTEM_ROLES.SUPER]: "ตั้งค่าองค์กร · ตารางสิทธิ์ · ตั้งผู้ดูแลระบบ · จัดการผู้ใช้ทั้งหมด",
-  [SYSTEM_ROLES.ADMIN]: "จัดการผู้ใช้และข้อมูลหลัก (ลูกค้า/ประเภทงาน) — แตะตั้งค่าระบบและตารางสิทธิ์ไม่ได้",
+  [SYSTEM_ROLES.ADMIN]: "จัดการบัญชีผู้ใช้ (ตำแหน่งต่ำกว่าตัวเอง) — แตะตั้งค่าระบบและตารางสิทธิ์ไม่ได้ · งานใช้ได้ตามตำแหน่ง",
   [SYSTEM_ROLES.MEMBER]: "ใช้งานตามตำแหน่งในองค์กรเท่านั้น",
 };
 
@@ -556,7 +556,7 @@ const isSuperAdmin = (who) => systemRoleOf(who) === SYSTEM_ROLES.SUPER;
  *    Admin ในระบบ (ไม่ว่าตำแหน่งในองค์กรไหน) เห็น/อัปเดต/ลบคำขอจากลูกค้าได้ — Super Admin ผ่านอยู่แล้ว
  * ⚠️ การตั้งค่าเว็บไซต์ (manageWebsite) ยังเป็น Super Admin เท่านั้น
  */
-const SYSTEM_GRANTS = { viewLeads: [SYSTEM_ROLES.ADMIN] };
+
 
 /**
  * สายอนุมัติค่าใช้จ่าย — ⚠️ ยกเว้นจาก "Super Admin ทำได้ทุกอย่าง" โดยตั้งใจ
@@ -584,7 +584,7 @@ const canManageUserOfRole = (actor, targetRole) =>
  * ⚠️ จัดการผู้ใช้/ตั้งค่าระบบ/ตารางสิทธิ์ = manageAll · manageSystem (ตัดสินด้วยชั้นในระบบอยู่แล้ว ไม่เกี่ยวกับรายการนี้)
  * ⚠️ ต้องตรงกันทั้งสองฝั่ง (da-app shared/utils/roles.js ↔ da-app-server config/roles.js)
  */
-const SUPER_ADMIN_CAPS = ["manageMasterData", "manageWebsite", "viewLeads"];
+
 
 /**
  * ✅ ตัวเดียวที่โค้ดที่อื่นควรเรียก
@@ -595,9 +595,9 @@ const can = (who, capability) => {
   // ✅ สิทธิ์ระดับระบบ (จัดการผู้ใช้/ตั้งค่าระบบ) ตัดสินด้วย "ชั้นในระบบ" ไม่เกี่ยวกับตำแหน่งในองค์กร
   if (isSystemCapability(capability)) return SYSTEM_CAPABILITIES[capability].includes(systemRoleOf(who));
   const allowed = CAPABILITIES[capability];
-  // ✅ Super Admin ได้อัตโนมัติเฉพาะสิทธิ์ดูแลระบบ (SUPER_ADMIN_CAPS) — สิทธิ์ทำงานตัดสินจากตำแหน่ง
-  if (allowed && isSuperAdmin(who) && SUPER_ADMIN_CAPS.includes(capability)) return true;
-  if (allowed && SYSTEM_GRANTS[capability]?.includes(systemRoleOf(who))) return true;
+  // ✅ (8 ต.ค. 2569 ผู้ใช้: "สิทธิ์ไม่ให้รวมสิทธิ์ระบบ · สิทธิ์ระบบคือเข้ามาตั้งค่าเองได้ ถ้าไม่ได้ติ๊กให้ Rank ก็ใช้ไม่ได้")
+  //    Role (Super Admin/Admin) ให้แค่สิทธิ์ตั้งค่าระบบ (manageAll · manageSystem) — สิทธิ์ทำงานทุกตัวรวมถึงข้อมูลหลัก
+  //    เว็บไซต์ และคำขอจากเว็บไซต์ มาจากตารางสิทธิ์ของ Rank เท่านั้น (ไม่มีการได้อัตโนมัติจาก Role อีกแล้ว)
   // ⚠️ พิมพ์ชื่อสิทธิ์ผิด = ปฏิเสธเสมอ (ปลอดภัยไว้ก่อน) แต่ต้องส่งเสียงดังพอให้เห็นตอน dev
   // ไม่งั้นจะกลายเป็นบั๊กเงียบแบบเดียวกับที่ไฟล์นี้ตั้งใจจะกำจัด
   if (!allowed) {
