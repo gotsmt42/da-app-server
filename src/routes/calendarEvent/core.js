@@ -337,7 +337,16 @@ module.exports = (router) => {
       // ได้แจ้งเตือน "เพิ่มงานใหม่เข้าระบบ" พร้อมลิงก์ไปหน้าการดำเนินงานที่ไม่มีงานนั้นอยู่จริง
       const isSalesPlan = primary.department === DEPARTMENT.SALES;
       if (isSalesPlan) {
-        // ไม่ต้องแจ้งเตือนอะไร
+        // ✅ (9 ต.ค. 2569) ไม่ประกาศใคร — ยกเว้นมีคนลงนัดให้เซลคนอื่น (เช่น แอดมินลงแทน) แจ้งเซลคนนั้นคนเดียว
+        if (primary.resPerson && String(primary.resPerson) !== String(req.userId)) {
+          sendPushToUsers(primary.resPerson, {
+            title: `📅 ${creatorName} ลงนัดหมายให้คุณ`,
+            body: jobLabelNew,
+            url: "/event",
+            tag: notifyTag,
+            renotify: true,
+          }).catch((err) => console.error("❌ Push notify error (sales-assign):", err));
+        }
       } else if (primary.approvalStatus === "pending") {
         sendPushToRoles(SUPERVISOR_ROLES, {
           title: `⏳ ${creatorName} ส่งงานใหม่รออนุมัติ`,
