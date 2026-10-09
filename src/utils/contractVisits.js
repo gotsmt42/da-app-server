@@ -53,7 +53,12 @@ const roundLabelOf = (t, c) => {
   const yearIdx = Math.ceil(n / per);
   const inYear = ((n - 1) % per) + 1;
   const start = c && c.contractStart ? new Date(c.contractStart) : null;
-  const year = start && !Number.isNaN(start.getTime()) ? start.getFullYear() + 543 + yearIdx - 1 : null;
+  let year = "";
+  if (start && !Number.isNaN(start.getTime())) {
+    // ปีสัญญาเริ่ม 1 ม.ค. = ปีเดียว · เริ่มเดือนอื่น = คร่อม 2 ปี พ.ศ. เช่น 2568-69 (ตรงกับ contractYearLabel ฝั่งแอป)
+    const be = start.getFullYear() + 543 + yearIdx - 1;
+    year = start.getMonth() === 0 && start.getDate() === 1 ? `${be}` : `${be}-${String(be + 1).slice(-2)}`;
+  }
   return `ครั้งที่ ${inYear}/${per}${year ? ` - ${year}` : ""}`;
 };
 
