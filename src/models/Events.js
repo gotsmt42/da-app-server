@@ -73,6 +73,43 @@ const eventSchema = new mongoose.Schema(
      */
     displayOrder: { type: Number, default: 0 },
 
+    /**
+     * ✅ (9 ต.ค. 2569) ขั้นตอนทำงานมาตรฐาน 6 ขั้น — รับแจ้ง → เปิด Job → วางแผน → ช่างรับงาน/รายงาน → ติดตามงานไม่เสร็จ → ตรวจและปิดงาน
+     *
+     * jobNo — เลข Job อัตโนมัติ "JOB-00001/2569" (รันใหม่ทุกปี พ.ศ.) · งานหลายวัน (jobGroupId เดียวกัน) ใช้เลขเดียวกัน
+     *   ⚠️ ออกเลขที่ server เท่านั้น (utils/jobNumber.js) ห้ามรับจาก client · นัดฝ่ายขายไม่มีเลข Job
+     */
+    jobNo: { type: String, index: true },
+    /** ความเร่งด่วน — ปกติ / ด่วน (ชุดเดียวกับใบแจ้งงาน Dispatch.priority) */
+    priority: { type: String, enum: ["normal", "urgent"], default: "normal" },
+    /** วันครบกำหนดของงาน — งานต้องเสร็จภายในวันนี้ (คนละตัวกับวันนัดเข้างาน start/end) */
+    dueDate: { type: Date, default: null },
+    /** รับแจ้งงานแล้วแต่ข้อมูลยังไม่ครบ ("รอข้อมูล") + ขาดอะไร */
+    infoPending: { type: Boolean, default: false },
+    infoPendingNote: { type: String, default: "" },
+    /** อุปกรณ์/อะไหล่ที่ต้องเตรียมไปหน้างาน (ข้อความอิสระ บรรทัดละรายการ) */
+    equipment: { type: String, default: "" },
+    /** ช่างกด "รับงาน" (รับทราบ) — ไม่เปลี่ยนสถานะงาน แค่บอกแอดมินว่าใครรับรู้แล้ว */
+    acks: [{ userId: String, name: String, at: { type: Date, default: Date.now } }],
+    /**
+     * งานไม่เสร็จ / ต้องนัดใหม่ — ช่างแจ้งสาเหตุ ผู้รับผิดชอบขั้นต่อไป และวันนัดที่เสนอ
+     * แอดมินลงตารางเอง แล้วกด "จัดการแล้ว" (resolvedAt) · ขอปิดงาน = จัดการแล้วอัตโนมัติ
+     * followUpOpen = มีเรื่องที่ยังไม่จัดการ (ไว้กรอง/นับเร็วๆ)
+     */
+    followUps: [{
+      reason: { type: String, default: "" },
+      note: { type: String, default: "" },
+      nextOwner: { type: String, default: "" },
+      proposedDate: { type: Date, default: null },
+      reportedBy: String,
+      reportedByUserId: String,
+      reportedAt: { type: Date, default: Date.now },
+      resolvedAt: { type: Date, default: null },
+      resolvedBy: { type: String, default: "" },
+      resolution: { type: String, default: "" },
+    }],
+    followUpOpen: { type: Boolean, default: false, index: true },
+
     docNo: { type: String },
     company: { type: String },
     site: { type: String, required: true },
@@ -424,6 +461,14 @@ const eventSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+// ✅ เลข Job — ทุกเส้นทางที่สร้างงานด้วย .save() ได้เลขอัตโนมัติ (route ที่สร้างหลายวันพร้อมกันออกเลขเองก่อน
+//    ไม่งั้นแต่ละวันของงานเดียวกันจะได้คนละเลข)
+eventSchema.pre("save", async function () {
+  if (this.jobNo || this.department === "sales") return;
+  const { assignJobNo } = require("../utils/jobNumber");
+  await assignJobNo(this);
+});
 
 // ใช้ pre middleware ในการแปลง string เป็น datetime ก่อนเก็บลงฐานข้อมูล
 eventSchema.pre("save", function (next) {

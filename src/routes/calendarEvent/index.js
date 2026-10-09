@@ -7,6 +7,7 @@ const registerWorkflow = require("./workflow");
 const registerContracts = require("./contracts");
 const registerBilling = require("./billing");
 const registerCore = require("./core");
+const registerJobflow = require("./jobflow");
 
 /**
  * /api/events — router ของงานบนปฏิทิน
@@ -39,6 +40,7 @@ registerQueries(router);
 registerWorkflow(router);
 registerContracts(router);
 registerBilling(router);
+registerJobflow(router); // ✅ /:id/ack · /:id/follow-up — เซกเมนต์ 2 ชั้น ไม่ชนกับ core แต่ไว้ก่อน core ตามกติกา
 registerCore(router); // ⚠️ ต้องท้ายสุดเสมอ — ดูเหตุผลด้านบน
 
 module.exports = router;

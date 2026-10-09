@@ -86,6 +86,11 @@ if (process.env.NODE_ENV !== "test") {
     .migrateUserFields()
     .catch((err) => console.error("❌ ย้ายชื่อฟิลด์ผู้ใช้ไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
 
+  // ✅ เลข Job อัตโนมัติให้งานเดิม (ดู services/migrateJobNumbers.js)
+  require("./services/migrateJobNumbers")
+    .migrateJobNumbers()
+    .catch((err) => console.error("❌ ออกเลข Job ให้งานเดิมไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
+
   // ✅ ทุกวัน/ทุกครั้งของงานเดียวกันต้องมีผู้รับผิดชอบเดียวกับที่หน้า "ภาพรวมงาน" แสดง (ดู services/groupResponsible.js)
   require("./services/groupResponsible")
     .repairAllGroupResponsible()

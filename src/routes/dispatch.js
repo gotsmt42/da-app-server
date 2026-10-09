@@ -748,6 +748,10 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
       // จากปฏิทิน/หน้าการดำเนินงานจะไม่เห็นเบอร์ติดต่อเลย ต้องย้อนไปเปิดใบแจ้งงานเองทุกครั้ง
       contactName: c.contactName || "",
       contactTel: c.contactTel || "",
+      // ✅ (9 ต.ค. 2569) ความเร่งด่วน · วันครบกำหนด · อุปกรณ์ที่ผู้แจ้งกรอกมา ติดไปกับงานด้วย
+      priority: dispatch.priority === "urgent" ? "urgent" : "normal",
+      dueDate: dispatch.dueAt || null,
+      equipment: (dispatch.parts || []).map((p) => [p.name, p.qty ? `× ${p.qty}${p.unit ? " " + p.unit : ""}` : "", p.note].filter(Boolean).join(" ")).join(String.fromCharCode(10)),
       date: startAt,
       start: startAt,
       // ⚠️ end ของงาน allDay เก็บแบบ exclusive (+1 วัน) ตามแบบแผนของทั้งแอป — ฝั่งจอลบคืน

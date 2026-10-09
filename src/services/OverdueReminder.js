@@ -511,7 +511,63 @@ async function checkAndNotifyOverdueInvoices() {
   }
 }
 
+/**
+ * ✅ (9 ต.ค. 2569) ขั้นตอนทำงานมาตรฐาน ขั้น 4 — งานพรุ่งนี้ที่ช่างยังไม่กด "รับงาน"
+ *   ช่างที่ได้รับมอบหมาย: เตือนให้กดรับงาน · ผู้จัดคิว (assignDispatch): สรุปว่างานไหนยังไม่มีใครรับ
+ */
+async function checkAndNotifyUnackedJobs() {
+  try {
+    const tz = 7 * 60;
+    const from = moment().utcOffset(tz).add(1, "day").startOf("day").toDate();
+    const to = moment().utcOffset(tz).add(2, "day").startOf("day").toDate();
+    const events = await CalendarEvent.find({
+      department: { $ne: DEPARTMENT.SALES },
+      unscheduled: { $ne: true },
+      approvalStatus: { $ne: "pending" },
+      status: { $nin: ["ดำเนินการเสร็จสิ้น"] },
+      start: { $gte: from, $lt: to },
+      resPerson: { $nin: [null, ""] },
+      "acks.0": { $exists: false },
+    }).select("_id title site company jobNo resPerson jobGroupId").lean();
+    if (!events.length) return;
+
+    const seen = new Set();
+    const jobs = events.filter((e) => {
+      const k = e.jobGroupId || String(e._id);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    const label = (e) => `${e.title || "งาน"} · ${e.site || e.company || "-"}`;
+
+    for (const e of jobs) {
+      const uid = String(e.resPerson);
+      if (!(await NotifyLog.claimOncePerDay("unacked-job", String(e.jobGroupId || e._id), uid))) continue;
+      await sendPushToUsers(uid, {
+        title: "📋 พรุ่งนี้มีงาน — กด “รับงาน” ด้วย",
+        body: `${label(e)}${e.jobNo ? ` (${e.jobNo})` : ""}`,
+        url: `/operation/${e._id}`,
+        tag: `unacked-${e.jobGroupId || e._id}`,
+      });
+    }
+
+    const dispatchRanks = effectiveCapabilities().assignDispatch || SUPERVISOR_ROLES;
+    if (await NotifyLog.claimOncePerDay("unacked-jobs", "broadcast", "dispatchers")) {
+      const names = jobs.slice(0, 3).map(label).join(", ") + (jobs.length > 3 ? ` และอีก ${jobs.length - 3} งาน` : "");
+      await sendPushToRoles(dispatchRanks, {
+        title: `⏳ งานพรุ่งนี้ ${jobs.length} งาน ช่างยังไม่กดรับงาน`,
+        body: names,
+        url: "/operation",
+        tag: "unacked-jobs",
+      });
+    }
+  } catch (err) {
+    console.error("❌ checkAndNotifyUnackedJobs:", err.message);
+  }
+}
+
 module.exports = {
+  checkAndNotifyUnackedJobs,
   checkAndNotifyOverdueJobs,
   checkAndNotifyStaleQuotations,
   checkAndNotifyOverdueContracts,

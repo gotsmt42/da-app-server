@@ -25,6 +25,8 @@ const {
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
 const { syncGroupsOf, syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
+const { nextJobNo, groupJobNo } = require("../../utils/jobNumber");
+const { pickJobInfo, resolveFollowUps } = require("./jobflow");
 
 /** ลายเซ็นของรายการกิจกรรมหนึ่งบรรทัด — ใช้เทียบว่าเป็นรายการเดียวกันไหม (_id ใช้ไม่ได้ ดูด้านล่าง) */
 const logSignature = (log) =>
@@ -246,6 +248,8 @@ module.exports = (router) => {
               .filter((m) => m.name);
           }
         }
+        // ✅ (9 ต.ค. 2569) ขั้นตอนทำงานมาตรฐาน — ความเร่งด่วน · วันครบกำหนด · รอข้อมูล · อุปกรณ์ (ตรวจค่าแล้ว ดู jobflow.js)
+        Object.assign(eventData, pickJobInfo(req.body));
         if (jobGroupId) eventData.jobGroupId = jobGroupId;
         if (contractGroupId) eventData.contractGroupId = contractGroupId;
         // ✅ สืบทอดหมวดหมู่งานจากพี่น้องในกลุ่มเดิม (ดูเหตุผลเต็มที่ inheritedJobClassification ด้านบน)
@@ -283,13 +287,16 @@ module.exports = (router) => {
         return eventData;
       };
 
+      // ✅ เลข Job: หลายวันของงานเดียวกันต้องได้เลขเดียว — ออกเลขครั้งเดียวก่อนบันทึกพร้อมกัน
+      //    (สัญญาหลายครั้ง = คนละงาน ปล่อยให้ pre-save ออกเลขแยกครั้งละเลข)
+      const sharedJobNo = isContractBatch ? "" : ((await groupJobNo(jobGroupId)) || (isMultiDate ? await nextJobNo() : ""));
       let events;
       if (Array.isArray(dates) && dates.length > 0) {
         events = await Promise.all(
-          dates.map((d) => new CalendarEvent(buildEventData(d)).save())
+          dates.map((d) => new CalendarEvent({ ...buildEventData(d), ...(sharedJobNo ? { jobNo: sharedJobNo } : {}) }).save())
         );
       } else {
-        events = [await new CalendarEvent(buildEventData()).save()];
+        events = [await new CalendarEvent({ ...buildEventData(), ...(sharedJobNo ? { jobNo: sharedJobNo } : {}) }).save()];
       }
 
       // ✅ เพิ่มวัน/ครั้งเข้างานที่มีอยู่แล้ว (สัญญา/โปรเจคหลายวัน) → รับผู้รับผิดชอบของงานนั้นตามภาพรวมงาน
@@ -760,6 +767,7 @@ module.exports = (router) => {
         intervalMonths, // ✅ เดิมตกหล่นไป ทำให้ค่าที่แก้จากฟอร์มในปฏิทินไม่เคยถูกบันทึก (ดูคอมเมนต์ด้านบน)
         ...(contractYears !== undefined && contractYears !== "" && contractYears !== null ? { contractYears: Number(contractYears) } : {}),
         jobValue,
+        ...pickJobInfo(req.body),
 
         // ✅ ส่งขออนุมัติใหม่อัตโนมัติ (ดู shouldResubmit ด้านบน) — ไม่เข้าเงื่อนไขก็ไม่ใส่ key พวกนี้เลย
         // (ไม่ใช่ใส่เป็น undefined) ปล่อยให้ approvalStatus เดิมในฐานข้อมูลไม่ถูกแตะต้อง
@@ -783,6 +791,16 @@ module.exports = (router) => {
 
       if (!updatedEvent) {
         return res.status(404).json("Event not found");
+      }
+
+      // ✅ ข้อมูลระดับงาน (ความเร่งด่วน/ครบกำหนด/รอข้อมูล/อุปกรณ์) ใช้ร่วมกันทุกวันของงานหลายวัน
+      const jobInfo = pickJobInfo(req.body);
+      if (updatedEvent.jobGroupId && Object.keys(jobInfo).length) {
+        await CalendarEvent.updateMany({ jobGroupId: updatedEvent.jobGroupId, _id: { $ne: updatedEvent._id } }, { $set: jobInfo });
+      }
+      // ✅ ขอปิดงาน = เรื่อง "งานไม่เสร็จ" ที่ค้างอยู่ถือว่าจัดการแล้ว
+      if (req.body.closeRequested === true && updatedEvent.followUpOpen) {
+        await resolveFollowUps(updatedEvent, resubmitterName, "ขอปิดงานแล้ว");
       }
 
       // ✅ ผู้รับผิดชอบเป็นของ "ทั้งงาน" (ทุกครั้ง/ทุกวันในกลุ่ม) — มอบหมายใหม่ที่ใบนี้ = มอบหมายทั้งกลุ่ม
