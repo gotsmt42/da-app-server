@@ -86,6 +86,11 @@ if (process.env.NODE_ENV !== "test") {
     .migrateUserFields()
     .catch((err) => console.error("❌ ย้ายชื่อฟิลด์ผู้ใช้ไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
 
+  // ✅ ใบเบิกเดิมที่ผูกงานสัญญา — เติมข้อมูลสัญญาให้ป้ายครั้งที่ระบุปีสัญญาได้ (ดู services/backfillExpenseContractInfo.js)
+  require("./services/backfillExpenseContractInfo")
+    .backfillExpenseContractInfo()
+    .catch((err) => console.error("❌ เติมข้อมูลสัญญาให้ใบเบิกไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
+
   // ✅ ล้างเลข Job ที่เคยออกย้อนหลังให้งานเก่า (ครั้งเดียว) — เลข Job มีเฉพาะงานจากเมนู "รับงาน" (ดู services/migrateJobNumbers.js)
   require("./services/migrateJobNumbers")
     .resetLegacyJobNumbers()

@@ -23,6 +23,7 @@ const {
   MAX_VISIT_COUNT,
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
+const { roundLabelOf } = require("../../utils/contractVisits");
 const { syncGroupsOf } = require("../../services/groupResponsible");
 // ✅ (9 ต.ค. 2569) รับแจ้งงาน = งานรอลงแผน — เก็บผู้ติดต่อ + ข้อมูล Job (ด่วน/ครบกำหนด/อุปกรณ์/รอข้อมูล) ตั้งแต่ตอนรับแจ้ง
 const { pickJobInfo } = require("./jobflow");
@@ -103,7 +104,7 @@ module.exports = (router) => {
       if (isContractBatch && contractGroupId && time) {
         const dupRound = await findDuplicateContractRound(contractGroupId, time);
         if (dupRound) {
-          return res.status(409).json({ message: `ครั้งที่ ${time} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
+          return res.status(409).json({ message: `${roundLabelOf(time, req.body)} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
         }
       }
 
@@ -342,7 +343,7 @@ module.exports = (router) => {
         // ✅ เช็คซ้ำ — excludeId เป็นตัวมันเอง เพราะ draft ที่กำลังแปลงนี้อาจถือ "ครั้งที่" นี้อยู่แล้วตั้งแต่ตอนสร้าง
         const dupRound = await findDuplicateContractRound(existingEvent.contractGroupId, time, existingEvent._id);
         if (dupRound) {
-          return res.status(409).json({ message: `ครั้งที่ ${time} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
+          return res.status(409).json({ message: `${roundLabelOf(time, req.body)} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
         }
         existingEvent.time = time;
       }

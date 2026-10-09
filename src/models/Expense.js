@@ -199,6 +199,15 @@ const expenseSchema = new mongoose.Schema(
       round: { type: String, default: "" },
       visitCount: { type: Number, default: 0 },
       /**
+       * ✅ (9 ต.ค. 2569 ผู้ใช้: "ยังเป็น 5/8 6/8 อยู่ ไม่ระบุปีสัญญา") ข้อมูลสัญญาสำหรับป้ายครั้งที่รายปี
+       * "ครั้งที่ 1/4 - 2569-70" (ดู formatRoundLabel ฝั่งหน้าจอ) — ใบเก่าเติมให้ตอนเริ่มระบบ (ดู backfillExpenseContractInfo)
+       */
+      contractNo: { type: String, default: "" },
+      contractStart: { type: Date, default: null },
+      contractEnd: { type: Date, default: null },
+      contractYears: { type: Number, default: null },
+      intervalMonths: { type: Number, default: null },
+      /**
        * ✅ ผู้ใช้สั่ง: "งานที่เข้าไม่ต่อเนื่อง แต่งานเดียวกัน ให้แยกเบิกเป็นช่วงงานได้"
        * งานหนึ่งงานเข้าได้หลายช่วงวันที่ (ช่วงที่ 1: 4 ส.ค. · ช่วงที่ 2: 7–12 ก.ย. ...)
        * สองช่องนี้เก็บไว้ว่าใบนี้เบิกของ "ช่วงที่เท่าไร จากทั้งหมดกี่ช่วง" เพื่อให้อ่านใบแล้วรู้ทันที

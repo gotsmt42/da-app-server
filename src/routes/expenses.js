@@ -346,12 +346,21 @@ const rangesOfJob = async (jobGroupId) => {
  * ✅ ผูกกับ "ช่วงงาน" (1 event = 1 ช่วงวันที่) ไม่ใช่ทั้งงาน — ผู้ใช้สั่งให้แยกเบิกเป็นช่วงได้
  * คืน jobKey (กุญแจกันออกใบซ้ำ = ช่วงนี้) และ jobGroupKey (ทั้งงาน) มาด้วย ดู models/Expense.js
  */
+/** ข้อมูลสัญญาที่ใช้ทำป้าย "ครั้งที่ 1/4 - 2569-70" — เก็บติดใบไว้ (snapshot) เหมือนชื่องาน */
+const contractInfoOf = (ev) => ({
+  contractNo: ev?.contractNo || "",
+  contractStart: ev?.contractStart || null,
+  contractEnd: ev?.contractEnd || null,
+  contractYears: Number(ev?.contractYears) || null,
+  intervalMonths: Number(ev?.intervalMonths) || null,
+});
+
 const resolveJob = async (eventId) => {
   const id = String(eventId || "").trim();
   const empty = { title: "", system: "", company: "", site: "", docNo: "", start: null, end: null, round: "", visitCount: 0, part: 0, partCount: 0 };
   if (!id) return { eventId: "", jobKey: "", jobGroupKey: "", job: empty };
   if (!/^[a-f0-9]{24}$/i.test(id)) return null;
-  const ev = await CalendarEvent.findById(id).select("title system company site docNo start end time visitCount jobGroupId").lean();
+  const ev = await CalendarEvent.findById(id).select("title system company site docNo start end time visitCount jobGroupId contractNo contractStart contractEnd contractYears intervalMonths").lean();
   if (!ev) return null;
 
   const ranges = await rangesOfJob(ev.jobGroupId);
@@ -365,6 +374,7 @@ const resolveJob = async (eventId) => {
       title: ev.title || "", system: ev.system || "", company: ev.company || "", site: ev.site || "",
       docNo: ev.docNo || "", start: ev.start || null, end: ev.end || ev.start || null,
       round: ev.time === undefined || ev.time === null ? "" : String(ev.time), visitCount: Number(ev.visitCount) || 0,
+      ...contractInfoOf(ev),
       part: part > 0 ? part : 0, partCount: ranges.length > 1 ? ranges.length : 0,
     },
   };
@@ -880,7 +890,7 @@ router.get("/jobs", verifyToken, async (req, res) => {
     }
     const query = and.length ? { ...base, $and: and } : base;
     const jobs = await CalendarEvent.find(query)
-      .select("title company site docNo system start end status jobGroupId time visitCount team teamMembers")
+      .select("title company site docNo system start end status jobGroupId time visitCount team teamMembers contractNo contractStart contractEnd contractYears intervalMonths")
       .sort({ start: -1 })
       .limit(40)
       .lean();

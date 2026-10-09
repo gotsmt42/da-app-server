@@ -24,6 +24,7 @@ const {
   MAX_VISIT_COUNT,
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
+const { roundLabelOf } = require("../../utils/contractVisits");
 const { syncGroupsOf, syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
 const { groupJobNo } = require("../../utils/jobNumber");
 const { pickJobInfo, resolveFollowUps } = require("./jobflow");
@@ -198,7 +199,7 @@ module.exports = (router) => {
           isIntentionalExtend = Boolean(req.body.jobGroupId) && String(dupRound.jobGroupId || "") === String(req.body.jobGroupId);
           if (!isIntentionalExtend) {
             return res.status(409).json({
-              message: `ครั้งที่ ${req.body.time} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ`,
+              message: `${roundLabelOf(req.body.time, req.body)} ของสัญญานี้ถูกใช้ไปแล้ว กรุณาตรวจสอบ`,
             });
           }
         }
