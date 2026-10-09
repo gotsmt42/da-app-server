@@ -24,6 +24,8 @@ const {
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
 const { syncGroupsOf } = require("../../services/groupResponsible");
+// ✅ (9 ต.ค. 2569) รับแจ้งงาน = งานรอลงแผน — เก็บผู้ติดต่อ + ข้อมูล Job (ด่วน/ครบกำหนด/อุปกรณ์/รอข้อมูล) ตั้งแต่ตอนรับแจ้ง
+const { pickJobInfo } = require("./jobflow");
 
 module.exports = (router) => {
   // ✅ งาน "วางแผนล่วงหน้า" (unscheduled) — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ ในเดือนไหน แต่ยังไม่รู้วันที่
@@ -123,6 +125,9 @@ module.exports = (router) => {
         time,
         team,
         description,
+        contactName: String(req.body.contactName || "").trim(),
+        contactTel: String(req.body.contactTel || "").trim(),
+        ...pickJobInfo(req.body),
         resPerson: resPerson || undefined,
         responsiblePerson: responsiblePerson || undefined,
         responsiblePersonId: responsiblePersonId || undefined,
@@ -378,6 +383,9 @@ module.exports = (router) => {
       existingEvent.resPerson = resPerson || undefined;
       existingEvent.plannedMonth = plannedMonth;
       existingEvent.description = description;
+      if (req.body.contactName !== undefined) existingEvent.contactName = String(req.body.contactName || "").trim();
+      if (req.body.contactTel !== undefined) existingEvent.contactTel = String(req.body.contactTel || "").trim();
+      Object.assign(existingEvent, pickJobInfo(req.body));
 
       // ✅ แก้ไขแผนงานที่ถูกปฏิเสธไปแล้วถือเป็นการส่งขออนุมัติใหม่อัตโนมัติ — route นี้เขียนฟิลด์เนื้อหา
       // งานทุกช่องอยู่แล้วทุกครั้งที่เรียก (ไม่มีการแก้ไขบางส่วน) จึงถือว่าทุกครั้งที่เจ้าของ/ผู้ถูกมอบหมาย
