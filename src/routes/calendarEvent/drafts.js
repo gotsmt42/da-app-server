@@ -26,6 +26,7 @@ const { thaiDate } = require("../../utils/thaiDate");
 const { syncGroupsOf } = require("../../services/groupResponsible");
 // ✅ (9 ต.ค. 2569) รับแจ้งงาน = งานรอลงแผน — เก็บผู้ติดต่อ + ข้อมูล Job (ด่วน/ครบกำหนด/อุปกรณ์/รอข้อมูล) ตั้งแต่ตอนรับแจ้ง
 const { pickJobInfo } = require("./jobflow");
+const { nextJobNo } = require("../../utils/jobNumber");
 
 module.exports = (router) => {
   // ✅ งาน "วางแผนล่วงหน้า" (unscheduled) — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ ในเดือนไหน แต่ยังไม่รู้วันที่
@@ -128,6 +129,8 @@ module.exports = (router) => {
         contactName: String(req.body.contactName || "").trim(),
         contactTel: String(req.body.contactTel || "").trim(),
         ...pickJobInfo(req.body),
+        // ✅ รับผ่านเมนู "รับงาน" — ได้เลข Job และขึ้นในหน้า "รับงาน" ตามต่อจนปิดงาน
+        ...(req.body.fromIntake && !isContractBatch ? { intakeAt: new Date(), intakeBy: creatorName, jobNo: await nextJobNo() } : {}),
         resPerson: resPerson || undefined,
         responsiblePerson: responsiblePerson || undefined,
         responsiblePersonId: responsiblePersonId || undefined,

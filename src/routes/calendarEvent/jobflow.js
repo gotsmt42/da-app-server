@@ -9,6 +9,9 @@
 const { CalendarEvent, verifyToken, can, sendPushToUsers, sendPushToRoles, SUPERVISOR_ROLES } = require("./shared");
 const { effectiveCapabilities } = require("../../config/roles");
 
+/** ✅ การ "รับทราบงาน" เริ่มใช้ 9 ต.ค. 2569 — งานที่สร้างก่อนหน้านี้ไม่ถูกนับว่า "ยังไม่รับทราบ" */
+const ACK_TRACK_SINCE = new Date("2026-10-08T17:00:00.000Z");
+
 const FOLLOW_UP_REASONS = ["รออะไหล่", "รอลูกค้าอนุมัติ", "เข้าซ่อมไม่สำเร็จ", "ลูกค้าไม่สะดวก", "อื่นๆ"];
 
 const toDate = (v) => {
@@ -178,3 +181,4 @@ module.exports = registerJobflow;
 module.exports.pickJobInfo = pickJobInfo;
 module.exports.resolveFollowUps = resolveFollowUps;
 module.exports.FOLLOW_UP_REASONS = FOLLOW_UP_REASONS;
+module.exports.ACK_TRACK_SINCE = ACK_TRACK_SINCE;

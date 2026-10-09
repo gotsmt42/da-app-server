@@ -25,7 +25,7 @@ const {
 } = require("./shared");
 const { thaiDate } = require("../../utils/thaiDate");
 const { syncGroupsOf, syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
-const { nextJobNo, groupJobNo } = require("../../utils/jobNumber");
+const { groupJobNo } = require("../../utils/jobNumber");
 const { pickJobInfo, resolveFollowUps } = require("./jobflow");
 
 /** ลายเซ็นของรายการกิจกรรมหนึ่งบรรทัด — ใช้เทียบว่าเป็นรายการเดียวกันไหม (_id ใช้ไม่ได้ ดูด้านล่าง) */
@@ -287,16 +287,18 @@ module.exports = (router) => {
         return eventData;
       };
 
-      // ✅ เลข Job: หลายวันของงานเดียวกันต้องได้เลขเดียว — ออกเลขครั้งเดียวก่อนบันทึกพร้อมกัน
-      //    (สัญญาหลายครั้ง = คนละงาน ปล่อยให้ pre-save ออกเลขแยกครั้งละเลข)
-      const sharedJobNo = isContractBatch ? "" : ((await groupJobNo(jobGroupId)) || (isMultiDate ? await nextJobNo() : ""));
+      // ✅ เลข Job มีเฉพาะงานที่มาจากเมนู "รับงาน" — เพิ่มวันเข้างานที่มีเลขอยู่แล้ว ใช้เลข/สถานะรับงานเดียวกัน
+      const sharedJobNo = isContractBatch ? "" : await groupJobNo(jobGroupId);
+      const groupIntake = sharedJobNo
+        ? await CalendarEvent.findOne({ jobGroupId, intakeAt: { $ne: null } }).select("intakeAt intakeBy").lean()
+        : null;
       let events;
       if (Array.isArray(dates) && dates.length > 0) {
         events = await Promise.all(
-          dates.map((d) => new CalendarEvent({ ...buildEventData(d), ...(sharedJobNo ? { jobNo: sharedJobNo } : {}) }).save())
+          dates.map((d) => new CalendarEvent({ ...buildEventData(d), ...(sharedJobNo ? { jobNo: sharedJobNo } : {}), ...(groupIntake ? { intakeAt: groupIntake.intakeAt, intakeBy: groupIntake.intakeBy } : {}) }).save())
         );
       } else {
-        events = [await new CalendarEvent({ ...buildEventData(), ...(sharedJobNo ? { jobNo: sharedJobNo } : {}) }).save()];
+        events = [await new CalendarEvent({ ...buildEventData(), ...(sharedJobNo ? { jobNo: sharedJobNo } : {}), ...(groupIntake ? { intakeAt: groupIntake.intakeAt, intakeBy: groupIntake.intakeBy } : {}) }).save()];
       }
 
       // ✅ เพิ่มวัน/ครั้งเข้างานที่มีอยู่แล้ว (สัญญา/โปรเจคหลายวัน) → รับผู้รับผิดชอบของงานนั้นตามภาพรวมงาน

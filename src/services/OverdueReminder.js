@@ -528,6 +528,7 @@ async function checkAndNotifyUnackedJobs() {
       start: { $gte: from, $lt: to },
       resPerson: { $nin: [null, ""] },
       "acks.0": { $exists: false },
+      createdAt: { $gte: require("../routes/calendarEvent/jobflow").ACK_TRACK_SINCE },
     }).select("_id title site company jobNo resPerson jobGroupId").lean();
     if (!events.length) return;
 

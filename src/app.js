@@ -86,10 +86,10 @@ if (process.env.NODE_ENV !== "test") {
     .migrateUserFields()
     .catch((err) => console.error("❌ ย้ายชื่อฟิลด์ผู้ใช้ไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
 
-  // ✅ เลข Job อัตโนมัติให้งานเดิม (ดู services/migrateJobNumbers.js)
+  // ✅ ล้างเลข Job ที่เคยออกย้อนหลังให้งานเก่า (ครั้งเดียว) — เลข Job มีเฉพาะงานจากเมนู "รับงาน" (ดู services/migrateJobNumbers.js)
   require("./services/migrateJobNumbers")
-    .migrateJobNumbers()
-    .catch((err) => console.error("❌ ออกเลข Job ให้งานเดิมไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
+    .resetLegacyJobNumbers()
+    .catch((err) => console.error("❌ ล้างเลข Job ของงานเก่าไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
 
   // ✅ ทุกวัน/ทุกครั้งของงานเดียวกันต้องมีผู้รับผิดชอบเดียวกับที่หน้า "ภาพรวมงาน" แสดง (ดู services/groupResponsible.js)
   require("./services/groupResponsible")

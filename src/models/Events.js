@@ -77,9 +77,13 @@ const eventSchema = new mongoose.Schema(
      * ✅ (9 ต.ค. 2569) ขั้นตอนทำงานมาตรฐาน 6 ขั้น — รับแจ้ง → เปิด Job → วางแผน → ช่างรับงาน/รายงาน → ติดตามงานไม่เสร็จ → ตรวจและปิดงาน
      *
      * jobNo — เลข Job อัตโนมัติ "JOB-00001/2569" (รันใหม่ทุกปี พ.ศ.) · งานหลายวัน (jobGroupId เดียวกัน) ใช้เลขเดียวกัน
-     *   ⚠️ ออกเลขที่ server เท่านั้น (utils/jobNumber.js) ห้ามรับจาก client · นัดฝ่ายขายไม่มีเลข Job
+     *   ⚠️ ออกเลขที่ server เท่านั้น (utils/jobNumber.js) ห้ามรับจาก client
+     *   ✅ (9 ต.ค. 2569 ผู้ใช้เลือก) ออกเลขเฉพาะงานที่รับผ่านเมนู "รับงาน" — งานเก่า/งานที่ลงจากปฏิทินโดยตรงไม่มีเลข
      */
     jobNo: { type: String, index: true },
+    /** รับงานผ่านเมนู "รับงาน" เมื่อไร/ใคร — มีค่า = งานนี้อยู่ในหน้า "รับงาน" (ตามต่อจนปิดงาน) */
+    intakeAt: { type: Date, default: null, index: true },
+    intakeBy: { type: String, default: "" },
     /** ความเร่งด่วน — ปกติ / ด่วน (ชุดเดียวกับใบแจ้งงาน Dispatch.priority) */
     priority: { type: String, enum: ["normal", "urgent"], default: "normal" },
     /** วันครบกำหนดของงาน — งานต้องเสร็จภายในวันนี้ (คนละตัวกับวันนัดเข้างาน start/end) */
@@ -461,14 +465,6 @@ const eventSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
-
-// ✅ เลข Job — ทุกเส้นทางที่สร้างงานด้วย .save() ได้เลขอัตโนมัติ (route ที่สร้างหลายวันพร้อมกันออกเลขเองก่อน
-//    ไม่งั้นแต่ละวันของงานเดียวกันจะได้คนละเลข)
-eventSchema.pre("save", async function () {
-  if (this.jobNo || this.department === "sales") return;
-  const { assignJobNo } = require("../utils/jobNumber");
-  await assignJobNo(this);
-});
 
 // ใช้ pre middleware ในการแปลง string เป็น datetime ก่อนเก็บลงฐานข้อมูล
 eventSchema.pre("save", function (next) {
