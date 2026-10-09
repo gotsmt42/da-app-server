@@ -4,7 +4,7 @@ const PushSubscription = require("../models/PushSubscription");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
 const { publish } = require("./realtime");
-const { rankFilter } = require("../config/roles");
+const { rankFilter, departmentOf } = require("../config/roles");
 
 webpush.setVapidDetails(
   process.env.VAPID_SUBJECT,
@@ -115,10 +115,19 @@ async function sendPushToRoles(roles, payload) {
 }
 
 // ✅ ส่ง push ให้ทุกคนในระบบ (เช่น แจ้งตอนมีการเพิ่มงานใหม่) ยกเว้นคนที่ระบุ (เช่น คนที่เพิ่งเพิ่มงานเอง)
-async function sendPushToAllUsers(payload, excludeUserIds = []) {
+// ✅ (9 ต.ค. 2569 ผู้ใช้: "แจ้งเตือนของเซล ช่าง ให้แยกให้ถูกต้อง") opts.department — ส่งเฉพาะคนในแผนกนั้น
+//    + คนที่ไม่สังกัดแผนก (แอดมิน/ผู้จัดการ) · เช่น งานช่างใหม่ไม่เด้งไปที่ฝ่ายขาย
+async function sendPushToAllUsers(payload, excludeUserIds = [], opts = {}) {
   const excluded = new Set((Array.isArray(excludeUserIds) ? excludeUserIds : [excludeUserIds]).filter(Boolean).map(String));
-  const users = await User.find({}).select("_id").lean();
-  const ids = users.map((u) => u._id.toString()).filter((id) => !excluded.has(id));
+  const users = await User.find({}).select("_id rank role").lean();
+  const ids = users
+    .filter((u) => {
+      if (!opts.department) return true;
+      const dept = departmentOf(u);
+      return !dept || dept === opts.department;
+    })
+    .map((u) => u._id.toString())
+    .filter((id) => !excluded.has(id));
   await sendPushToUsers(ids, payload);
 }
 

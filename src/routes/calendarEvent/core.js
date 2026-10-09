@@ -369,7 +369,9 @@ module.exports = (router) => {
             tag: notifyTag,
             renotify: true,
           },
-          [req.userId, primary.resPerson]
+          [req.userId, primary.resPerson],
+          // ✅ งานช่าง → เฉพาะฝ่ายช่าง + แอดมิน/ผู้จัดการ (ฝ่ายขายไม่ต้องรู้ทุกงานที่เข้าตารางช่าง)
+          { department: primary.department || DEPARTMENT.SERVICE },
         ).catch((err) => console.error("❌ Push notify error (new-event-broadcast):", err));
       }
 
