@@ -512,8 +512,8 @@ async function checkAndNotifyOverdueInvoices() {
 }
 
 /**
- * ✅ (9 ต.ค. 2569) ขั้นตอนทำงานมาตรฐาน ขั้น 4 — งานพรุ่งนี้ที่ช่างยังไม่กด "รับงาน"
- *   ช่างที่ได้รับมอบหมาย: เตือนให้กดรับงาน · ผู้จัดคิว (assignDispatch): สรุปว่างานไหนยังไม่มีใครรับ
+ * ✅ (9 ต.ค. 2569) ขั้นตอนทำงานมาตรฐาน ขั้น 4 — งานพรุ่งนี้ที่ช่างยังไม่กด "รับทราบงาน"
+ *   ช่างที่ได้รับมอบหมาย: เตือนให้กดรับทราบงาน · ผู้จัดคิว (assignDispatch): สรุปว่างานไหนยังไม่มีใครรับ
  */
 async function checkAndNotifyUnackedJobs() {
   try {
@@ -544,7 +544,7 @@ async function checkAndNotifyUnackedJobs() {
       const uid = String(e.resPerson);
       if (!(await NotifyLog.claimOncePerDay("unacked-job", String(e.jobGroupId || e._id), uid))) continue;
       await sendPushToUsers(uid, {
-        title: "📋 พรุ่งนี้มีงาน — กด “รับงาน” ด้วย",
+        title: "📋 พรุ่งนี้มีงาน — กด “รับทราบงาน” ด้วย",
         body: `${label(e)}${e.jobNo ? ` (${e.jobNo})` : ""}`,
         url: `/operation/${e._id}`,
         tag: `unacked-${e.jobGroupId || e._id}`,
@@ -555,7 +555,7 @@ async function checkAndNotifyUnackedJobs() {
     if (await NotifyLog.claimOncePerDay("unacked-jobs", "broadcast", "dispatchers")) {
       const names = jobs.slice(0, 3).map(label).join(", ") + (jobs.length > 3 ? ` และอีก ${jobs.length - 3} งาน` : "");
       await sendPushToRoles(dispatchRanks, {
-        title: `⏳ งานพรุ่งนี้ ${jobs.length} งาน ช่างยังไม่กดรับงาน`,
+        title: `⏳ งานพรุ่งนี้ ${jobs.length} งาน ช่างยังไม่กดรับทราบงาน`,
         body: names,
         url: "/operation",
         tag: "unacked-jobs",

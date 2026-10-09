@@ -1,7 +1,7 @@
 /**
  * ขั้นตอนทำงานมาตรฐาน (9 ต.ค. 2569) — ส่วนที่ระบบเดิมยังขาด
  *   ขั้น 2  เปิด Job: ความเร่งด่วน · วันครบกำหนด · รอข้อมูล · อุปกรณ์   → pickJobInfo (ใช้ใน POST/PUT ของ core.js)
- *   ขั้น 4  ช่างกด "รับงาน" (รับทราบ — ไม่เปลี่ยนสถานะ)                    → PUT /:id/ack
+ *   ขั้น 4  ช่างกด "รับทราบงาน" (ไม่เปลี่ยนสถานะ — คำว่า "รับงาน" ใช้กับการรับงานจากลูกค้า)                    → PUT /:id/ack
  *   ขั้น 5  งานไม่เสร็จ: สาเหตุ · ผู้รับผิดชอบต่อ · วันนัดที่เสนอ             → PUT /:id/follow-up
  *          แอดมินลงตารางเองแล้วกด "จัดการแล้ว"                              → PUT /:id/follow-up/resolve
  * ⚠️ ทุกอย่างเป็นของ "ทั้งงาน" — งานหลายวัน (jobGroupId เดียวกัน) อัปเดตทุกวันพร้อมกัน
@@ -62,13 +62,13 @@ async function resolveFollowUps(ev, byName, resolution) {
 const jobLabelOf = (ev) => `${ev.title || "งาน"} · ${ev.site || ev.company || "-"}${ev.jobNo ? ` (${ev.jobNo})` : ""}`;
 
 function registerJobflow(router) {
-  // ── ขั้น 4: ช่างกด "รับงาน" ─────────────────────────────────────────────
+  // ── ขั้น 4: ช่างกด "รับทราบงาน" ─────────────────────────────────────────────
   router.put("/:id/ack", verifyToken, async (req, res) => {
     try {
       const ev = await CalendarEvent.findById(req.params.id);
       if (!ev) return res.status(404).json({ message: "ไม่พบงาน" });
       if (!isParticipant(ev, req.user, req.userId) && !can(req.user, "editAnyJob")) {
-        return res.status(403).json({ message: "รับงานได้เฉพาะช่างที่ได้รับมอบหมาย" });
+        return res.status(403).json({ message: "รับทราบงานได้เฉพาะช่างที่ได้รับมอบหมาย" });
       }
       const uid = String(req.userId);
       const name = personName(req.user);
@@ -76,14 +76,14 @@ function registerJobflow(router) {
       await Promise.all(docs.map((d) => {
         if ((d.acks || []).some((a) => String(a.userId) === uid)) return null;
         d.acks.push({ userId: uid, name, at: new Date() });
-        d.activityLog.push({ userId: uid, userName: name, action: "job_ack", timestamp: new Date(), detail: "รับงานแล้ว" });
+        d.activityLog.push({ userId: uid, userName: name, action: "job_ack", timestamp: new Date(), detail: "รับทราบงานแล้ว" });
         return d.save();
       }));
       const events = await CalendarEvent.find(groupFilter(ev)).select("-activityLog").lean();
       res.json({ events });
     } catch (err) {
       console.error(err);
-      res.status(500).json({ message: "รับงานไม่สำเร็จ" });
+      res.status(500).json({ message: "รับทราบงานไม่สำเร็จ" });
     }
   });
 
