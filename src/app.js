@@ -86,6 +86,11 @@ if (process.env.NODE_ENV !== "test") {
     .migrateUserFields()
     .catch((err) => console.error("❌ ย้ายชื่อฟิลด์ผู้ใช้ไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
 
+  // ✅ ล้างแจ้งเตือนงานช่างที่เคยส่งปนไปถึงฝ่ายขาย (ดู services/cleanupSalesInbox.js)
+  require("./services/cleanupSalesInbox")
+    .cleanupSalesInbox()
+    .catch((err) => console.error("❌ ล้างแจ้งเตือนของฝ่ายขายไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
+
   // ✅ ใบเบิกเดิมที่ผูกงานสัญญา — เติมข้อมูลสัญญาให้ป้ายครั้งที่ระบุปีสัญญาได้ (ดู services/backfillExpenseContractInfo.js)
   require("./services/backfillExpenseContractInfo")
     .backfillExpenseContractInfo()
