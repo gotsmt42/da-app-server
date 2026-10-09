@@ -145,6 +145,39 @@ function registerJobflow(router) {
     }
   });
 
+  // ── รับงาน: ยกเลิก / นำกลับมา (เฉพาะงานที่รับไว้แต่ยังไม่ลงตาราง) ─────────────────
+  // ✅ (9 ต.ค. 2569 ผู้ใช้: "ให้กดยกเลิกงานได้ด้วย บางงานลงไว้ไม่ได้ลงก็มี") — บังคับเหตุผล · ไม่ลบทิ้ง
+  router.put("/:id/cancel-intake", verifyToken, async (req, res) => {
+    try {
+      const ev = await CalendarEvent.findById(req.params.id);
+      if (!ev || !ev.intakeAt) return res.status(404).json({ message: "ไม่พบงานที่รับไว้" });
+      if (!ev.unscheduled) return res.status(400).json({ message: "งานนี้ลงตารางแล้ว — ยกเลิกจากหน้าตารางงานแทน" });
+      const isOwner = String(ev.userId) === String(req.userId);
+      if (!isOwner && !can(req.user, "editAnyJob") && !can(req.user, "assignDispatch")) {
+        return res.status(403).json({ message: "ยกเลิกได้เฉพาะผู้รับงานหรือแอดมิน" });
+      }
+      const restore = req.body.restore === true;
+      const reason = String(req.body.reason || "").trim().slice(0, 500);
+      if (!restore && !reason) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ยกเลิก" });
+      const name = personName(req.user);
+      ev.cancelledAt = restore ? null : new Date();
+      ev.cancelledBy = restore ? "" : name;
+      ev.cancelReason = restore ? "" : reason;
+      ev.activityLog.push({
+        userId: String(req.userId), userName: name, timestamp: new Date(),
+        action: restore ? "intake_restored" : "intake_cancelled",
+        detail: restore ? "นำงานที่ยกเลิกกลับมา" : `ยกเลิกงาน: ${reason}`,
+      });
+      await ev.save();
+      const out = ev.toObject();
+      delete out.activityLog;
+      res.json({ events: [out] });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "บันทึกไม่สำเร็จ" });
+    }
+  });
+
   // ── ขั้น 5 (ต่อ): แอดมินลงนัดใหม่แล้ว → จัดการแล้ว ───────────────────────────
   router.put("/:id/follow-up/resolve", verifyToken, async (req, res) => {
     try {

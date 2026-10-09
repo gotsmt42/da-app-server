@@ -84,6 +84,13 @@ const eventSchema = new mongoose.Schema(
     /** รับงานผ่านเมนู "รับงาน" เมื่อไร/ใคร — มีค่า = งานนี้อยู่ในหน้า "รับงาน" (ตามต่อจนปิดงาน) */
     intakeAt: { type: Date, default: null, index: true },
     intakeBy: { type: String, default: "" },
+    /**
+     * ✅ (9 ต.ค. 2569) ยกเลิกงานที่รับไว้แต่ไม่ได้ทำ — เก็บไว้ดูย้อนหลังพร้อมเหตุผล (ไม่ลบทิ้ง)
+     * มีค่า = ไม่ขึ้นในแผงงานล่วงหน้า/ป้ายตัวเลขใดๆ อีก (GET /drafts ตัดออก ยกเว้น ?includeCancelled=1)
+     */
+    cancelledAt: { type: Date, default: null },
+    cancelledBy: { type: String, default: "" },
+    cancelReason: { type: String, default: "" },
     /** ความเร่งด่วน — ปกติ / ด่วน (ชุดเดียวกับใบแจ้งงาน Dispatch.priority) */
     priority: { type: String, enum: ["normal", "urgent"], default: "normal" },
     /** วันครบกำหนดของงาน — งานต้องเสร็จภายในวันนี้ (คนละตัวกับวันนัดเข้างาน start/end) */

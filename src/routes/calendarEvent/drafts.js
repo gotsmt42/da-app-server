@@ -225,6 +225,8 @@ module.exports = (router) => {
             ] };
 
       // ✅ งานวางแผนล่วงหน้าก็แยกแผนกเหมือนกัน
+      // ✅ งานที่ยกเลิกแล้ว (เมนู "รับงาน") ไม่ขึ้นในแผงงานล่วงหน้า/ป้ายตัวเลข — หน้า "รับงาน" ขอดูได้ด้วย ?includeCancelled=1
+      if (req.query.includeCancelled !== "1") query.cancelledAt = null;
       const drafts = await CalendarEvent.find(withDepartmentScope(query, req))
         .sort({ createdAt: -1 }).lean();
       res.json({ drafts });
@@ -253,6 +255,9 @@ module.exports = (router) => {
       if (!existingEvent) return res.status(404).json({ message: "ไม่พบงานนี้" });
       if (!existingEvent.unscheduled) {
         return res.status(400).json({ message: "งานนี้ถูกลงตารางไปแล้ว" });
+      }
+      if (existingEvent.cancelledAt) {
+        return res.status(400).json({ message: "งานนี้ถูกยกเลิกแล้ว — นำกลับมาก่อนจึงจะลงตารางได้" });
       }
 
       const isAdminOrManager = can(req.user, "editAnyJob");
