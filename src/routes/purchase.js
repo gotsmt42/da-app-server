@@ -149,7 +149,8 @@ const sealSlot = async (req, doc, slot) => {
 const EMPTY_SEAL = { userId: "", name: "", position: "", signedAt: null, hash: "" };
 
 // ── ขอบเขต/สิทธิ์ ──────────────────────────────────────────────────────
-const canUse = (req) => can(req.user, "requestExpense") || can(req.user, "viewAllExpenses");
+// ✅ (10 ต.ค. 2569) ยื่นใบขอซื้อใช้สิทธิ์ requestPurchase (ฝ่ายขายมี) — ไม่ผูกกับสิทธิ์เบิก/OT อีกต่อไป
+const canUse = (req) => can(req.user, "requestPurchase") || can(req.user, "viewAllExpenses");
 const canPurchase = (req) => can(req.user, "viewAllExpenses");
 const scopeFor = (req) => {
   if (can(req.user, "viewAllExpenses")) return {};

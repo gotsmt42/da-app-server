@@ -189,6 +189,12 @@ const CAPABILITIES = {
   // ── เบิกเงินล่วงหน้า (Advance) / เคลียร์ค่าใช้จ่าย (Claim) ───────────────
   /** ออกใบ Advance / ใบเคลมของตัวเองได้ */
   requestExpense: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD],
+  /**
+   * ✅ (10 ต.ค. 2569 ผู้ใช้: "เมนูจัดซื้อ ให้ฝ่ายขายขอออกใบได้ แต่อนุมัติเองไม่ได้")
+   * ยื่นใบขอซื้อ (PR) ของตัวเอง — แยกจาก requestExpense เพื่อให้ฝ่ายขายขอซื้อได้โดยไม่ต้องได้เมนูเบิก/OT ไปด้วย
+   * ⚠️ สิทธิ์ "ยื่น" อย่างเดียว — ตรวจสอบ/อนุมัติยังต้องมี reviewExpense/approveExpense และอนุมัติใบตัวเองไม่ได้
+   */
+  requestPurchase: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD, ROLES.SALE],
 
   /**
    * ── ลำดับการเบิกค่าใช้จ่าย 3 ส่วน (ใช้เหมือนกันทั้งใบ Advance / ใบเคลม / ใบสำรองจ่าย) ──
@@ -387,6 +393,7 @@ const EDITABLE_CAPABILITIES = [
   "createSalesPlan",
   "manageMasterData",
   "requestExpense",
+  "requestPurchase",
   "reviewExpense",
   "approveExpense",
   "disburseExpense",
