@@ -26,7 +26,7 @@ const {
 const { thaiDate } = require("../../utils/thaiDate");
 const { roundLabelOf } = require("../../utils/contractVisits");
 const { syncGroupsOf, syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
-const { groupJobNo } = require("../../utils/jobNumber");
+const { groupJobNo, nextJobNo } = require("../../utils/jobNumber");
 const { pickJobInfo, resolveFollowUps } = require("./jobflow");
 
 /** ลายเซ็นของรายการกิจกรรมหนึ่งบรรทัด — ใช้เทียบว่าเป็นรายการเดียวกันไหม (_id ใช้ไม่ได้ ดูด้านล่าง) */
@@ -69,6 +69,7 @@ const appendOnlyActivityLog = (incoming, existing = []) => {
   return merged.sort((a, b) => new Date(a?.timestamp || 0) - new Date(b?.timestamp || 0));
 };
 
+const { auditEntries, assignmentChanged, freshActions, applyAudit, jobUrlFor } = require("../../services/jobAudit");
 module.exports = (router) => {
   router.post("/", verifyToken, async (req, res) => {
     try {
@@ -289,7 +290,12 @@ module.exports = (router) => {
       };
 
       // ✅ เลข Job มีเฉพาะงานที่มาจากเมนู "รับงาน" — เพิ่มวันเข้างานที่มีเลขอยู่แล้ว ใช้เลข/สถานะรับงานเดียวกัน
-      const sharedJobNo = isContractBatch ? "" : await groupJobNo(jobGroupId);
+      let sharedJobNo = isContractBatch ? "" : await groupJobNo(jobGroupId);
+      // ✅ (11 ต.ค. 2569) งานหลายวันใหม่ (กลุ่มเดียวกัน) — ออกเลข Job เดียวก่อนบันทึกพร้อมกัน
+      //    (ถ้าปล่อยให้ hook ของโมเดลออกเลขทีละใบพร้อมกัน แต่ละวันจะได้คนละเลข)
+      if (!sharedJobNo && !isContractBatch && Array.isArray(dates) && dates.length > 1 && buildEventData(dates[0]).department !== "sales") {
+        sharedJobNo = await nextJobNo();
+      }
       const groupIntake = sharedJobNo
         ? await CalendarEvent.findOne({ jobGroupId, intakeAt: { $ne: null } }).select("intakeAt intakeBy").lean()
         : null;
@@ -363,8 +369,8 @@ module.exports = (router) => {
         if (primary.resPerson && primary.resPerson !== req.userId) {
           sendPushToUsers(primary.resPerson, {
             title: `📋 ${creatorName} มอบหมายงานใหม่ให้คุณ`,
-            body: jobLabelNew,
-            url: `/operation/${primary._id}`,
+            body: `${jobLabelNew} — แตะเพื่อเปิดงานและกดรับทราบ`,
+            url: await jobUrlFor(primary.resPerson, primary._id),
             tag: notifyTag,
             renotify: true,
           }).catch((err) => console.error("❌ Push notify error (assign):", err));
@@ -647,8 +653,7 @@ module.exports = (router) => {
 
         // ✅ ฟิลด์สำหรับ flow ของช่าง (เช็คอิน/เช็คเอาท์/สรุปงาน/ประวัติกิจกรรม)
         // และ flow ขอปิดงาน → รออนุมัติจากแอดมิน (เดิมไม่ได้ whitelist ไว้ ทำให้ไม่เคยถูกบันทึกจริง)
-        checkedInAt,
-        checkedOutAt,
+        // 🔒 checkedInAt/checkedOutAt ตั้งจาก server ที่ /api/attendance เท่านั้น (10 ต.ค. 2569 — ห้ามแก้เวลาจากเครื่อง)
         workNote,
         activityLog,
         closeRequested,
@@ -748,8 +753,7 @@ module.exports = (router) => {
         resPerson, // ✅ เพิ่มตรงนี้
         teamMembers,
 
-        checkedInAt,
-        checkedOutAt,
+        // 🔒 checkedInAt/checkedOutAt ตั้งจาก server ที่ /api/attendance เท่านั้น (10 ต.ค. 2569 — ห้ามแก้เวลาจากเครื่อง)
         workNote,
         // ⚠️ ห้ามใส่ activityLog ตรงๆ — ประวัติต่อท้ายอย่างเดียว (ดู appendOnlyActivityLog ด้านบนไฟล์)
         activityLog: appendOnlyActivityLog(activityLog, existingEvent.activityLog),
@@ -806,6 +810,24 @@ module.exports = (router) => {
       if (!updatedEvent) {
         return res.status(404).json("Event not found");
       }
+
+      // ✅ (11 ต.ค. 2569 ผู้ใช้: "ทุกๆ ขั้นตอนให้มีบันทึกประวัติของผู้ดำเนินการ") — บันทึกที่ server
+      //    (สถานะ/ยืนยันนัด · หัวหน้าทีม · วันเข้างาน) ไม่ซ้ำกับที่หน้าจอส่งมาเอง · มอบหมายใหม่ = ล้างป้ายปฏิเสธงาน + แจ้งคนใหม่
+      try {
+        const actorAudit = { userId, name: resubmitterName };
+        const afterAudit = { status, team, start, resPerson };
+        const entries = auditEntries(existingEvent, afterAudit, actorAudit, freshActions(activityLog));
+        const reassignedAudit = assignmentChanged(existingEvent, afterAudit);
+        if (entries.length || (reassignedAudit && existingEvent.ackDeclined)) {
+          await applyAudit([updatedEvent._id], entries, { clearDecline: reassignedAudit });
+          updatedEvent = await CalendarEvent.findById(id);
+        }
+        // เวลายืนยันนัด — แสดงเป็นวันที่ใต้ขั้น "ยืนยันแล้ว"
+        if (status === "ยืนยันแล้ว" && existingEvent.status !== "ยืนยันแล้ว") {
+          await CalendarEvent.updateOne({ _id: updatedEvent._id }, { $set: { confirmedAt: new Date() } });
+          updatedEvent = await CalendarEvent.findById(id);
+        }
+      } catch (e) { console.error("audit PUT:", e.message); }
 
       // ✅ ข้อมูลระดับงาน (ความเร่งด่วน/ครบกำหนด/รอข้อมูล/อุปกรณ์) ใช้ร่วมกันทุกวันของงานหลายวัน
       const jobInfo = pickJobInfo(req.body);
@@ -864,8 +886,8 @@ module.exports = (router) => {
         const reassignerName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ดูแลระบบ";
         sendPushToUsers(resPerson, {
           title: `📋 ${reassignerName} มอบหมายงานให้คุณ`,
-          body: `📅 ${reassignDateLabel} 🕐 ${reassignTimeLabel} · ${updatedEvent.title || "งาน"} · ${jobLabel}`,
-          url: `/operation/${updatedEvent._id}`,
+          body: `📅 ${reassignDateLabel} 🕐 ${reassignTimeLabel} · ${updatedEvent.title || "งาน"} · ${jobLabel} — แตะเพื่อกดรับทราบ`,
+          url: await jobUrlFor(resPerson, updatedEvent._id),
           tag: notifyTag,
           renotify: true,
         }).catch((err) => console.error("❌ Push notify error (reassign):", err));

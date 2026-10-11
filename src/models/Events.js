@@ -84,6 +84,10 @@ const eventSchema = new mongoose.Schema(
     /** รับงานผ่านเมนู "รับงาน" เมื่อไร/ใคร — มีค่า = งานนี้อยู่ในหน้า "รับงาน" (ตามต่อจนปิดงาน) */
     intakeAt: { type: Date, default: null, index: true },
     intakeBy: { type: String, default: "" },
+    /** เวลาที่ส่งลงตาราง (จากงานรอลงตาราง → มีวันเข้างาน) — เรียงงานในหน้า "งานใหม่" ล่าสุดขึ้นก่อน (11 ต.ค. 2569) */
+    scheduledAt: { type: Date, default: null },
+    /** เวลาที่ยืนยันนัด (สถานะ → ยืนยันแล้ว) — วันที่ใต้ขั้น "ยืนยันแล้ว" ในสายสถานะงาน (11 ต.ค. 2569) */
+    confirmedAt: { type: Date, default: null },
     /**
      * ✅ (9 ต.ค. 2569) ยกเลิกงานที่รับไว้แต่ไม่ได้ทำ — เก็บไว้ดูย้อนหลังพร้อมเหตุผล (ไม่ลบทิ้ง)
      * มีค่า = ไม่ขึ้นในแผงงานล่วงหน้า/ป้ายตัวเลขใดๆ อีก (GET /drafts ตัดออก ยกเว้น ?includeCancelled=1)
@@ -102,6 +106,15 @@ const eventSchema = new mongoose.Schema(
     equipment: { type: String, default: "" },
     /** ช่างกด "รับงาน" (รับทราบ) — ไม่เปลี่ยนสถานะงาน แค่บอกแอดมินว่าใครรับรู้แล้ว */
     acks: [{ userId: String, name: String, at: { type: Date, default: Date.now } }],
+    /**
+     * ✅ (11 ต.ค. 2569 ผู้ใช้: "การรับทราบงานของช่างให้กดปฏิเสธได้ โดยกรอกเหตุผลมาด้วย")
+     * ackDeclines = ประวัติการปฏิเสธทั้งหมด · ackDeclined = เรื่องที่ยังค้าง (ล้างเมื่อมีคนรับทราบ/มอบหมายใหม่)
+     */
+    ackDeclines: [{ userId: String, name: String, reason: String, at: { type: Date, default: Date.now } }],
+    ackDeclined: {
+      type: { userId: String, name: String, reason: String, at: Date },
+      default: null,
+    },
     /**
      * งานไม่เสร็จ / ต้องนัดใหม่ — ช่างแจ้งสาเหตุ ผู้รับผิดชอบขั้นต่อไป และวันนัดที่เสนอ
      * แอดมินลงตารางเอง แล้วกด "จัดการแล้ว" (resolvedAt) · ขอปิดงาน = จัดการแล้วอัตโนมัติ
@@ -315,6 +328,12 @@ const eventSchema = new mongoose.Schema(
         fileType: String,
         uploadedAt: { type: Date, default: Date.now },
         uploadedBy: String,
+        // ✅ (10 ต.ค. 2569) รูปที่แนบตอนเช็คอิน = "before" · ตอนเช็คเอาต์ = "after" (ดู routes/attendance.js)
+        stage: String,
+        // ✅ (10 ต.ค. 2569) ไฟล์ที่ผูกมาจากคำขอลงงาน — source:"dispatch" (ลบจากฝั่งงานไม่ได้ ต้นฉบับอยู่ที่ใบคำขอ)
+        source: String,
+        sourceLabel: String,
+        dispatchId: String,
       },
     ],
     visitResult: { type: String, default: "" },
@@ -413,6 +432,8 @@ const eventSchema = new mongoose.Schema(
 
     checkInTime: Date,
     checkOutTime: Date,
+    // 🔒 (10 ต.ค. 2569) ตั้งโดย server จากบันทึกเช็คอิน/เช็คเอาต์เท่านั้น (routes/attendance.js)
+    //    = เช็คอินแรกสุด / เช็คเอาต์ล่าสุดของงานนี้ · PUT /events/:id ไม่รับค่านี้จากเครื่องแล้ว
     checkedInAt: Date,
     checkedOutAt: Date,
     workNote: String,
@@ -491,6 +512,15 @@ eventSchema.pre("save", function (next) {
     this.end = moment(this.start).add(1, "day").toDate();
   }
   next();
+});
+
+// ✅ (11 ต.ค. 2569 ผู้ใช้: "งานเก่าๆ อยากให้มีเลข Job เหมือนงานที่ลงใหม่ ไม่ว่าจะลงผ่านหน้าไหน ให้เป็นรูปแบบเดียวกัน เรียงลำดับ")
+//    ออกเลข Job ให้ทุกงานใหม่ที่ไม่ใช่นัดฝ่ายขาย ไม่ว่าจะสร้างจากหน้าไหน (ปฏิทิน · รับงาน · คำขอลงงาน · สัญญา)
+//    งานหลายวัน (jobGroupId เดียวกัน) ใช้เลขเดียวกัน — ปิดตายที่โมเดล ไม่ต้องไล่เติมทีละ route
+eventSchema.pre("save", async function () {
+  if (!this.isNew || this.jobNo || this.department === "sales") return;
+  const { assignJobNo } = require("../utils/jobNumber");
+  await assignJobNo(this);
 });
 
 // ✅ เช็คช่างชนกัน (double-booking) ต้อง query ตาม resPerson + ช่วงวันที่ทุกครั้งที่สร้าง/แก้ไขงาน

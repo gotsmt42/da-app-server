@@ -118,6 +118,8 @@ const TOPICS_BY_BASE = {
   customer: ["customers"],
   files: ["files"],
   events: ["events"],
+  // เช็คอิน/เช็คเอาต์เปลี่ยนสถานะ/เวลาในงานด้วย — ปลุกหน้างานทั้งหมดให้ดึงใหม่
+  attendance: ["attendance", "events"],
   jobtype: ["lookups"],
   systemtype: ["lookups"],
   "issued-documents": ["documents"],

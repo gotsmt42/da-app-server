@@ -2,6 +2,7 @@
  * ขั้นตอนทำงานมาตรฐาน (9 ต.ค. 2569) — ส่วนที่ระบบเดิมยังขาด
  *   ขั้น 2  เปิด Job: ความเร่งด่วน · วันครบกำหนด · รอข้อมูล · อุปกรณ์   → pickJobInfo (ใช้ใน POST/PUT ของ core.js)
  *   ขั้น 4  ช่างกด "รับทราบงาน" (ไม่เปลี่ยนสถานะ — คำว่า "รับงาน" ใช้กับการรับงานจากลูกค้า)                    → PUT /:id/ack
+ *          หรือ "ปฏิเสธงาน" พร้อมเหตุผล (11 ต.ค. 2569) → แจ้งผู้จัดคิว/ผู้รับผิดชอบ ให้มอบหมายใหม่          → PUT /:id/ack-decline
  *   ขั้น 5  งานไม่เสร็จ: สาเหตุ · ผู้รับผิดชอบต่อ · วันนัดที่เสนอ             → PUT /:id/follow-up
  *          แอดมินลงตารางเองแล้วกด "จัดการแล้ว"                              → PUT /:id/follow-up/resolve
  * ⚠️ ทุกอย่างเป็นของ "ทั้งงาน" — งานหลายวัน (jobGroupId เดียวกัน) อัปเดตทุกวันพร้อมกัน
@@ -48,6 +49,28 @@ const isParticipant = (ev, user, userId) => {
   );
 };
 
+/**
+ * ✅ (11 ต.ค. 2569 ผู้ใช้ — ขั้นตอนใหม่)
+ *    "แอดมินลงงาน → มอบหมายผู้รับผิดชอบ → ขึ้นในหน้างานของฉัน กดรับทราบงาน → ยืนยันนัดหมาย
+ *     หัวหน้าทีมช่าง หลังจากผู้รับผิดชอบยืนยันนัดหมาย กดบันทึกเข้างาน
+ *     ขั้นตอนอื่นๆ ผู้รับผิดชอบ และหัวหน้าทีม หรือแอดมิน ดำเนินต่อได้"
+ *    รับทราบ/ปฏิเสธ/ยืนยันนัดหมาย = ผู้รับผิดชอบงาน (ถ้ายังไม่มอบหมายผู้รับผิดชอบ → หัวหน้าทีมเข้างานแทน)
+ */
+const isResponsibleOf = (ev, user, userId) => {
+  const uid = String(userId || "");
+  const fname = user?.fname || "";
+  return Boolean((ev.responsiblePersonId && String(ev.responsiblePersonId) === uid) || (fname && ev.responsiblePerson === fname));
+};
+const isHeadOf = (ev, user, userId) => {
+  const uid = String(userId || "");
+  const fname = user?.fname || "";
+  return Boolean((ev.resPerson && String(ev.resPerson) === uid) || (fname && ev.team === fname));
+};
+const hasResponsible = (ev) => Boolean(ev.responsiblePersonId || ev.responsiblePerson);
+/** คนที่กดรับทราบ/ปฏิเสธ/ยืนยันนัดหมายได้ */
+const isHeadOrResponsible = (ev, user, userId) =>
+  hasResponsible(ev) ? isResponsibleOf(ev, user, userId) : isHeadOf(ev, user, userId);
+
 /** ปิดเรื่อง "งานไม่เสร็จ" ที่ค้างอยู่ทั้งงาน */
 async function resolveFollowUps(ev, byName, resolution) {
   const docs = await CalendarEvent.find(groupFilter(ev));
@@ -70,14 +93,16 @@ function registerJobflow(router) {
     try {
       const ev = await CalendarEvent.findById(req.params.id);
       if (!ev) return res.status(404).json({ message: "ไม่พบงาน" });
-      if (!isParticipant(ev, req.user, req.userId) && !can(req.user, "editAnyJob")) {
-        return res.status(403).json({ message: "รับทราบงานได้เฉพาะช่างที่ได้รับมอบหมาย" });
+      if (!isHeadOrResponsible(ev, req.user, req.userId)) {
+        return res.status(403).json({ message: "รับทราบงานได้เฉพาะผู้รับผิดชอบงาน" });
       }
       const uid = String(req.userId);
       const name = personName(req.user);
       const docs = await CalendarEvent.find(groupFilter(ev));
       await Promise.all(docs.map((d) => {
-        if ((d.acks || []).some((a) => String(a.userId) === uid)) return null;
+        // รับทราบ = ล้างเรื่อง "ปฏิเสธงาน" ที่ค้างอยู่ (เช่น ปฏิเสธแล้วเปลี่ยนใจ หรือคนใหม่รับแทน)
+        if (d.ackDeclined) d.ackDeclined = null;
+        if ((d.acks || []).some((a) => String(a.userId) === uid)) return d.isModified() ? d.save() : null;
         d.acks.push({ userId: uid, name, at: new Date() });
         d.activityLog.push({ userId: uid, userName: name, action: "job_ack", timestamp: new Date(), detail: "รับทราบงานแล้ว" });
         return d.save();
@@ -87,6 +112,97 @@ function registerJobflow(router) {
     } catch (err) {
       console.error(err);
       res.status(500).json({ message: "รับทราบงานไม่สำเร็จ" });
+    }
+  });
+
+  // ── ขั้น 4 (ทางเลือก): ช่าง "ปฏิเสธงาน" พร้อมเหตุผล ─────────────────────────────
+  // ✅ (11 ต.ค. 2569 ผู้ใช้: "การรับทราบงานของช่างให้กดปฏิเสธได้ โดยกรอกเหตุผลมาด้วย")
+  //    ไม่เปลี่ยนสถานะ/ไม่ถอดชื่อออกเอง — แจ้งผู้จัดคิว + ผู้รับผิดชอบ ให้ตัดสินใจมอบหมายใหม่
+  //    ป้าย "ปฏิเสธงาน" หายเองเมื่อมีคนรับทราบ หรือมอบหมายหัวหน้าทีม/ผู้รับผิดชอบคนใหม่ (ดู clearAckDecline)
+  router.put("/:id/ack-decline", verifyToken, async (req, res) => {
+    try {
+      const ev = await CalendarEvent.findById(req.params.id);
+      if (!ev) return res.status(404).json({ message: "ไม่พบงาน" });
+      if (!isHeadOrResponsible(ev, req.user, req.userId)) {
+        return res.status(403).json({ message: "ปฏิเสธงานได้เฉพาะผู้รับผิดชอบงาน" });
+      }
+      if (ev.status === "ดำเนินการเสร็จสิ้น" || ev.closeRequested) return res.status(400).json({ message: "งานนี้ขอปิด/ปิดแล้ว" });
+      if (ev.checkedInAt) return res.status(400).json({ message: "งานนี้กดเข้างานแล้ว — แจ้งแอดมินทางคุยกับแอดมินแทน" });
+      const reason = String(req.body.reason || "").trim().slice(0, 500);
+      if (!reason) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ปฏิเสธงาน" });
+
+      const uid = String(req.userId);
+      const name = personName(req.user);
+      const entry = { userId: uid, name, reason, at: new Date() };
+      const docs = await CalendarEvent.find(groupFilter(ev));
+      await Promise.all(docs.map((d) => {
+        d.acks = (d.acks || []).filter((a) => String(a.userId) !== uid); // เคยกดรับทราบไว้ → ถอนออก
+        d.ackDeclines.push(entry);
+        d.ackDeclined = entry;
+        d.activityLog.push({ userId: uid, userName: name, action: "job_declined", timestamp: entry.at, detail: `ปฏิเสธงาน: ${reason}` });
+        return d.save();
+      }));
+
+      const ranks = effectiveCapabilities().assignDispatch || SUPERVISOR_ROLES;
+      const push = {
+        title: `🚫 ${name} ปฏิเสธงาน`,
+        body: `${jobLabelOf(ev)} · เหตุผล: ${reason}`,
+        url: `/operation/${ev._id}`,
+        tag: `ack-decline-${ev.jobGroupId || ev._id}`,
+        renotify: true,
+      };
+      sendPushToRoles(ranks, push).catch((e) => console.error("❌ push ack-decline:", e.message));
+      const extra = [ev.responsiblePersonId, ev.userId].filter((x) => x && String(x) !== uid);
+      if (extra.length) sendPushToUsers([...new Set(extra.map(String))], push).catch(() => {});
+
+      const events = await CalendarEvent.find(groupFilter(ev)).select("-activityLog").lean();
+      res.json({ events });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "บันทึกไม่สำเร็จ" });
+    }
+  });
+
+  // ── ยืนยันนัดหมาย (ต่อจากรับทราบ) — ผู้รับผิดชอบงาน หรือแอดมินกดแทน ───────────────
+  // ✅ (11 ต.ค. 2569) สถานะงาน → "ยืนยันแล้ว" (ตัวเดียวกับในปฏิทิน) ทั้งกลุ่ม · บันทึกผู้ดำเนินการ · แจ้งหัวหน้าทีมให้บันทึกเข้างาน
+  router.put("/:id/confirm", verifyToken, async (req, res) => {
+    try {
+      const ev = await CalendarEvent.findById(req.params.id);
+      if (!ev) return res.status(404).json({ message: "ไม่พบงาน" });
+      if (!isHeadOrResponsible(ev, req.user, req.userId) && !can(req.user, "editAnyJob")) {
+        return res.status(403).json({ message: "ยืนยันนัดหมายได้เฉพาะผู้รับผิดชอบงาน (หรือแอดมิน)" });
+      }
+      if (["pending", "rejected"].includes(ev.approvalStatus)) return res.status(400).json({ message: "งานนี้ยังไม่ได้รับอนุมัติ" });
+      if (ev.status !== "กำลังรอยืนยัน") return res.status(400).json({ message: `งานนี้สถานะ "${ev.status}" แล้ว` });
+      if (!(ev.acks || []).length) return res.status(400).json({ message: "ต้องกดรับทราบงานก่อน จึงยืนยันนัดหมายได้" });
+
+      const uid = String(req.userId);
+      const name = personName(req.user);
+      const at = new Date();
+      const docs = await CalendarEvent.find({ ...groupFilter(ev), status: "กำลังรอยืนยัน" });
+      await Promise.all(docs.map((d) => {
+        d.status = "ยืนยันแล้ว";
+        d.manualStatus = true;
+        d.confirmedAt = at;
+        d.activityLog.push({ userId: uid, userName: name, action: "job_confirmed", timestamp: at, detail: "ยืนยันนัดหมายแล้ว" });
+        return d.save();
+      }));
+
+      if (ev.resPerson && String(ev.resPerson) !== uid) {
+        const day = ev.start ? new Date(ev.start).toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok", day: "numeric", month: "short" }) : "-";
+        sendPushToUsers(String(ev.resPerson), {
+          title: `✅ ${name} ยืนยันนัดหมายแล้ว`,
+          body: `${jobLabelOf(ev)} · เข้างาน ${day} — ถึงวันแล้วกด "บันทึกเข้างาน"`,
+          url: await require("../../services/jobAudit").jobUrlFor(ev.resPerson, ev._id),
+          tag: `confirm-${ev.jobGroupId || ev._id}`,
+          renotify: true,
+        }).catch(() => {});
+      }
+      const events = await CalendarEvent.find(groupFilter(ev)).select("-activityLog").lean();
+      res.json({ events });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "ยืนยันนัดหมายไม่สำเร็จ" });
     }
   });
 

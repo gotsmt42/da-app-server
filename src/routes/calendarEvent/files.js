@@ -161,6 +161,11 @@ module.exports = (router) => {
         return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถลบไฟล์ได้");
       }
 
+      // 🔒 (10 ต.ค. 2569) ไฟล์ที่ผูกมาจากคำขอลงงาน ลบจากฝั่งงานไม่ได้ — ต้นฉบับเป็นของใบคำขอ (services/dispatchFiles.js)
+      if (type === "sitePhoto" && (eventForLock.sitePhotoFiles || []).some((f) => String(f._id) === String(fileId) && f.source === "dispatch")) {
+        return res.status(400).json({ message: "ไฟล์นี้มาจากคำขอลงงาน — ลบได้ที่ใบคำขอเท่านั้น" });
+      }
+
       // ✅ ลบไฟล์เดียวออกจาก array ตาม _id ของไฟล์นั้น ไม่กระทบไฟล์อื่นในชนิดเดียวกัน
       const updatedEvent = await CalendarEvent.findByIdAndUpdate(
         id,

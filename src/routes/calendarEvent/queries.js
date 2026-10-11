@@ -18,6 +18,7 @@ const {
 const { totalRoundsOf } = require("../../utils/contractVisits");
 const { syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
 
+const { auditEntries, assignmentChanged, applyAudit, notifyAssigned } = require("../../services/jobAudit");
 module.exports = (router) => {
   router.get("/event-op", verifyToken, async (req, res) => {
     try {
@@ -371,7 +372,27 @@ module.exports = (router) => {
       if (Object.keys(update).length === 0) {
         return res.status(400).json({ message: "ไม่มีข้อมูลให้แก้ไข" });
       }
+      // ✅ (11 ต.ค. 2569) เก็บค่าก่อนแก้ไว้บันทึกประวัติผู้ดำเนินการ + แจ้งคนที่ถูกมอบหมายใหม่
+      const beforeDocs = (update.team !== undefined || update.resPerson !== undefined || update.responsiblePerson !== undefined || update.responsiblePersonId !== undefined)
+        ? await CalendarEvent.find({ _id: { $in: eventIds } }).select("team resPerson responsiblePerson responsiblePersonId ackDeclined title site company jobNo start unscheduled jobGroupId").lean()
+        : [];
       await CalendarEvent.updateMany({ _id: { $in: eventIds } }, { $set: update });
+      if (beforeDocs.length) {
+        const actorName = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ใช้";
+        const notified = new Set();
+        for (const b of beforeDocs) {
+          const entries = auditEntries(b, { team: update.team, responsiblePerson: update.responsiblePerson }, { userId: req.userId, name: actorName });
+          const re = assignmentChanged(b, update);
+          await applyAudit([b._id], entries, { clearDecline: re && Boolean(b.ackDeclined) });
+          const key = b.jobGroupId || String(b._id);
+          if (update.resPerson && String(update.resPerson) !== String(b.resPerson || "") && !notified.has(`h${key}`)) {
+            notified.add(`h${key}`); notifyAssigned(b, update.resPerson, "head", actorName, req.userId);
+          }
+          if (update.responsiblePersonId && String(update.responsiblePersonId) !== String(b.responsiblePersonId || "") && !notified.has(`r${key}`)) {
+            notified.add(`r${key}`); notifyAssigned(b, update.responsiblePersonId, "responsible", actorName, req.userId);
+          }
+        }
+      }
       // ✅ มอบหมายจากภาพรวมงาน = มอบหมายทั้งงาน รวมวัน/ครั้งที่ไม่ได้ส่งมาในรายการนี้ด้วย
       if (update.responsiblePerson !== undefined) {
         const touched = await CalendarEvent.find({ _id: { $in: eventIds } }).select("contractGroupId jobGroupId").lean();

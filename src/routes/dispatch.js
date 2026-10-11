@@ -17,6 +17,8 @@ const Dispatch = require("../models/Dispatch");
 const User = require("../models/User");
 const CalendarEvent = require("../models/Events");
 const { syncGroupsOf } = require("../services/groupResponsible");
+// ✅ (10 ต.ค. 2569) ไฟล์แนบของคำขอ → "ไฟล์แนบ" ของงานที่ลงตาราง (ดู services/dispatchFiles.js)
+const { linkDispatchFilesSafe } = require("../services/dispatchFiles");
 const { thaiDate } = require("../utils/thaiDate");
 const JobType = require("../models/JobType");
 const SystemType = require("../models/SystemType");
@@ -27,6 +29,7 @@ const { can, SUPERVISOR_ROLES, DEPARTMENT, TECHNICIAN_ROLES, normalizeRank, rank
 const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers, sendPushToRoles } = require("../services/PushNotify");
+const { jobUrlFor } = require("../services/jobAudit");
 const { totalRoundsOf } = require("../utils/contractVisits");
 
 const router = express.Router();
@@ -396,6 +399,7 @@ router.post("/", verifyToken, upload.array("files", 10), async (req, res) => {
     }
     log(dispatch, "dispatch_requested", `ส่งคำขอมอบหมายงาน: ${title}`, me);
     await dispatch.save();
+    if (dispatch.eventId) await linkDispatchFilesSafe(dispatch);
 
 
     // ✅ แจ้งหัวหน้าทันที — ใบที่ไม่มีใครเห็นคือใบที่ไม่มีใครจ่ายงาน
@@ -620,6 +624,7 @@ router.post("/:id/files", verifyToken, upload.single("file"), async (req, res) =
     const me = actor(req);
     dispatch.attachments.push(await uploadToCloud(req.file, `dispatch/${dispatch._id}`, me.name, req.body.docType));
     await dispatch.save();
+    if (dispatch.eventId) await linkDispatchFilesSafe(dispatch); // ลงงานแล้ว → ไฟล์ใหม่ตามไปที่งานด้วย
     const out = dispatch.toObject();
     await attachJob(out);
     res.json({ dispatch: out });
@@ -765,9 +770,17 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
       // ✅ ผ่านการตรวจสอบของหัวหน้ามาแล้ว = ยืนยันแล้วจริง ไม่ใช่ "กำลังรอยืนยัน"
       // 🐛 ที่แก้: เดิมตั้งเป็น "กำลังรอยืนยัน" ทำให้งานที่หัวหน้าเพิ่งอนุมัติไปเอง กลับไปกองอยู่ใน
       // กลุ่ม "รอยืนยัน" ของหน้าการดำเนินงานอีกรอบ เหมือนยังไม่มีใครตัดสินใจอะไรเลย
-      status: "ยืนยันแล้ว",
+      // ✅ (11 ต.ค. 2569 ผู้ใช้: "การกดยืนยันแล้ว ควรต่อจากการกดรับทราบอีกขั้น · เชื่อมกับยืนยันแล้วใน event")
+      //    ลำดับใหม่: มอบหมาย → ช่างรับทราบ → แอดมิน "ยืนยันนัดแล้ว" (สถานะ ยืนยันแล้ว) → เข้างาน → เอกสาร → ขอปิดงาน
+      //    จึงเริ่มที่ "กำลังรอยืนยัน" (ผ่านการอนุมัติใบแล้ว — approvalStatus ยังเป็น approved ไม่เข้าคิวอนุมัติซ้ำ)
+      status: "กำลังรอยืนยัน",
       // งานที่ผ่านการตรวจสอบมาแล้วถือว่าอนุมัติแล้ว ไม่ต้องเข้าคิวอนุมัติซ้ำอีกชั้น
       approvalStatus: "approved",
+      // ✅ ประวัติผู้ดำเนินการ — ใครอนุมัติใบแจ้งงานนี้ลงตาราง
+      activityLog: [{
+        action: "scheduled", userId: me.userId, userName: me.name, timestamp: new Date(),
+        detail: `อนุมัติใบแจ้งงาน${dispatch.dispatchNo ? ` ${dispatch.dispatchNo}` : ""} และลงตาราง${responsibleName ? ` · ผู้รับผิดชอบ/หัวหน้าทีม ${responsibleName}` : ""}`,
+      }],
       userId: me.userId,
 
       // ── ฟิลด์ที่ทำให้เป็น "งานช่างเต็มรูปแบบ" เหมือนที่สร้างจากฟอร์มของช่างเอง ──────
@@ -822,12 +835,13 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
       `อนุมัติและลงแผนงานวันที่ ${thaiDate(startAt)}${responsibleName ? ` · ผู้รับผิดชอบ ${responsibleName}` : ""}`,
       me);
     await dispatch.save();
+    await linkDispatchFilesSafe(dispatch, event._id);
 
     if (responsible) {
       sendPushToUsers([String(responsible._id)], {
         title: "📋 คุณได้รับมอบหมายงานใหม่",
-        body: `${jobLabel(dispatch)}${dispatch.priority === "urgent" ? " · ⚡ ด่วน" : ""}`,
-        url: `/operation/${event._id}`,
+        body: `${jobLabel(dispatch)}${dispatch.priority === "urgent" ? " · ⚡ ด่วน" : ""} — แตะเพื่อเปิดงานและกดรับทราบ`,
+        url: await jobUrlFor(responsible._id, event._id),
         tag: `dispatch-${dispatch._id}`,
       }).catch((e) => console.error("push approve→assignee:", e.message));
     }

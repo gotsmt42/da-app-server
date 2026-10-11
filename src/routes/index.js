@@ -33,6 +33,8 @@ const searchRouter = require("./search");
 const webRouter = require("./web");
 // ✅ ส่งเอกสาร PDF ทางอีเมล (ผู้ใช้สั่ง 3 ต.ค. 2569)
 const mailRouter = require("./mail");
+// ✅ เช็คอิน/เช็คเอาต์เข้างานของช่าง (10 ต.ค. 2569) — เวลาจาก server · GPS · รูปก่อน/หลัง · ขอแก้เวลาผ่านแอดมิน
+const attendanceRouter = require("./attendance");
 const { publishMutations } = require("../services/realtime");
 
 /**
@@ -70,6 +72,7 @@ router.use("/ot", otRouter);
 // ✅ ใบขอซื้อสินค้า PR (ผู้ใช้สั่ง 2 ต.ค. 2569) — ดู routes/purchase.js
 router.use("/purchase", purchaseRouter);
 router.use("/mail", mailRouter);
+router.use("/attendance", attendanceRouter);
 // ✅ เช็คอินเทอร์เน็ตเฉพาะเส้นทางนี้เส้นเดียว (ตัวเดียวที่ต้องยิงออกไปข้างนอก) ไม่ใช่ทั้งแอป
 router.use("/holidays", checkInternetConnection, holidayRouter);
 

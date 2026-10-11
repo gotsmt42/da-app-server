@@ -528,7 +528,7 @@ async function checkAndNotifyUnackedJobs() {
       start: { $gte: from, $lt: to },
       resPerson: { $nin: [null, ""] },
       "acks.0": { $exists: false },
-      createdAt: { $gte: require("../routes/calendarEvent/jobflow").ACK_TRACK_SINCE },
+      // 🐛 (11 ต.ค. 2569) ติดตามการรับทราบทุกงานที่ยังไม่ปิด (เลิกตัดตามวันเริ่มใช้ระบบ — ตรงกับ ackTracked ฝั่งหน้าจอ)
     }).select("_id title site company jobNo resPerson jobGroupId").lean();
     if (!events.length) return;
 

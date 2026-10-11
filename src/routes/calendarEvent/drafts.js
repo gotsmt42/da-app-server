@@ -29,6 +29,19 @@ const { syncGroupsOf } = require("../../services/groupResponsible");
 const { pickJobInfo } = require("./jobflow");
 const { nextJobNo } = require("../../utils/jobNumber");
 
+const { notifyAssigned } = require("../../services/jobAudit");
+/** ✅ (11 ต.ค. 2569) บันทึกผู้ดำเนินการตอน "ส่งลงตาราง" + แจ้งหัวหน้าทีมคนใหม่ (ใช้ใน PUT /:id/schedule) */
+function stampSchedule(ev, req, prevHead) {
+  const name = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ใช้";
+  const when = ev.start ? new Date(ev.start).toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok", day: "numeric", month: "short", year: "2-digit" }) : "-";
+  ev.activityLog.push({
+    userId: String(req.userId), userName: name, action: "scheduled", timestamp: new Date(),
+    detail: `ส่งลงตาราง · เข้างาน ${when}${ev.team ? ` · หัวหน้าทีม ${ev.team}` : ""}`,
+  });
+  if (ev.ackDeclined && String(ev.resPerson || "") !== prevHead) ev.ackDeclined = null;
+  if (ev.resPerson && String(ev.resPerson) !== prevHead) notifyAssigned(ev, ev.resPerson, "head", name, req.userId);
+}
+
 module.exports = (router) => {
   // ✅ งาน "วางแผนล่วงหน้า" (unscheduled) — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ ในเดือนไหน แต่ยังไม่รู้วันที่
   // เจาะจง จัดกลุ่มแสดงตาม plannedMonth แล้วค่อยลาก/กดลงตารางจริงทีหลัง (ดู PUT /:id/schedule)
@@ -168,6 +181,17 @@ module.exports = (router) => {
             }),
       }).save();
       await syncGroupsOf([draft]); // ✅ ครั้งใหม่ของสัญญาเดิม → ผู้รับผิดชอบตามภาพรวมงาน
+      // ✅ (11 ต.ค. 2569 ผู้ใช้: "ให้มอบหมายผู้รับผิดชอบในช่องของงานใหม่ได้ด้วย") — บันทึกผู้ดำเนินการ + แจ้งผู้รับผิดชอบ
+      if (draft.intakeAt) {
+        draft.activityLog.push({
+          userId: String(req.userId), userName: creatorName, action: "intake_created", timestamp: new Date(),
+          detail: `รับงานใหม่${draft.jobNo ? ` ${draft.jobNo}` : ""}${draft.responsiblePerson ? ` · ผู้รับผิดชอบ ${draft.responsiblePerson}` : ""}`,
+        });
+        await draft.save();
+      }
+      if (draft.responsiblePersonId && String(draft.responsiblePersonId) !== String(req.userId)) {
+        notifyAssigned(draft, draft.responsiblePersonId, "responsible", creatorName, req.userId);
+      }
 
       // ✅ เดิม route นี้ไม่แจ้งเตือนเลย — แจ้งแอดมิน/manager เฉพาะตอนรออนุมัติ (เทียบ pattern เดียวกับ
       // POST / เป๊ะๆ) ใช้ deep-link ?draft=<id>&month=<เดือน> ที่ EventCalendar/index.js เปิดฟังอยู่แล้ว
@@ -253,6 +277,7 @@ module.exports = (router) => {
       const { start, end, date, startTime, endTime, dates, team, resPerson, teamMembers, time } = req.body;
 
       const existingEvent = await CalendarEvent.findById(id);
+      const prevHead = existingEvent ? String(existingEvent.resPerson || "") : "";
       if (!existingEvent) return res.status(404).json({ message: "ไม่พบงานนี้" });
       if (!existingEvent.unscheduled) {
         return res.status(400).json({ message: "งานนี้ถูกลงตารางไปแล้ว" });
@@ -291,6 +316,7 @@ module.exports = (router) => {
         const jobGroupId = dates.length > 1 ? (existingEvent.jobGroupId || crypto.randomUUID()) : existingEvent.jobGroupId;
 
         existingEvent.unscheduled = false;
+        existingEvent.scheduledAt = new Date(); // ✅ (11 ต.ค. 2569) งานที่เพิ่งลงตารางขึ้นบนสุดในหน้า "งานใหม่"
         existingEvent.plannedMonth = undefined;
         if (jobGroupId) existingEvent.jobGroupId = jobGroupId;
         existingEvent.date = first.date || first.start;
@@ -303,6 +329,8 @@ module.exports = (router) => {
         if (team !== undefined) existingEvent.team = team;
         if (resPerson !== undefined) existingEvent.resPerson = resPerson;
         if (teamMembers !== undefined) existingEvent.teamMembers = teamMembers;
+        // ✅ (11 ต.ค. 2569) ประวัติผู้ดำเนินการ "ส่งลงตาราง" + แจ้งหัวหน้าทีมที่ถูกมอบหมาย (ลิงก์ไปกดรับทราบ)
+        stampSchedule(existingEvent, req, prevHead);
         await existingEvent.save();
 
         if (rest.length > 0) {
@@ -328,6 +356,7 @@ module.exports = (router) => {
       }
 
       existingEvent.unscheduled = false;
+      existingEvent.scheduledAt = new Date(); // ✅ (11 ต.ค. 2569) งานที่เพิ่งลงตารางขึ้นบนสุดในหน้า "งานใหม่"
       existingEvent.plannedMonth = undefined;
       existingEvent.date = date;
       existingEvent.start = start || date;
@@ -348,6 +377,8 @@ module.exports = (router) => {
         existingEvent.time = time;
       }
 
+      // ✅ (11 ต.ค. 2569) ประวัติผู้ดำเนินการ "ส่งลงตาราง" + แจ้งหัวหน้าทีมที่ถูกมอบหมาย (ลิงก์ไปกดรับทราบ)
+      stampSchedule(existingEvent, req, prevHead);
       await existingEvent.save();
       // ✅ ครั้งที่ลงตารางเข้าสัญญาที่มีผู้รับผิดชอบแล้ว → ใช้ผู้รับผิดชอบเดียวกับภาพรวมงาน
       const synced = await syncGroupsOf([existingEvent]);
