@@ -158,6 +158,28 @@ async function syncEventTimes(eventId) {
   });
 }
 
+// ── บันทึกเข้างานของหลายงานในคำขอเดียว ────────────────────────────────────────
+// ✅ (11 ต.ค. 2569 แก้แอพช้า) การ์ดงานแต่ละใบ (งานของฉัน/การดำเนินงาน) เคยยิง /event/:id ของตัวเอง
+//    หน้าเดียวจึงยิงหลายสิบคำขอพร้อมกัน — หน้าเว็บรวมเป็นคำขอเดียวผ่านเส้นนี้ (ดู AttendanceService.ofEvent)
+//    ⚠️ ต้องอยู่ก่อน "/event/:eventId" · งานที่ไม่มีสิทธิ์ดู = ไม่ส่งกลับ (หน้าจอแสดงว่ายังไม่มีบันทึก)
+router.get("/events", verifyToken, async (req, res) => {
+  try {
+    const ids = [...new Set(String(req.query.ids || "").split(",").filter((x) => /^[a-f0-9]{24}$/i.test(x)))].slice(0, 300);
+    if (!ids.length) return res.json({ byEvent: {}, serverNow: new Date() });
+    const evs = await CalendarEvent.find({ _id: { $in: ids } }).select("resPerson responsiblePersonId team responsiblePerson teamMembers userId").lean();
+    const all = can(req.user, "viewAllJobs");
+    const allowed = evs.filter((ev) => all || isParticipant(ev, req.user, req.userId) || String(ev.userId) === String(req.userId)).map((ev) => ev._id);
+    const rows = allowed.length ? await withTeam(await Attendance.find({ eventId: { $in: allowed } }).sort({ "checkIn.at": -1 }).lean()) : [];
+    const byEvent = {};
+    allowed.forEach((id) => { byEvent[String(id)] = []; });
+    rows.forEach((r) => { (byEvent[String(r.eventId)] ||= []).push(r); });
+    res.json({ byEvent, serverNow: new Date() });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "โหลดข้อมูลไม่สำเร็จ" });
+  }
+});
+
 // ── บันทึกเข้า-ออกของงาน ────────────────────────────────────────────────────
 router.get("/event/:eventId", verifyToken, async (req, res) => {
   try {

@@ -96,29 +96,33 @@ if (process.env.NODE_ENV !== "test") {
     .backfillExpenseContractInfo()
     .catch((err) => console.error("❌ เติมข้อมูลสัญญาให้ใบเบิกไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
 
-  // ✅ (10 ต.ค. 2569) ไฟล์แนบของคำขอลงงานเดิม → ผูกเข้า "ไฟล์แนบ" ของงานครั้งเดียว (ดู services/dispatchFiles.js)
-  require("./services/dispatchFiles")
-    .backfillDispatchFiles()
-    .catch((err) => console.error("❌ ผูกไฟล์คำขอลงงานย้อนหลังไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
+  // ⏳ (11 ต.ค. 2569 แก้แอพช้าหลัง deploy) งานซ่อม/เติมข้อมูลทั้งฐานข้อมูลด้านล่าง เลื่อนไปรันหลังเปิดเซิร์ฟเวอร์ 2 นาที
+  //    ไม่ให้แย่งฐานข้อมูล/CPU กับผู้ใช้ที่เปิดแอปพร้อมกันตอนเพิ่ง deploy (ทุกหน้าโหลด event-op พร้อมกัน)
+  setTimeout(() => {
+    // ✅ (10 ต.ค. 2569) ไฟล์แนบของคำขอลงงานเดิม → ผูกเข้า "ไฟล์แนบ" ของงานครั้งเดียว (ดู services/dispatchFiles.js)
+    require("./services/dispatchFiles")
+      .backfillDispatchFiles()
+      .catch((err) => console.error("❌ ผูกไฟล์คำขอลงงานย้อนหลังไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
 
-  // ✅ (11 ต.ค. 2569) งานเก่าที่เลยวันแล้ว → สถานะ "ยืนยันแล้ว" ให้ตรงกับสายขั้นตอน (ดู services/jobAudit.js) · ทุก 6 ชม.
-  {
-    const { confirmLegacyPastJobs } = require("./services/jobAudit");
-    const runLegacy = () => confirmLegacyPastJobs().catch((err) => console.error("❌ ปรับสถานะงานเก่าไม่สำเร็จ:", err.message));
-    runLegacy();
-    setInterval(runLegacy, 6 * 3600 * 1000).unref?.();
-  }
+    // ✅ (11 ต.ค. 2569) งานเก่าที่เลยวันแล้ว → สถานะ "ยืนยันแล้ว" ให้ตรงกับสายขั้นตอน (ดู services/jobAudit.js) · ทุก 6 ชม.
+    {
+      const { confirmLegacyPastJobs } = require("./services/jobAudit");
+      const runLegacy = () => confirmLegacyPastJobs().catch((err) => console.error("❌ ปรับสถานะงานเก่าไม่สำเร็จ:", err.message));
+      runLegacy();
+      setInterval(runLegacy, 6 * 3600 * 1000).unref?.();
+    }
 
-  // ✅ ล้างเลข Job ที่เคยออกย้อนหลังให้งานเก่า (ครั้งเดียว) — เลข Job มีเฉพาะงานจากเมนู "รับงาน" (ดู services/migrateJobNumbers.js)
-  require("./services/migrateJobNumbers")
-    .resetLegacyJobNumbers()
-    .then(() => require("./services/migrateJobNumbers").numberAllJobs())
-    .catch((err) => console.error("❌ ล้างเลข Job ของงานเก่าไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
+    // ✅ ล้างเลข Job ที่เคยออกย้อนหลังให้งานเก่า (ครั้งเดียว) — เลข Job มีเฉพาะงานจากเมนู "รับงาน" (ดู services/migrateJobNumbers.js)
+    require("./services/migrateJobNumbers")
+      .resetLegacyJobNumbers()
+      .then(() => require("./services/migrateJobNumbers").numberAllJobs())
+      .catch((err) => console.error("❌ ล้างเลข Job ของงานเก่าไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
 
-  // ✅ ทุกวัน/ทุกครั้งของงานเดียวกันต้องมีผู้รับผิดชอบเดียวกับที่หน้า "ภาพรวมงาน" แสดง (ดู services/groupResponsible.js)
-  require("./services/groupResponsible")
-    .repairAllGroupResponsible()
-    .catch((err) => console.error("❌ ปรับผู้รับผิดชอบของกลุ่มงานไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
+    // ✅ ทุกวัน/ทุกครั้งของงานเดียวกันต้องมีผู้รับผิดชอบเดียวกับที่หน้า "ภาพรวมงาน" แสดง (ดู services/groupResponsible.js)
+    require("./services/groupResponsible")
+      .repairAllGroupResponsible()
+      .catch((err) => console.error("❌ ปรับผู้รับผิดชอบของกลุ่มงานไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
+  }, 120_000).unref?.();
 }
 
 // ── ไฟล์นิ่ง (รูป/ไฟล์แนบที่เก็บบนดิสก์) ──────────────────────────────────────

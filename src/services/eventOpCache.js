@@ -16,7 +16,9 @@
  * ⚠️ อยู่ในหน่วยความจำของโปรเซสเดียว — ถ้ารันหลายเครื่องต้องย้ายไป Redis (เหมือน services/realtime.js)
  */
 const TTL_MS = 30_000;
-const MAX_ENTRIES = 60;
+const MAX_ENTRIES = 20;
+/** ⚠️ เซิร์ฟเวอร์ Render หน่วยความจำน้อย — จำกัดขนาดรวมของแคช (ข้อความ JSON) ไม่ให้กินหน่วยความจำจนช้าลงเอง */
+const MAX_BYTES = 40 * 1024 * 1024;
 
 let version = 0;
 const entries = new Map(); // key -> { version, at, promise }
@@ -38,13 +40,27 @@ function cached(key, load) {
   if (hit && hit.version === version && now - hit.at < TTL_MS) return hit.promise;
 
   const v = version;
-  const promise = load().catch((err) => {
-    if (entries.get(key)?.promise === promise) entries.delete(key);
+  const entry = { version: v, at: now, size: 0, promise: null };
+  entry.promise = load().then((json) => {
+    entry.size = typeof json === "string" ? json.length : 0;
+    let total = 0;
+    entries.forEach((e) => { total += e.size; });
+    // ใหญ่เกินเพดาน → ทิ้งอันเก่าสุดก่อน (อันนี้ยังส่งให้คนที่รออยู่ได้ตามปกติ)
+    for (const [k, e] of entries) {
+      if (total <= MAX_BYTES) break;
+      if (e === entry) continue;
+      total -= e.size;
+      entries.delete(k);
+    }
+    if (total > MAX_BYTES && entries.get(key) === entry) entries.delete(key);
+    return json;
+  }).catch((err) => {
+    if (entries.get(key) === entry) entries.delete(key);
     throw err;
   });
   if (entries.size >= MAX_ENTRIES) entries.delete(entries.keys().next().value);
-  entries.set(key, { version: v, at: now, promise });
-  return promise;
+  entries.set(key, entry);
+  return entry.promise;
 }
 
 module.exports = { bump, cached };

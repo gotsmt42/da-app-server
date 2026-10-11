@@ -102,11 +102,14 @@ module.exports = (router) => {
       //    เก็บเป็นข้อความ JSON สำเร็จรูป ไม่ต้องแปลงซ้ำทุกคำขอ · ETag/304 ของ Express ยังทำงานตามเดิม
       const finalQuery = withDepartmentScope(query, req);
       const cacheKey = JSON.stringify({ q: finalQuery, slim, detail });
+      const t0 = Date.now();
+      let miss = null;
       const json = await cached(cacheKey, async () => {
         const userEvents = await CalendarEvent.find(finalQuery)
           .select(slim ? SLIM_FIELDS : (detail ? undefined : "-activityLog"))
           .sort({ start: -1 })
           .lean();
+        miss = { rows: userEvents.length, dbMs: Date.now() - t0 };
 
         // โหมด slim ไม่ต้องแนบข้อมูลผู้ใช้เต็มก้อน (ราว 380 bytes ต่อแถว) — รายงานไม่ได้ใช้
         if (slim) return JSON.stringify({ userEvents });
@@ -149,6 +152,11 @@ module.exports = (router) => {
 
         return JSON.stringify({ userEvents: updatedUserEvents });
       });
+      // ⏱ (11 ต.ค. 2569) จดเวลาไว้ดูใน log ของ Render ว่าช้าที่ฐานข้อมูลหรือที่ขนาดข้อมูล — เฉพาะครั้งที่ช้า
+      const totalMs = Date.now() - t0;
+      if (totalMs > 1000) {
+        console.log(`⏱ event-op ${slim ? "slim" : detail ? "detail" : "base"}${strictScope ? " resp" : ""} ${miss ? `miss rows=${miss.rows} db=${miss.dbMs}ms` : "hit"} total=${totalMs}ms size=${(json.length / 1024).toFixed(0)}KB rss=${Math.round(process.memoryUsage().rss / 1048576)}MB`);
+      }
       res.type("application/json").send(json);
     } catch (err) {
       console.error("❌ Error fetching calendar events:", err);
