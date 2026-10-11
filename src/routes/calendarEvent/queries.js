@@ -19,6 +19,7 @@ const { totalRoundsOf } = require("../../utils/contractVisits");
 const { syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
 
 const { auditEntries, assignmentChanged, applyAudit, notifyAssigned } = require("../../services/jobAudit");
+const { cached } = require("../../services/eventOpCache");
 module.exports = (router) => {
   router.get("/event-op", verifyToken, async (req, res) => {
     try {
@@ -97,51 +98,58 @@ module.exports = (router) => {
       */
       const detail = req.query.detail === "1" || req.query.detail === "true";
 
-      const userEvents = await CalendarEvent.find(withDepartmentScope(query, req))
-        .select(slim ? SLIM_FIELDS : (detail ? undefined : "-activityLog"))
-        .sort({ start: -1 })
-        .lean();
+      // ✅ (11 ต.ค. 2569) แคช + รวมคำขอพร้อมกัน — ดู services/eventOpCache.js (เคยช้า 8–11 วินาทีบน production)
+      //    เก็บเป็นข้อความ JSON สำเร็จรูป ไม่ต้องแปลงซ้ำทุกคำขอ · ETag/304 ของ Express ยังทำงานตามเดิม
+      const finalQuery = withDepartmentScope(query, req);
+      const cacheKey = JSON.stringify({ q: finalQuery, slim, detail });
+      const json = await cached(cacheKey, async () => {
+        const userEvents = await CalendarEvent.find(finalQuery)
+          .select(slim ? SLIM_FIELDS : (detail ? undefined : "-activityLog"))
+          .sort({ start: -1 })
+          .lean();
 
-      // โหมด slim ไม่ต้องแนบข้อมูลผู้ใช้เต็มก้อน (ราว 380 bytes ต่อแถว) — รายงานไม่ได้ใช้
-      if (slim) return res.json({ userEvents });
+        // โหมด slim ไม่ต้องแนบข้อมูลผู้ใช้เต็มก้อน (ราว 380 bytes ต่อแถว) — รายงานไม่ได้ใช้
+        if (slim) return JSON.stringify({ userEvents });
 
-      const userIds = userEvents.map((event) => event.userId.toString());
-      const uniqueUserIds = [...new Set(userIds)];
+        const userIds = userEvents.map((event) => event.userId.toString());
+        const uniqueUserIds = [...new Set(userIds)];
 
-      /**
-      * ✅ เอาเฉพาะ "ชื่อคนสร้างงาน" พอ — ไม่ใช่ทั้งโปรไฟล์
-      * ⚠️ เดิมแนบ user ทั้งก้อน (ตัดแค่ password) = 380 bytes ต่อแถว หรือ 12.3% ของทั้ง response
-      *    โดย imageUrl (URL รูปโปรไฟล์) กินไป 91 bytes ทั้งที่ไม่มีหน้าไหนเอาไปแสดงเลย
-      *    และยังมี email/tel/jobTitle ติดไปทุกแถวด้วย ซึ่งเป็นข้อมูลติดต่อของพนักงาน
-      *    ไม่ควรกระจายไปกับรายการงานโดยไม่มีใครขอ
-      * ⚠️ ไล่ทั้ง src ฝั่งหน้าเว็บแล้ว มีที่เดียวที่อ่าน event.user คือ useEventNotifications
-      *    ซึ่งใช้ fname/lname/username ทำเป็นชื่อผู้ส่ง — role/rank ใส่เพิ่มไว้เผื่อ (รวมแค่ 21 bytes)
-      */
-      const users = await User.find({ _id: { $in: uniqueUserIds } })
-        .select("fname lname username role rank")
-        .lean();
+        /**
+        * ✅ เอาเฉพาะ "ชื่อคนสร้างงาน" พอ — ไม่ใช่ทั้งโปรไฟล์
+        * ⚠️ เดิมแนบ user ทั้งก้อน (ตัดแค่ password) = 380 bytes ต่อแถว หรือ 12.3% ของทั้ง response
+        *    โดย imageUrl (URL รูปโปรไฟล์) กินไป 91 bytes ทั้งที่ไม่มีหน้าไหนเอาไปแสดงเลย
+        *    และยังมี email/tel/jobTitle ติดไปทุกแถวด้วย ซึ่งเป็นข้อมูลติดต่อของพนักงาน
+        *    ไม่ควรกระจายไปกับรายการงานโดยไม่มีใครขอ
+        * ⚠️ ไล่ทั้ง src ฝั่งหน้าเว็บแล้ว มีที่เดียวที่อ่าน event.user คือ useEventNotifications
+        *    ซึ่งใช้ fname/lname/username ทำเป็นชื่อผู้ส่ง — role/rank ใส่เพิ่มไว้เผื่อ (รวมแค่ 21 bytes)
+        */
+        const users = await User.find({ _id: { $in: uniqueUserIds } })
+          .select("fname lname username role rank")
+          .lean();
 
-      const userMap = new Map();
-      users.forEach((user) => {
-        userMap.set(user._id.toString(), user);
+        const userMap = new Map();
+        users.forEach((user) => {
+          userMap.set(user._id.toString(), user);
+        });
+
+        const updatedUserEvents = userEvents.map((event) => {
+          const user = userMap.get(event.userId.toString());
+          if (user) {
+            const { _id, password, ...userDataWithoutId } = user;
+            return { ...event, user: userDataWithoutId };
+          }
+          return event;
+        });
+
+        // 🐛 ที่แก้: เดิมตอบ 404 เมื่อผู้ใช้ยังไม่มีงานเลย — "ไม่มีข้อมูล" ไม่ใช่ "ไม่พบเส้นทาง"
+        // ผลคือผู้ใช้ใหม่ทุกคน (และเซลทุกคน ซึ่งไม่มีงานช่างอยู่แล้วโดยธรรมชาติ) จะเจอ error ใน
+        // console ทุกครั้งที่เปิด Dashboard/Header และจุดที่เรียก route นี้ต้องดัก .catch() ไว้เอง
+        // ทุกที่ (ซึ่งหลายที่ทำอยู่แล้วด้วยการแปลงกลับเป็น { userEvents: [] } — ตรงกับที่คืนตรงนี้เลย)
+        // ✅ รายการว่างคือคำตอบที่ถูกต้อง ตอบ 200 พร้อม array ว่าง
+
+        return JSON.stringify({ userEvents: updatedUserEvents });
       });
-
-      const updatedUserEvents = userEvents.map((event) => {
-        const user = userMap.get(event.userId.toString());
-        if (user) {
-          const { _id, password, ...userDataWithoutId } = user;
-          return { ...event, user: userDataWithoutId };
-        }
-        return event;
-      });
-
-      // 🐛 ที่แก้: เดิมตอบ 404 เมื่อผู้ใช้ยังไม่มีงานเลย — "ไม่มีข้อมูล" ไม่ใช่ "ไม่พบเส้นทาง"
-      // ผลคือผู้ใช้ใหม่ทุกคน (และเซลทุกคน ซึ่งไม่มีงานช่างอยู่แล้วโดยธรรมชาติ) จะเจอ error ใน
-      // console ทุกครั้งที่เปิด Dashboard/Header และจุดที่เรียก route นี้ต้องดัก .catch() ไว้เอง
-      // ทุกที่ (ซึ่งหลายที่ทำอยู่แล้วด้วยการแปลงกลับเป็น { userEvents: [] } — ตรงกับที่คืนตรงนี้เลย)
-      // ✅ รายการว่างคือคำตอบที่ถูกต้อง ตอบ 200 พร้อม array ว่าง
-
-      res.json({ userEvents: updatedUserEvents });
+      res.type("application/json").send(json);
     } catch (err) {
       console.error("❌ Error fetching calendar events:", err);
       res.status(500).send("เกิดข้อผิดพลาดในการดึงข้อมูลปฏิทิน");

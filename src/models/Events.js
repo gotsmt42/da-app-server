@@ -536,6 +536,17 @@ eventSchema.index({ department: 1, start: -1 });
 // ส่วนใหญ่ยังไม่ได้วางบิล (dueAt เป็น null) ไม่ต้องกินพื้นที่ index ไปกับ null เป็นแสนแถว
 eventSchema.index({ "billing.dueAt": 1 }, { sparse: true });
 
+// ✅ (11 ต.ค. 2569) งานเปลี่ยนเมื่อไร → ล้างแคชของ GET /events/event-op ทันที (ดู services/eventOpCache.js)
+//    ครอบทุกเส้นทางที่เขียนผ่าน Mongoose — ไม่ต้องไล่จำไปล้างทีละ route
+{
+  const bumpCache = () => require("../services/eventOpCache").bump();
+  eventSchema.post("save", bumpCache);
+  eventSchema.post(["updateOne", "updateMany", "findOneAndUpdate", "replaceOne", "deleteOne", "deleteMany", "findOneAndDelete"], bumpCache);
+  eventSchema.post("deleteOne", { document: true, query: false }, bumpCache);
+  eventSchema.post("insertMany", bumpCache);
+  eventSchema.post("bulkWrite", bumpCache);
+}
+
 const Events = mongoose.model("CalendarEvent", eventSchema);
 
 module.exports = Events;
