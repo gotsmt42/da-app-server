@@ -109,7 +109,13 @@ module.exports = (router) => {
           .select(slim ? SLIM_FIELDS : (detail ? undefined : "-activityLog"))
           .sort({ start: -1 })
           .lean();
-        miss = { rows: userEvents.length, dbMs: Date.now() - t0 };
+        miss = { rows: userEvents.length, dbMs: Date.now() - t0, heavy: "" };
+        // ⏱ ช้าที่ฐานข้อมูล → จดฟิลด์ที่หนักสุด 4 อันดับ (KB รวมทุกแถว) ไว้หาว่าข้อมูลส่วนไหนพอง
+        if (miss.dbMs > 1000) {
+          const sizes = {};
+          userEvents.forEach((e) => Object.keys(e).forEach((k) => { sizes[k] = (sizes[k] || 0) + (JSON.stringify(e[k]) || "").length; }));
+          miss.heavy = Object.entries(sizes).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, b]) => `${k}:${Math.round(b / 1024)}KB`).join(",");
+        }
 
         // โหมด slim ไม่ต้องแนบข้อมูลผู้ใช้เต็มก้อน (ราว 380 bytes ต่อแถว) — รายงานไม่ได้ใช้
         if (slim) return JSON.stringify({ userEvents });
@@ -155,7 +161,11 @@ module.exports = (router) => {
       // ⏱ (11 ต.ค. 2569) จดเวลาไว้ดูใน log ของ Render ว่าช้าที่ฐานข้อมูลหรือที่ขนาดข้อมูล — เฉพาะครั้งที่ช้า
       const totalMs = Date.now() - t0;
       if (totalMs > 1000) {
-        console.log(`⏱ event-op ${slim ? "slim" : detail ? "detail" : "base"}${strictScope ? " resp" : ""} ${miss ? `miss rows=${miss.rows} db=${miss.dbMs}ms` : "hit"} total=${totalMs}ms size=${(json.length / 1024).toFixed(0)}KB rss=${Math.round(process.memoryUsage().rss / 1048576)}MB`);
+        // ping ฐานข้อมูล — แยกว่าช้าเพราะเครือข่าย/ฐานข้อมูลถูกจำกัดความเร็ว หรือช้าเพราะข้อมูลเยอะ
+        const p0 = Date.now();
+        await CalendarEvent.db.db.admin().ping().catch(() => {});
+        const pingMs = Date.now() - p0;
+        console.log(`⏱ event-op ping=${pingMs}ms ${miss?.heavy ? `heavy=${miss.heavy} ` : ""} ${slim ? "slim" : detail ? "detail" : "base"}${strictScope ? " resp" : ""} ${miss ? `miss rows=${miss.rows} db=${miss.dbMs}ms` : "hit"} total=${totalMs}ms size=${(json.length / 1024).toFixed(0)}KB rss=${Math.round(process.memoryUsage().rss / 1048576)}MB`);
       }
       res.type("application/json").send(json);
     } catch (err) {
