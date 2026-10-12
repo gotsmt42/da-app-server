@@ -19,7 +19,7 @@ const { totalRoundsOf } = require("../../utils/contractVisits");
 const { syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
 
 const { auditEntries, assignmentChanged, applyAudit, notifyAssigned } = require("../../services/jobAudit");
-const { cached } = require("../../services/eventOpCache");
+const { cached, rowsFor } = require("../../services/eventOpCache");
 module.exports = (router) => {
   router.get("/event-op", verifyToken, async (req, res) => {
     try {
@@ -105,10 +105,8 @@ module.exports = (router) => {
       const t0 = Date.now();
       let miss = null;
       const json = await cached(cacheKey, async () => {
-        const userEvents = await CalendarEvent.find(finalQuery)
-          .select(slim ? SLIM_FIELDS : (detail ? undefined : "-activityLog"))
-          .sort({ start: -1 })
-          .lean();
+        // ✅ (12 ต.ค. 2569) ดึงเฉพาะงานที่เปลี่ยนตั้งแต่รอบก่อน (ดู rowsFor) — เรียงตาม start ล่าสุดก่อนเหมือนเดิม
+        const userEvents = await rowsFor(cacheKey, CalendarEvent, finalQuery, slim ? SLIM_FIELDS : (detail ? undefined : "-activityLog"));
         miss = { rows: userEvents.length, dbMs: Date.now() - t0, heavy: "" };
         // ⏱ ช้าที่ฐานข้อมูล → จดฟิลด์ที่หนักสุด 4 อันดับ (KB รวมทุกแถว) ไว้หาว่าข้อมูลส่วนไหนพอง
         if (miss.dbMs > 1000) {

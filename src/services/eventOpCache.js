@@ -63,4 +63,47 @@ function cached(key, load) {
   return entry.promise;
 }
 
-module.exports = { bump, cached };
+/**
+ * ✅ (12 ต.ค. 2569) ดึงงานแบบ "ส่งเฉพาะที่เปลี่ยน" — log จริงบน production:
+ *    `event-op base miss rows=596 db=8063ms size=862KB` และ detail 1088KB = 10.7 วินาที
+ *    เวลาแปรตามขนาดข้อมูลตรงๆ (~100 KB/วินาที) = ช่องทางรับส่งกับฐานข้อมูลถูกจำกัดความเร็ว
+ *    ไม่ใช่ query ช้า — ทางแก้คือ "ดึงข้อมูลจากฐานข้อมูลให้น้อยที่สุด"
+ * หลักการ: ครั้งแรกดึงทั้งชุดเก็บไว้ · ครั้งถัดไปดึงแค่
+ *    (1) รายการ _id ที่ยังอยู่ในขอบเขต (ไว้ตัดงานที่ถูกลบ/หลุดสิทธิ์) และ
+ *    (2) เอกสารที่ updatedAt ใหม่กว่ารอบก่อน (Mongoose ใส่ updatedAt ให้ทุก save/update/bulkWrite อัตโนมัติ)
+ * ⚠️ เผื่อเวลาย้อนหลัง SYNC_MARGIN_MS กันงานที่กำลังบันทึกอยู่ตอน query · โหลดใหม่ทั้งชุดทุก FULL_RELOAD_MS กันพลาด
+ */
+const SYNC_MARGIN_MS = 60_000;
+const FULL_RELOAD_MS = 15 * 60_000;
+const MAX_SNAPS = 40;
+const snaps = new Map(); // key -> { byId: Map, since, loadedAt }
+
+async function rowsFor(key, Model, query, select) {
+  const startedAt = Date.now();
+  let snap = snaps.get(key);
+  if (!snap || startedAt - snap.loadedAt > FULL_RELOAD_MS) {
+    const rows = await Model.find(query).select(select).lean();
+    snap = { byId: new Map(rows.map((r) => [String(r._id), r])), since: startedAt - SYNC_MARGIN_MS, loadedAt: startedAt };
+  } else {
+    const [ids, changed] = await Promise.all([
+      Model.find(query).select("_id").lean(),
+      Model.find({ $and: [query, { updatedAt: { $gte: new Date(snap.since) } }] }).select(select).lean(),
+    ]);
+    const keep = new Set(ids.map((r) => String(r._id)));
+    for (const id of [...snap.byId.keys()]) if (!keep.has(id)) snap.byId.delete(id);
+    changed.forEach((r) => snap.byId.set(String(r._id), r));
+    // อยู่ในขอบเขตแต่ไม่มีในชุดที่เก็บ (เช่นงานเพิ่งเข้าขอบเขตโดยไม่ได้แก้ตัวงาน) → ดึงเฉพาะใบนั้น
+    const missing = [...keep].filter((id) => !snap.byId.has(id));
+    if (missing.length) {
+      (await Model.find({ _id: { $in: missing } }).select(select).lean()).forEach((r) => snap.byId.set(String(r._id), r));
+    }
+    snap.since = startedAt - SYNC_MARGIN_MS;
+  }
+  snaps.delete(key);
+  snaps.set(key, snap);
+  while (snaps.size > MAX_SNAPS) snaps.delete(snaps.keys().next().value);
+  const t = (r) => (r.start ? new Date(r.start).getTime() : -Infinity);
+  return [...snap.byId.values()].sort((a, b) => t(b) - t(a));
+}
+
+module.exports = { bump, cached, rowsFor };
