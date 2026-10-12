@@ -66,6 +66,8 @@ async function findDuplicateContractNo(contractNo, excludeContractGroupId) {
 // ⚠️ หน้าภาพรวมงานส่งค่าทั้งชุดกลับมาทุกครั้งที่กดบันทึก แม้ผู้ใช้แก้แค่ช่องเดียว จึงต้องเทียบค่าจริง
 // ทีละฟิลด์ ไม่ใช่เชื่อว่า "มีใน req.body = ถูกแก้" ไม่งั้นไทม์ไลน์จะเต็มไปด้วยรายการที่ไม่ได้แก้อะไรเลย
 const CONTRACT_FIELD_LABELS = {
+  province: "จังหวัด",
+  city: "เมือง",
   contractNo: "เลขที่สัญญา",
   quotationNo: "เลขที่ใบเสนอราคา",
   contractStart: "วันเริ่มสัญญา",

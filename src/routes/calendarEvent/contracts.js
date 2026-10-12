@@ -40,7 +40,7 @@ module.exports = (router) => {
       // (idx+1 ต่อ document) — แต่ "งานทั่วไป" ที่เข้าหลายวันไม่ติดกัน (ผูกกันด้วย jobGroupId เดียวกัน)
       // 1 แถวในตารางอาจมีหลาย document ที่ควรรวมเป็น "ครั้งเดียวกัน" ไม่ใช่แยกคนละครั้ง — เปลี่ยนมารับ
       // rounds เป็น array ของ array (แต่ละกลุ่มย่อย = document ทั้งหมดที่ควรอยู่ครั้งเดียวกัน) แทน
-      const { rounds, contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, contractYears, jobValue } = req.body;
+      const { rounds, contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, contractYears, estimatedDaysPerVisit, jobValue, province, city } = req.body;
       if (!Array.isArray(rounds) || rounds.length === 0 || rounds.some((r) => !Array.isArray(r) || r.length === 0)) {
         return res.status(400).json({ message: "กรุณาเลือกงานอย่างน้อย 1 รายการ" });
       }
@@ -93,11 +93,14 @@ module.exports = (router) => {
                     $set: {
                       contractGroupId,
                       contractNo: contractNo || "",
+                      province: String(province || "").trim(),
+                      city: String(city || "").trim(),
                       quotationNo: quotationNo || "",
                       contractStart: contractStart || undefined,
                       contractEnd: contractEnd || undefined,
                       intervalMonths: Number(intervalMonths) > 0 ? Number(intervalMonths) : undefined,
                       contractYears: Number(contractYears) > 0 ? Number(contractYears) : undefined,
+                      estimatedDaysPerVisit: Number(estimatedDaysPerVisit) > 0 ? Number(estimatedDaysPerVisit) : undefined,
                       visitCount: resolvedVisitCount,
                       jobValue: jobValue != null && jobValue !== "" ? Number(jobValue) : undefined,
                       time,
@@ -204,12 +207,15 @@ module.exports = (router) => {
           $set: {
             contractGroupId,
             contractNo: contractHead.contractNo,
+            province: contractHead.province || "",
+            city: contractHead.city || "",
             quotationNo: contractHead.quotationNo,
             contractStart: contractHead.contractStart,
             contractEnd: contractHead.contractEnd,
             visitCount: contractHead.visitCount,
             intervalMonths: contractHead.intervalMonths,
             contractYears: contractHead.contractYears,
+            estimatedDaysPerVisit: contractHead.estimatedDaysPerVisit,
             jobValue: contractHead.jobValue,
             time: String(time),
             ...(jobGroupId ? { jobGroupId } : {}),
@@ -372,7 +378,7 @@ module.exports = (router) => {
       // สัญญาอื่นๆ ด้านล่าง (เดิม route นี้แก้ได้แค่ข้อมูลสัญญา ไม่รวมสองอย่างนี้ ซึ่งจริงๆ ก็ควรผูกกับ
       // สัญญาทั้งก้อนเหมือนกัน ไม่ใช่รายครั้ง — ดูหน้า "ภาพรวมสัญญา" ที่แก้ inline ผ่านตารางได้เลย)
       const {
-        contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, contractYears, jobValue, commission,
+        contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, contractYears, estimatedDaysPerVisit, jobValue, commission, province, city,
         team, resPerson, responsiblePerson, responsiblePersonId, departmentTag, statusNote, remark, contactName, contactTel,
       } = req.body;
 
@@ -401,6 +407,8 @@ module.exports = (router) => {
 
       const update = {};
       if (contractNo !== undefined) update.contractNo = contractNo;
+      if (province !== undefined) update.province = String(province || "").trim();
+      if (city !== undefined) update.city = String(city || "").trim();
       if (quotationNo !== undefined) update.quotationNo = quotationNo;
       if (contractStart !== undefined) update.contractStart = contractStart;
       if (contractEnd !== undefined) update.contractEnd = contractEnd;
@@ -408,6 +416,11 @@ module.exports = (router) => {
       // checkAndNotifyOverdueContracts/nextVisitOverdueInfo) ไม่ผูก/คำนวณทับ visitCount ให้เอง เพราะ
       // งานจริงเลื่อน/ชนกันได้เสมอ จำนวนครั้งจริงต้องให้ผู้ใช้เป็นคนกำหนดเองเท่านั้น
       if (intervalMonths !== undefined) update.intervalMonths = intervalMonths;
+      if (estimatedDaysPerVisit !== undefined) {
+        const days = Number(estimatedDaysPerVisit);
+        if (estimatedDaysPerVisit !== "" && estimatedDaysPerVisit !== null && (!Number.isInteger(days) || days < 1 || days > 365)) return res.status(400).json({ message: "estimatedDaysPerVisit must be an integer from 1 to 365" });
+        update.estimatedDaysPerVisit = days > 0 ? days : undefined;
+      }
       if (contractYears !== undefined && contractYears !== "" && contractYears !== null) {
         const y = Number(contractYears);
         if (!Number.isInteger(y) || y < 1 || y > 5) return res.status(400).json({ message: "จำนวนปีของสัญญาต้องอยู่ระหว่าง 1-5 ปี" });

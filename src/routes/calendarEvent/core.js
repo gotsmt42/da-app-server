@@ -82,6 +82,8 @@ module.exports = (router) => {
         "docNo",
         "company",
         "site",
+        "province",
+        "city",
         "title",
         "system",
         "time",
@@ -116,6 +118,7 @@ module.exports = (router) => {
         "visitCount",
         "intervalMonths",
         "contractYears",
+        "estimatedDaysPerVisit",
         "jobValue",
         // ✅ เลือกหมวดหมู่ "งานทั่วไป"/"งานโปรเจค" ได้ตั้งแต่ตอนสร้างงานเลย (ขั้นตอนที่ 1 ในฟอร์ม
         // AddEvent.js) แทนที่จะต้องไปกดจัดหมวดหมู่ย้อนหลังทีหลังในหน้า "ภาพรวมงาน" เสมอ
@@ -690,6 +693,7 @@ module.exports = (router) => {
         // (PUT /contract/:contractGroupId ซึ่งรับฟิลด์นี้อยู่แล้ว) เท่านั้นถึงจะได้ผลจริง
         intervalMonths,
         contractYears,
+        estimatedDaysPerVisit,
         jobValue,
       } = req.body;
 
@@ -784,6 +788,7 @@ module.exports = (router) => {
         visitCount,
         intervalMonths, // ✅ เดิมตกหล่นไป ทำให้ค่าที่แก้จากฟอร์มในปฏิทินไม่เคยถูกบันทึก (ดูคอมเมนต์ด้านบน)
         ...(contractYears !== undefined && contractYears !== "" && contractYears !== null ? { contractYears: Number(contractYears) } : {}),
+        ...(estimatedDaysPerVisit !== undefined && estimatedDaysPerVisit !== "" && estimatedDaysPerVisit !== null ? { estimatedDaysPerVisit: Number(estimatedDaysPerVisit) } : {}),
         jobValue,
         ...pickJobInfo(req.body),
 

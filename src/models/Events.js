@@ -137,6 +137,8 @@ const eventSchema = new mongoose.Schema(
     docNo: { type: String },
     company: { type: String },
     site: { type: String, required: true },
+    province: { type: String, trim: true, default: "" },
+    city: { type: String, trim: true, default: "" },
     title: { type: String, required: true },
     system: { type: String },
     time: { type: String },
@@ -407,6 +409,7 @@ const eventSchema = new mongoose.Schema(
     intervalMonths: Number,
     // ✅ จำนวนปีของสัญญา (ปีละ N ครั้ง × กี่ปี) — ไม่มีค่า = คิดจากช่วงวันที่สัญญา (ดู utils/contractVisits.js)
     contractYears: Number,
+    estimatedDaysPerVisit: Number,
     jobValue: Number,
     // ✅ ค่าคอมมิชชั่นที่จ่ายให้ฝั่งลูกค้า/ผู้แนะนำงาน — เก็บเป็น "จำนวนเงิน" ไม่ใช่เปอร์เซ็นต์
     // ⚠️ เก็บเปอร์เซ็นต์ไม่ได้ เพราะฐานที่ใช้คิดไม่ตายตัว (บางงานคิดจากมูลค่าสัญญา บางงานคิดจากยอด
