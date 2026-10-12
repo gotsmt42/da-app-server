@@ -531,6 +531,8 @@ eventSchema.index({ resPerson: 1, start: 1, end: 1 });
 //    พองานแตะหลักพันขึ้นไปจะเริ่มช้า และสุดท้ายจะ error ทั้ง endpoint โดยไม่มีอะไรเตือนล่วงหน้า
 // ⚠️ ลำดับฟิลด์สำคัญ: ตัวกรอง (department) ต้องมาก่อนตัวเรียง (start) ไม่งั้น index ใช้ช่วยเรียงไม่ได้
 eventSchema.index({ department: 1, start: -1 });
+// ✅ (12 ต.ค. 2569) คลังงานในหน่วยความจำซิงก์ด้วย updatedAt (ดู services/eventOpCache.js)
+eventSchema.index({ updatedAt: 1 });
 
 // ✅ ตัวเตือน "ใบที่เลยกำหนดชำระ" รันทุกวันและ query ด้วย billing.dueAt เสมอ — sparse เพราะงาน
 // ส่วนใหญ่ยังไม่ได้วางบิล (dueAt เป็น null) ไม่ต้องกินพื้นที่ index ไปกับ null เป็นแสนแถว

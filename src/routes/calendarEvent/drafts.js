@@ -42,6 +42,7 @@ function stampSchedule(ev, req, prevHead) {
   if (ev.resPerson && String(ev.resPerson) !== prevHead) notifyAssigned(ev, ev.resPerson, "head", name, req.userId);
 }
 
+const { findEvents } = require("../../services/eventOpCache");
 module.exports = (router) => {
   // ✅ งาน "วางแผนล่วงหน้า" (unscheduled) — บันทึกไว้ก่อนว่ามีงานนี้แน่ๆ ในเดือนไหน แต่ยังไม่รู้วันที่
   // เจาะจง จัดกลุ่มแสดงตาม plannedMonth แล้วค่อยลาก/กดลงตารางจริงทีหลัง (ดู PUT /:id/schedule)
@@ -252,8 +253,8 @@ module.exports = (router) => {
       // ✅ งานวางแผนล่วงหน้าก็แยกแผนกเหมือนกัน
       // ✅ งานที่ยกเลิกแล้ว (เมนู "รับงาน") ไม่ขึ้นในแผงงานล่วงหน้า/ป้ายตัวเลข — หน้า "รับงาน" ขอดูได้ด้วย ?includeCancelled=1
       if (req.query.includeCancelled !== "1") query.cancelledAt = null;
-      const drafts = await CalendarEvent.find(withDepartmentScope(query, req))
-        .sort({ createdAt: -1 }).lean();
+      // ✅ (12 ต.ค. 2569) คลังงานในหน่วยความจำ (ดู services/eventOpCache.js)
+      const drafts = await findEvents(withDepartmentScope(query, req), { sort: { createdAt: -1 } });
       res.json({ drafts });
     } catch (error) {
       console.error("❌ Error fetching draft events:", error);

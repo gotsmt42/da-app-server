@@ -19,7 +19,7 @@ const { totalRoundsOf } = require("../../utils/contractVisits");
 const { syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
 
 const { auditEntries, assignmentChanged, applyAudit, notifyAssigned } = require("../../services/jobAudit");
-const { cached, rowsFor } = require("../../services/eventOpCache");
+const { cached, findEvents } = require("../../services/eventOpCache");
 module.exports = (router) => {
   router.get("/event-op", verifyToken, async (req, res) => {
     try {
@@ -105,8 +105,8 @@ module.exports = (router) => {
       const t0 = Date.now();
       let miss = null;
       const json = await cached(cacheKey, async () => {
-        // ✅ (12 ต.ค. 2569) ดึงเฉพาะงานที่เปลี่ยนตั้งแต่รอบก่อน (ดู rowsFor) — เรียงตาม start ล่าสุดก่อนเหมือนเดิม
-        const userEvents = await rowsFor(cacheKey, CalendarEvent, finalQuery, slim ? SLIM_FIELDS : (detail ? undefined : "-activityLog"));
+        // ✅ (12 ต.ค. 2569) ดึงเฉพาะงานที่เปลี่ยนตั้งแต่รอบก่อน (ดู findEvents ใน services/eventOpCache.js) — เรียงตาม start ล่าสุดก่อนเหมือนเดิม
+        const userEvents = await findEvents(finalQuery, { select: slim ? SLIM_FIELDS : (detail ? undefined : "-activityLog"), sort: { start: -1 } });
         miss = { rows: userEvents.length, dbMs: Date.now() - t0, heavy: "" };
         // ⏱ ช้าที่ฐานข้อมูล → จดฟิลด์ที่หนักสุด 4 อันดับ (KB รวมทุกแถว) ไว้หาว่าข้อมูลส่วนไหนพอง
         if (miss.dbMs > 1000) {
@@ -187,10 +187,10 @@ module.exports = (router) => {
             { responsiblePersonId: userId }, { responsiblePerson: req.user.fname },
           ] };
 
-      const events = await CalendarEvent.find(query)
-        .select("docNo company site title system team teamMembers time status reportFiles quotationFiles invoiceFiles completionFiles")
-        .sort({ updatedAt: -1 })
-        .lean();
+      const events = await findEvents(query, {
+        select: "docNo company site title system team teamMembers time status reportFiles quotationFiles invoiceFiles completionFiles",
+        sort: { updatedAt: -1 },
+      });
 
       const DOC_TYPE_LABELS = {
         report: "Service Report",
@@ -456,9 +456,9 @@ module.exports = (router) => {
         { contractGroupId: { $exists: true, $nin: [null, ""] } },
         req
       );
-      const rows = await CalendarEvent.find(query)
-        .select("contractGroupId company site system title contractNo quotationNo contractStart contractEnd visitCount intervalMonths contractYears jobValue responsiblePerson responsiblePersonId team resPerson userId time")
-        .lean();
+      const rows = await findEvents(query, {
+        select: "contractGroupId company site system title contractNo quotationNo contractStart contractEnd visitCount intervalMonths contractYears jobValue responsiblePerson responsiblePersonId team resPerson userId time",
+      });
 
       // จัดกลุ่มตาม contractGroupId — เทียบตรรกะเดียวกับ contractMap ใน AddEvent.js/ContractOverview.js
       const map = new Map();

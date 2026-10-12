@@ -27,6 +27,7 @@ const { thaiDate } = require("../../utils/thaiDate");
 const { roundLabelOf } = require("../../utils/contractVisits");
 const { syncGroupsOf, syncGroupResponsible, groupFilterOf } = require("../../services/groupResponsible");
 const { groupJobNo, nextJobNo } = require("../../utils/jobNumber");
+const { findEvents } = require("../../services/eventOpCache");
 const { pickJobInfo, resolveFollowUps } = require("./jobflow");
 
 /** ลายเซ็นของรายการกิจกรรมหนึ่งบรรทัด — ใช้เทียบว่าเป็นรายการเดียวกันไหม (_id ใช้ไม่ได้ ดูด้านล่าง) */
@@ -436,9 +437,8 @@ module.exports = (router) => {
 
       // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรโผล่ในปฏิทิน
       // ✅ ปฏิทินรวม — กรองตามแผนกเช่นกัน ไม่งั้นเซลจะเห็นงานช่างเต็มปฏิทินทั้งที่ไม่เกี่ยวกัน
-      const userEvents = await CalendarEvent.find(
-        withDepartmentScope({ unscheduled: { $ne: true } }, req)
-      ).lean();
+      // ✅ (12 ต.ค. 2569) หยิบจากคลังงานในหน่วยความจำ ถามฐานข้อมูลแค่ _id (ดู services/eventOpCache.js)
+      const userEvents = await findEvents(withDepartmentScope({ unscheduled: { $ne: true } }, req));
 
       // 🐛 BUG ที่แก้ (ปฏิทินพังทั้งหน้าถ้ามี event สักตัวที่ไม่มี userId): userId ใน schema ไม่ได้เป็น
       // required — งานที่หลุดมาโดยไม่มี userId (ข้อมูลเก่า/นำเข้า/สร้างผ่านทางอื่น) จะทำให้

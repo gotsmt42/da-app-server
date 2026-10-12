@@ -27,6 +27,7 @@ const entries = new Map(); // key -> { version, at, promise }
 function bump() {
   version += 1;
   entries.clear();
+  store.dirty = true;
 }
 
 /**
@@ -64,46 +65,96 @@ function cached(key, load) {
 }
 
 /**
- * ✅ (12 ต.ค. 2569) ดึงงานแบบ "ส่งเฉพาะที่เปลี่ยน" — log จริงบน production:
- *    `event-op base miss rows=596 db=8063ms size=862KB` และ detail 1088KB = 10.7 วินาที
- *    เวลาแปรตามขนาดข้อมูลตรงๆ (~100 KB/วินาที) = ช่องทางรับส่งกับฐานข้อมูลถูกจำกัดความเร็ว
- *    ไม่ใช่ query ช้า — ทางแก้คือ "ดึงข้อมูลจากฐานข้อมูลให้น้อยที่สุด"
- * หลักการ: ครั้งแรกดึงทั้งชุดเก็บไว้ · ครั้งถัดไปดึงแค่
- *    (1) รายการ _id ที่ยังอยู่ในขอบเขต (ไว้ตัดงานที่ถูกลบ/หลุดสิทธิ์) และ
- *    (2) เอกสารที่ updatedAt ใหม่กว่ารอบก่อน (Mongoose ใส่ updatedAt ให้ทุก save/update/bulkWrite อัตโนมัติ)
- * ⚠️ เผื่อเวลาย้อนหลัง SYNC_MARGIN_MS กันงานที่กำลังบันทึกอยู่ตอน query · โหลดใหม่ทั้งชุดทุก FULL_RELOAD_MS กันพลาด
+ * ✅ (12 ต.ค. 2569) คลังงานในหน่วยความจำ — ดึงจากฐานข้อมูลให้น้อยที่สุด
+ *
+ * log จริงบน production: `event-op base miss rows=596 db=8063ms size=862KB` · detail 1088KB = 10.7 วินาที
+ * ping ฐานข้อมูลแค่ 4–23ms แต่เวลาแปรตามขนาดข้อมูลตรงๆ (~100 KB/วินาที) = Atlas M0 (ฟรี) จำกัดความเร็วรับส่ง
+ * ผู้ใช้ขอแก้ด้วยโค้ดโดยไม่ต้องอัปเกรดแพ็กเกจ
+ *
+ * หลักการ:
+ * - เก็บงาน "ทุกใบแบบเต็ม" ไว้ชุดเดียวในหน่วยความจำ (ทั้งระบบราว 600 ใบ ≈ 1–2 MB)
+ * - ซิงก์เฉพาะใบที่ updatedAt ใหม่กว่ารอบก่อน (Mongoose ใส่ updatedAt ให้ทุก save/update/bulkWrite อัตโนมัติ)
+ *   — ซิงก์เมื่อมีการแก้งาน (hook ใน models/Events.js เรียก bump) หรือครบ SYNC_TTL_MS กันการแก้นอกแอป
+ * - แต่ละคำขอยังถามฐานข้อมูลด้วย "ตัวกรองจริง" เสมอ แต่ขอแค่ _id (ราว 20KB) → สิทธิ์การมองเห็น/ลำดับ
+ *   ตรงกับ MongoDB ทุกประการ ไม่ต้องเขียนตัวกรองซ้ำในโค้ด แล้วค่อยหยิบเนื้องานจากคลัง
+ * - โหลดใหม่ทั้งชุดเบื้องหลังทุก FULL_RELOAD_MS (ไม่บล็อกผู้ใช้) — ล้างใบที่ถูกลบ/กันข้อมูลคลาดเคลื่อน
+ * ⚠️ เผื่อเวลาย้อนหลัง SYNC_MARGIN_MS กันงานที่กำลังบันทึกอยู่พอดีตอนซิงก์
+ * ⚠️ อยู่ในหน่วยความจำของโปรเซสเดียว — ถ้ารันหลายเครื่องต้องย้ายไปใช้ change stream/Redis
  */
 const SYNC_MARGIN_MS = 60_000;
-const FULL_RELOAD_MS = 15 * 60_000;
-const MAX_SNAPS = 40;
-const snaps = new Map(); // key -> { byId: Map, since, loadedAt }
+const SYNC_TTL_MS = 60_000;
+const FULL_RELOAD_MS = 6 * 3600_000;
 
-async function rowsFor(key, Model, query, select) {
+const store = { byId: null, since: 0, syncedAt: 0, loadedAt: 0, dirty: true, syncing: null, reloading: null };
+const Model = () => require("../models/Events");
+
+async function fullLoad() {
   const startedAt = Date.now();
-  let snap = snaps.get(key);
-  if (!snap || startedAt - snap.loadedAt > FULL_RELOAD_MS) {
-    const rows = await Model.find(query).select(select).lean();
-    snap = { byId: new Map(rows.map((r) => [String(r._id), r])), since: startedAt - SYNC_MARGIN_MS, loadedAt: startedAt };
-  } else {
-    const [ids, changed] = await Promise.all([
-      Model.find(query).select("_id").lean(),
-      Model.find({ $and: [query, { updatedAt: { $gte: new Date(snap.since) } }] }).select(select).lean(),
-    ]);
-    const keep = new Set(ids.map((r) => String(r._id)));
-    for (const id of [...snap.byId.keys()]) if (!keep.has(id)) snap.byId.delete(id);
-    changed.forEach((r) => snap.byId.set(String(r._id), r));
-    // อยู่ในขอบเขตแต่ไม่มีในชุดที่เก็บ (เช่นงานเพิ่งเข้าขอบเขตโดยไม่ได้แก้ตัวงาน) → ดึงเฉพาะใบนั้น
-    const missing = [...keep].filter((id) => !snap.byId.has(id));
-    if (missing.length) {
-      (await Model.find({ _id: { $in: missing } }).select(select).lean()).forEach((r) => snap.byId.set(String(r._id), r));
-    }
-    snap.since = startedAt - SYNC_MARGIN_MS;
-  }
-  snaps.delete(key);
-  snaps.set(key, snap);
-  while (snaps.size > MAX_SNAPS) snaps.delete(snaps.keys().next().value);
-  const t = (r) => (r.start ? new Date(r.start).getTime() : -Infinity);
-  return [...snap.byId.values()].sort((a, b) => t(b) - t(a));
+  const rows = await Model().find({}).lean();
+  store.byId = new Map(rows.map((r) => [String(r._id), r]));
+  store.since = startedAt - SYNC_MARGIN_MS;
+  store.syncedAt = startedAt;
+  store.loadedAt = startedAt;
+  console.log(`📦 โหลดคลังงาน ${rows.length} ใบ ใช้ ${Date.now() - startedAt}ms`);
 }
 
-module.exports = { bump, cached, rowsFor };
+/** ทำให้คลังเป็นปัจจุบัน (คำขอพร้อมกันรอรอบเดียวกัน) */
+function ensureFresh() {
+  if (!store.byId) {
+    store.reloading ||= fullLoad().finally(() => { store.reloading = null; });
+    return store.reloading;
+  }
+  const now = Date.now();
+  if (now - store.loadedAt > FULL_RELOAD_MS && !store.reloading) {
+    // เบื้องหลัง — ระหว่างนี้ใช้ชุดเดิม + ซิงก์ส่วนต่างตามปกติ
+    store.reloading = fullLoad().catch((e) => console.error("⚠️ โหลดคลังงานใหม่ไม่สำเร็จ:", e.message)).finally(() => { store.reloading = null; });
+  }
+  if (!store.dirty && now - store.syncedAt < SYNC_TTL_MS) return Promise.resolve();
+  if (store.syncing) return store.syncing;
+  store.dirty = false;
+  const startedAt = now;
+  store.syncing = Model().find({ updatedAt: { $gte: new Date(store.since) } }).lean()
+    .then((rows) => {
+      rows.forEach((r) => store.byId.set(String(r._id), r));
+      store.since = startedAt - SYNC_MARGIN_MS;
+      store.syncedAt = startedAt;
+    })
+    .catch((e) => { store.dirty = true; throw e; })
+    .finally(() => { store.syncing = null; });
+  return store.syncing;
+}
+
+/** ตัดฟิลด์ตาม select แบบ Mongoose ("a b c" = เอาเฉพาะ · "-a -b" = ตัดออก · ไม่ระบุ = ทั้งหมด) — คืน object ใหม่เสมอ */
+function project(doc, select) {
+  if (!select) return { ...doc };
+  const fields = String(select).split(/\s+/).filter(Boolean);
+  if (fields.every((f) => f.startsWith("-"))) {
+    const out = { ...doc };
+    fields.forEach((f) => { delete out[f.slice(1)]; });
+    return out;
+  }
+  const out = { _id: doc._id };
+  fields.forEach((f) => { if (doc[f] !== undefined) out[f] = doc[f]; });
+  return out;
+}
+
+/**
+ * แทน CalendarEvent.find(query).select(select).sort(sort).lean() — ผลเหมือนกัน แต่ดึงจากฐานข้อมูลแค่ _id
+ * @param {object} query ตัวกรอง MongoDB ตามเดิม
+ * @param {{select?: string, sort?: object}} [opts]
+ */
+async function findEvents(query, { select, sort } = {}) {
+  let q = Model().find(query).select("_id");
+  if (sort) q = q.sort(sort);
+  const [ids] = await Promise.all([q.lean(), ensureFresh()]);
+  const missing = ids.map((r) => String(r._id)).filter((id) => !store.byId.has(id));
+  if (missing.length) {
+    (await Model().find({ _id: { $in: missing } }).lean()).forEach((r) => store.byId.set(String(r._id), r));
+  }
+  return ids.map((r) => store.byId.get(String(r._id))).filter(Boolean).map((d) => project(d, select));
+}
+
+/** อุ่นคลังตอนเปิดเซิร์ฟเวอร์ — ผู้ใช้คนแรกไม่ต้องรอ */
+const warmEvents = () => ensureFresh().catch((e) => console.error("⚠️ อุ่นคลังงานไม่สำเร็จ:", e.message));
+
+module.exports = { bump, cached, findEvents, warmEvents };

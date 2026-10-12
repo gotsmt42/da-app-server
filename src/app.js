@@ -96,6 +96,9 @@ if (process.env.NODE_ENV !== "test") {
     .backfillExpenseContractInfo()
     .catch((err) => console.error("❌ เติมข้อมูลสัญญาให้ใบเบิกไม่สำเร็จ (ระบบยังทำงานต่อได้ตามปกติ):", err.message));
 
+  // 📦 (12 ต.ค. 2569) โหลดคลังงานเข้าหน่วยความจำทันทีที่เปิดเซิร์ฟเวอร์ — ผู้ใช้คนแรกไม่ต้องรอ (ดู services/eventOpCache.js)
+  require("./services/eventOpCache").warmEvents();
+
   // ⏳ (11 ต.ค. 2569 แก้แอพช้าหลัง deploy) งานซ่อม/เติมข้อมูลทั้งฐานข้อมูลด้านล่าง เลื่อนไปรันหลังเปิดเซิร์ฟเวอร์ 2 นาที
   //    ไม่ให้แย่งฐานข้อมูล/CPU กับผู้ใช้ที่เปิดแอปพร้อมกันตอนเพิ่ง deploy (ทุกหน้าโหลด event-op พร้อมกัน)
   setTimeout(() => {
