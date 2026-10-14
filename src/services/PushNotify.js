@@ -109,9 +109,10 @@ async function sendPushToUsers(userIds, payload) {
 }
 
 // ✅ ส่ง push ให้ทุกคนที่มี Rank (ตำแหน่งในองค์กร) อยู่ในรายการที่ระบุ (เช่น แจ้งแอดมิน/ผู้จัดการตอนช่างขอปิดงาน)
-async function sendPushToRoles(roles, payload) {
+async function sendPushToRoles(roles, payload, excludeUserIds = []) {
+  const excluded = new Set((Array.isArray(excludeUserIds) ? excludeUserIds : [excludeUserIds]).filter(Boolean).map(String));
   const users = await User.find(rankFilter(roles)).select("_id").lean();
-  await sendPushToUsers(users.map((u) => u._id.toString()), payload);
+  await sendPushToUsers(users.filter((u) => !excluded.has(String(u._id))).map((u) => u._id.toString()), payload);
 }
 
 // ✅ ส่ง push ให้ทุกคนในระบบ (เช่น แจ้งตอนมีการเพิ่มงานใหม่) ยกเว้นคนที่ระบุ (เช่น คนที่เพิ่งเพิ่มงานเอง)

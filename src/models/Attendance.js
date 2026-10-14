@@ -44,6 +44,8 @@ const correctionSchema = new mongoose.Schema({
 const attendanceSchema = new mongoose.Schema(
   {
     eventId: { type: mongoose.Schema.Types.ObjectId, ref: "CalendarEvent", required: true, index: true },
+    // วันเข้างานตามเวลาไทย ใช้แยกหนึ่งบันทึกต่องานต่อวัน (รองรับข้อมูลเก่าที่ไม่มี field นี้)
+    workDay: { type: String, default: undefined },
     jobGroupId: { type: String, index: true },
     // ภาพจำของงานตอนเช็คอิน — รายงานย้อนหลังยังอ่านออกแม้งานถูกแก้ชื่อ/ลบไปแล้ว
     jobLabel: { type: String, default: "" },
@@ -86,6 +88,8 @@ const attendanceSchema = new mongoose.Schema(
 
 attendanceSchema.index({ userId: 1, status: 1 });
 attendanceSchema.index({ "checkIn.at": -1 });
+// เอกสารเก่าไม่มี workDay จึงไม่ชน index; เอกสารใหม่กันบันทึกซ้ำในวันเดียวกันแบบ atomic
+attendanceSchema.index({ eventId: 1, workDay: 1 }, { unique: true, partialFilterExpression: { workDay: { $type: "string" } } });
 
 const Attendance = mongoose.model("Attendance", attendanceSchema);
 module.exports = Attendance;

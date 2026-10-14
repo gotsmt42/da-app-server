@@ -53,7 +53,14 @@ const isParticipant = (ev, user, userId) => {
  *    คนที่เช็คอิน/เช็คเอาต์ได้ = "หัวหน้าทีมเข้างาน" ของวันนั้น (resPerson / team) เท่านั้น — 1 บันทึกต่อทีมต่อวัน
  */
 const isTeamHead = (ev, user, userId) =>
-  Boolean((ev.resPerson && String(ev.resPerson) === String(userId)) || (user?.fname && ev.team === user.fname));
+  Boolean(
+    (ev.resPerson && String(ev.resPerson) === String(userId)) ||
+    (user?.fname && ev.team === user.fname) ||
+    (!ev.team && !ev.resPerson && (
+      (ev.responsiblePersonId && String(ev.responsiblePersonId) === String(userId)) ||
+      (user?.fname && ev.responsiblePerson === user.fname)
+    ))
+  );
 const membersOf = (ev) => [...new Set((ev.teamMembers || []).map((m) => m?.name).filter((n) => n && n !== ev.team))];
 
 /**
@@ -246,7 +253,7 @@ router.post("/check-in", verifyToken, async (req, res) => {
       return res.status(400).json({ message: "งานนี้ยังไม่ได้รับอนุมัติ — กดเข้างานได้หลังแอดมินอนุมัติ" });
     }
     // ✅ ตามขั้นตอน: มอบหมายหัวหน้าทีมแล้ว → หัวหน้าทีมกดเช็คอิน → ถึงวันเข้างานแล้วเท่านั้น
-    if (!ev.team && !ev.resPerson) {
+    if (!ev.team && !ev.resPerson && !ev.responsiblePersonId && !ev.responsiblePerson) {
       return res.status(400).json({ message: "งานนี้ยังไม่มีหัวหน้าทีมเข้างาน — รอแอดมินมอบหมายก่อน" });
     }
     if (!isTeamHead(ev, req.user, req.userId)) {
@@ -269,38 +276,58 @@ router.post("/check-in", verifyToken, async (req, res) => {
         return res.status(400).json({ message: "ผู้รับผิดชอบยังไม่ยืนยันนัดหมาย — ยืนยันนัดหมายก่อน จึงบันทึกเข้างานได้" });
       }
     }
-    // งานนี้ (วันนี้) เช็คอินไปแล้ว — 1 ครั้งต่อการ์ดงาน · ไม่มีการค้างเช็คอิน ไปงานอื่นได้เลย
-    const already = await Attendance.findOne({ eventId: ev._id }).sort({ "checkIn.at": -1 }).lean();
-    if (already) {
-      return res.status(409).json({ message: `งานนี้กดเข้างานแล้วเมื่อ ${thTime(already.checkIn?.at)} โดย ${already.userName}`, attendance: already });
-    }
-
     const site = await siteCoordsOf(ev);
     const stamp = readStamp(req.body, site);
+    // บันทึกแยกวันตามเวลาไทย: งานเดียวกันเข้างานได้ทุกวัน แต่วันเดียวกันห้ามซ้ำ
+    const today = bkkDay(stamp.at);
+    const dayStart = new Date(`${today}T00:00:00+07:00`);
+    const dayEnd = new Date(`${addDays(today, 1)}T00:00:00+07:00`);
+    const already = await Attendance.findOne({
+      eventId: ev._id,
+      $or: [
+        { workDay: today },
+        // อ่านบันทึกเก่าที่ยังไม่มี workDay ได้ต่อเนื่องโดยไม่ย้าย/แก้ข้อมูลย้อนหลัง
+        { workDay: { $exists: false }, "checkIn.at": { $gte: dayStart, $lt: dayEnd } },
+      ],
+    }).sort({ "checkIn.at": -1 }).lean();
+    if (already) {
+      return res.status(409).json({ message: `งานนี้บันทึกเข้างานวันที่ ${today} แล้ว (${thTime(already.checkIn?.at)} โดย ${already.userName})`, attendance: already });
+    }
+
     const note = String(req.body.note || "").trim().slice(0, 500);
     const photos = takeFiles(ev.sitePhotoFiles, req.body.photoIds, "before");
     // ✅ (10 ต.ค. 2569 ผู้ใช้: "การเช็คอินต้องอัปรูปภาพหน้างานก่อนถึงจะกดได้")
     if (!photos.length) return res.status(400).json({ message: "กรุณาถ่ายรูปหน้างานก่อนเริ่มงานอย่างน้อย 1 รูป" });
 
     // นอกวันนัด: วันนี้ (เวลาไทย) ไม่อยู่ในช่วงวันเข้างานของงานนี้
-    const today = bkkDay(stamp.at);
     const startDay = bkkDay(ev.start || ev.date);
     const lastDay = ev.end ? addDays(bkkDay(ev.end), ev.allDay === false ? 0 : -1) : startDay;
     const offSchedule = today < startDay || today > (lastDay < startDay ? startDay : lastDay);
 
     const name = personName(req.user);
-    const row = await Attendance.create({
-      eventId: ev._id,
-      jobGroupId: ev.jobGroupId || undefined,
-      jobLabel: jobLabelOf(ev),
-      jobNo: ev.jobNo || "",
-      userId: req.userId,
-      userName: name,
-      team: { head: ev.team || name, members: membersOf(ev) },
-      site: site || undefined,
-      offSchedule,
-      checkIn: { ...stamp, note, photos },
-    });
+    let row;
+    try {
+      row = await Attendance.create({
+        eventId: ev._id,
+        workDay: today,
+        jobGroupId: ev.jobGroupId || undefined,
+        jobLabel: jobLabelOf(ev),
+        jobNo: ev.jobNo || "",
+        userId: req.userId,
+        userName: name,
+        team: { head: ev.team || name, members: membersOf(ev) },
+        site: site || undefined,
+        offSchedule,
+        checkIn: { ...stamp, note, photos },
+      });
+    } catch (err) {
+      // index เฉพาะวันป้องกันการกดซ้ำพร้อมกันจากหลายหน้าจอ
+      if (err?.code === 11000) {
+        const duplicate = await Attendance.findOne({ eventId: ev._id, workDay: today }).lean();
+        return res.status(409).json({ message: `งานนี้บันทึกเข้างานวันที่ ${today} แล้ว`, attendance: duplicate });
+      }
+      throw err;
+    }
 
     // 🔗 งาน: เวลาเข้างานจริง · ประวัติ · สถานะทั้งงาน → กำลังดำเนินการ
     if (!ev.checkedInAt) ev.checkedInAt = stamp.at;
@@ -323,14 +350,19 @@ router.post("/check-in", verifyToken, async (req, res) => {
       return d.save();
     }));
 
-    if (ev.responsiblePersonId && String(ev.responsiblePersonId) !== String(req.userId)) {
-      sendPushToUsers(ev.responsiblePersonId, {
-        title: `📍 ${name} เข้างานแล้ว`,
-        body: `${jobLabelOf(ev)} · ${thTime(stamp.at)}${where}`,
-        url: `/operation/${ev._id}`,
-        tag: `attendance-${ev._id}`,
-      }).catch(() => {});
-    }
+    const responsibleId = ev.responsiblePersonId ? String(ev.responsiblePersonId) : "";
+    const pushRecipients = new Set([responsibleId, uid].filter(Boolean));
+    const attendancePush = {
+      title: `?? ${name} ?????????????????`,
+      body: `${jobLabelOf(ev)} ? ${thTime(stamp.at)}${where}`,
+      url: `/operation/${ev._id}`,
+      // ??? tag ?????? ??????????????????????????????????????????????????????????
+      tag: `attendance-${ev._id}-${today}`,
+    };
+    const directRecipients = [...pushRecipients].filter((id) => id !== uid);
+    if (directRecipients.length) sendPushToUsers(directRecipients, attendancePush).catch(() => {});
+    // ??????????/?????????/????????????????????????????? ????????????????????????????????????????????????
+    sendPushToRoles(SUPERVISOR_ROLES, attendancePush, [...pushRecipients]).catch(() => {});
 
     // ✅ (11 ต.ค. 2569 ผู้ใช้: "เมื่อกดเข้างาน สถานะงานต้องเปลี่ยนเป็นกำลังดำเนินการ")
     //    คืนงานทั้งกลุ่ม (สถานะใหม่ + acks) ให้หน้าจอแก้ข้อมูลในที่ทันที — ฟอร์ม EditEvent จะได้ไม่บันทึกสถานะเก่าทับ
@@ -344,8 +376,26 @@ router.post("/check-in", verifyToken, async (req, res) => {
 
 /** ใช้คำขอแก้เวลาที่อนุมัติแล้ว: เปลี่ยนเวลา · คำนวณชั่วโมงใหม่ · บันทึกประวัติในงาน */
 async function applyCorrection(row, c, byName, byUserId) {
-  if (c.field === "checkIn") row.checkIn.at = c.toAt;
-  else row.checkOut.at = c.toAt;
+  if (c.field === "checkIn") {
+    const workDay = bkkDay(c.toAt);
+    const dayStart = new Date(`${workDay}T00:00:00+07:00`);
+    const dayEnd = new Date(`${addDays(workDay, 1)}T00:00:00+07:00`);
+    const duplicate = await Attendance.findOne({
+      eventId: row.eventId,
+      _id: { $ne: row._id },
+      $or: [
+        { workDay },
+        { workDay: { $exists: false }, "checkIn.at": { $gte: dayStart, $lt: dayEnd } },
+      ],
+    }).lean();
+    if (duplicate) {
+      const err = new Error(`แก้เวลาไม่ได้ — งานนี้มีบันทึกเข้างานวันที่ ${workDay} อยู่แล้ว`);
+      err.status = 409;
+      throw err;
+    }
+    row.checkIn.at = c.toAt;
+    row.workDay = workDay;
+  } else row.checkOut.at = c.toAt;
   if (row.status === "checked_out" && row.checkOut?.at) row.durationMin = minutesBetween(row.checkIn.at, row.checkOut.at);
   const label = c.field === "checkIn" ? "เวลาเข้างาน" : "เวลาออกงาน";
   await CalendarEvent.updateOne({ _id: row.eventId }, {
@@ -408,7 +458,7 @@ router.post("/:id/corrections", verifyToken, async (req, res) => {
     res.json({ attendance: row.toObject() });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "บันทึกไม่สำเร็จ" });
+    res.status(err?.status || (err?.code === 11000 ? 409 : 500)).json({ message: err?.status ? err.message : err?.code === 11000 ? "แก้เวลาไม่ได้ — วันดังกล่าวมีบันทึกเข้างานแล้ว" : "บันทึกไม่สำเร็จ" });
   }
 });
 
@@ -453,7 +503,7 @@ router.put("/:id/corrections/:cid", verifyToken, async (req, res) => {
     res.json({ attendance: row.toObject() });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "บันทึกไม่สำเร็จ" });
+    res.status(err?.status || (err?.code === 11000 ? 409 : 500)).json({ message: err?.status ? err.message : err?.code === 11000 ? "แก้เวลาไม่ได้ — วันดังกล่าวมีบันทึกเข้างานแล้ว" : "บันทึกไม่สำเร็จ" });
   }
 });
 
