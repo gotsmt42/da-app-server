@@ -278,16 +278,28 @@ router.post("/check-in", verifyToken, async (req, res) => {
     }
     const site = await siteCoordsOf(ev);
     const stamp = readStamp(req.body, site);
-    // บันทึกแยกวันตามเวลาไทย: งานเดียวกันเข้างานได้ทุกวัน แต่วันเดียวกันห้ามซ้ำ
+    // ใช้เวลาจากเซิร์ฟเวอร์แปลงเป็นวันไทยเป็นค่าหลัก ไม่เชื่อวันจากเครื่องผู้ใช้
     const today = bkkDay(stamp.at);
     const dayStart = new Date(`${today}T00:00:00+07:00`);
     const dayEnd = new Date(`${addDays(today, 1)}T00:00:00+07:00`);
+
+    // ซ่อมป้าย workDay ที่ข้อมูลรุ่นก่อนอาจผูกกับวันไม่ตรงกับเวลาเช็คอินจริง
+    // ถ้าไม่แก้ ค่าเก่าของเมื่อวานอาจบล็อกการเช็คอินวันนี้ผ่าน unique index (eventId, workDay)
+    const labeledToday = await Attendance.find({ eventId: ev._id, workDay: today, "checkIn.at": { $exists: true } })
+      .select("_id checkIn.at").lean();
+    const staleLabels = labeledToday.filter((r) => r.checkIn?.at && bkkDay(r.checkIn.at) !== today);
+    if (staleLabels.length) {
+      await Attendance.updateMany({ _id: { $in: staleLabels.map((r) => r._id) }, workDay: today }, { $unset: { workDay: 1 } });
+    }
+
+    // กันซ้ำจากเวลาเข้างานจริงในวันไทยนั้น; รองรับข้อมูลเก่าที่ไม่มี workDay
+    // workDay เป็นตัวสำรองเฉพาะข้อมูลเก่าที่ไม่มี checkIn.at เท่านั้น
     const already = await Attendance.findOne({
       eventId: ev._id,
       $or: [
-        { workDay: today },
-        // อ่านบันทึกเก่าที่ยังไม่มี workDay ได้ต่อเนื่องโดยไม่ย้าย/แก้ข้อมูลย้อนหลัง
-        { workDay: { $exists: false }, "checkIn.at": { $gte: dayStart, $lt: dayEnd } },
+        { "checkIn.at": { $gte: dayStart, $lt: dayEnd } },
+        { workDay: today, "checkIn.at": { $exists: false } },
+        { workDay: today, "checkIn.at": null },
       ],
     }).sort({ "checkIn.at": -1 }).lean();
     if (already) {
@@ -323,8 +335,18 @@ router.post("/check-in", verifyToken, async (req, res) => {
     } catch (err) {
       // index เฉพาะวันป้องกันการกดซ้ำพร้อมกันจากหลายหน้าจอ
       if (err?.code === 11000) {
-        const duplicate = await Attendance.findOne({ eventId: ev._id, workDay: today }).lean();
-        return res.status(409).json({ message: `งานนี้บันทึกเข้างานวันที่ ${today} แล้ว`, attendance: duplicate });
+        const duplicate = await Attendance.findOne({
+          eventId: ev._id,
+          $or: [
+            { "checkIn.at": { $gte: dayStart, $lt: dayEnd } },
+            { workDay: today, "checkIn.at": { $exists: false } },
+            { workDay: today, "checkIn.at": null },
+          ],
+        }).lean();
+        return res.status(409).json({
+          message: `งานนี้บันทึกเข้างานวันที่ ${today} แล้ว${duplicate?.checkIn?.at ? ` (${thTime(duplicate.checkIn.at)} โดย ${duplicate.userName})` : ""}`,
+          ...(duplicate ? { attendance: duplicate } : {}),
+        });
       }
       throw err;
     }
@@ -353,15 +375,15 @@ router.post("/check-in", verifyToken, async (req, res) => {
     const responsibleId = ev.responsiblePersonId ? String(ev.responsiblePersonId) : "";
     const pushRecipients = new Set([responsibleId, uid].filter(Boolean));
     const attendancePush = {
-      title: `?? ${name} ?????????????????`,
-      body: `${jobLabelOf(ev)} ? ${thTime(stamp.at)}${where}`,
+      title: `📍 ${name} บันทึกเข้างานแล้ว`,
+      body: `${jobLabelOf(ev)} · ${thTime(stamp.at)}${where}`,
       url: `/operation/${ev._id}`,
-      // ??? tag ?????? ??????????????????????????????????????????????????????????
+      // แยก tag ตามวัน เพื่อให้การเข้างานคนละวันไม่ทับแจ้งเตือนเดิมของงานเดียวกัน
       tag: `attendance-${ev._id}-${today}`,
     };
     const directRecipients = [...pushRecipients].filter((id) => id !== uid);
     if (directRecipients.length) sendPushToUsers(directRecipients, attendancePush).catch(() => {});
-    // ??????????/?????????/????????????????????????????? ????????????????????????????????????????????????
+    // แจ้งแอดมิน/ผู้จัดการ/กรรมการผู้จัดการให้ติดตามด้วย และตัดผู้รับผิดชอบที่รับแจ้งตรงออกเพื่อไม่ให้ซ้ำ
     sendPushToRoles(SUPERVISOR_ROLES, attendancePush, [...pushRecipients]).catch(() => {});
 
     // ✅ (11 ต.ค. 2569 ผู้ใช้: "เมื่อกดเข้างาน สถานะงานต้องเปลี่ยนเป็นกำลังดำเนินการ")
