@@ -118,7 +118,7 @@ async function checkAndNotifyOverdueJobs() {
       // ✅ ค้างแค่งานเดียว — เจาะจงพาไปที่งานนั้นเลย (/operation/:id?group=overdue ตรงกับ pattern เดียว
       // กับที่การ์ด "งานค้างของช่าง" ใน Dashboard ใช้อยู่แล้ว — group=overdue สั่งให้แถบสถานะบนหน้า
       // Operation ไฮไลต์ถูกกลุ่มด้วย) มากกว่า 1 งานถึงค่อยพาไปหน้ารวมเหมือนเดิม
-      const url = jobs.length === 1 ? `/operation/${jobs[0].id}?group=overdue` : "/operation";
+      const url = jobs.length === 1 ? `/operation/${jobs[0].id}?group=overdue` : "/operation?group=overdue"; // (15 ต.ค. 2569) ลิงก์ตรงกับข้อความ "งานค้าง"
 
       // ⚠️ กันแจ้งซ้ำในวันเดียวกัน — ตัวเช็คนี้ถูกยิงใหม่ทุกครั้งที่เซิร์ฟเวอร์รีสตาร์ท/deploy
       // (ดูเหตุผลเต็มที่ models/NotifyLog.js) ถ้าไม่กันไว้ วัน deploy หลายรอบผู้ใช้จะโดนเรื่องเดิมซ้ำทั้งวัน
@@ -558,7 +558,7 @@ async function checkAndNotifyUnackedJobs() {
       await sendPushToRoles(dispatchRanks, {
         title: `⏳ งานพรุ่งนี้ ${jobs.length} งาน ช่างยังไม่กดรับทราบงาน`,
         body: names,
-        url: "/operation",
+        url: "/operation?group=waiting", // (15 ต.ค. 2569) งานที่ยังไม่รับทราบ = แถบ "รอยืนยัน"
         tag: "unacked-jobs",
       });
     }
