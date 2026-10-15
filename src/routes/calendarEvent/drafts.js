@@ -425,6 +425,19 @@ module.exports = (router) => {
       await existingEvent.save();
       // ✅ ครั้งที่ลงตารางเข้าสัญญาที่มีผู้รับผิดชอบแล้ว → ใช้ผู้รับผิดชอบเดียวกับภาพรวมงาน
       const synced = await syncGroupsOf([existingEvent]);
+      // ✅ (15 ต.ค. 2569 ผู้ใช้: "ช่างกดเพิ่มงานได้ ขอเพิ่มลงตารางต้องไปขอลงงานแบบเดิม" → ส่งขออนุมัติ)
+      //    ช่างขอลงตารางงานที่ตัวเองรับไว้ (ยังรออนุมัติ) → แจ้งผู้อนุมัติ ไปอนุมัติที่หน้าคำขอลงงาน
+      if (existingEvent.approvalStatus === "pending" && !isAdminOrManager) {
+        const who = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ช่าง";
+        const day = existingEvent.start ? thaiDate(existingEvent.start) : "-";
+        sendPushToRoles(SUPERVISOR_ROLES, {
+          title: `📅 ${who} ขอลงตารางงาน — รออนุมัติ`,
+          body: `${existingEvent.title || "งาน"} · ${existingEvent.site || existingEvent.company || "-"} · เข้างาน ${day}`,
+          url: "/dispatch?tab=approvals",
+          tag: `approval-draft-${existingEvent._id}`,
+          renotify: true,
+        }).catch((err) => console.error("❌ Push notify error (schedule-request):", err));
+      }
       res.json({ event: synced ? await CalendarEvent.findById(existingEvent._id) : existingEvent });
     } catch (error) {
       console.error("❌ Error scheduling draft event:", error);
