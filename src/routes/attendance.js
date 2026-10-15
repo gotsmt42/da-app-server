@@ -233,6 +233,17 @@ router.get("/", verifyToken, async (req, res) => {
       rows = rows.filter((r) => !closed.has(String(r.eventId)));
       closedHidden = before - rows.length;
     }
+    // ✅ (15 ต.ค. 2569 ผู้ใช้: "ให้แสดงรายละเอียดงานด้วย") — แนบข้อมูลงานปัจจุบัน (ประเภท · ระบบ · โครงการ · รายละเอียด)
+    //    ⚠️ แค่แนบในคำตอบ · งานที่ถูกลบไปแล้วยังมี jobLabel/jobNo ที่จดไว้ตอนบันทึก
+    if (rows.length) {
+      const evs = await CalendarEvent.find({ _id: { $in: [...new Set(rows.map((r) => String(r.eventId)))] } })
+        .select("title system site company description start end allDay status").lean();
+      const byId = new Map(evs.map((e) => [String(e._id), e]));
+      rows.forEach((r) => {
+        const e = byId.get(String(r.eventId));
+        if (e) r.job = { title: e.title || "", system: e.system || "", site: e.site || "", company: e.company || "", description: String(e.description || "").slice(0, 300), start: e.start, end: e.end, allDay: e.allDay, status: e.status || "" };
+      });
+    }
     const pendingCount = all ? await Attendance.countDocuments({ hasPendingCorrection: true }) : 0;
     res.json({ attendance: rows, pendingCount, closedHidden, serverNow: new Date() });
   } catch (err) {
