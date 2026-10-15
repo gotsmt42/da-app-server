@@ -36,21 +36,21 @@ const NOTIFY_SLOTS = [
       { name: "งานพรุ่งนี้ยังไม่รับทราบ", task: checkAndNotifyUnackedJobs },
       { name: "งานใหม่ค้างเกิน 2 วัน", task: checkAndNotifyStalledIntake },
       // (15 ต.ค. 2569) สรุปสัปดาห์ละครั้ง — ย้ายมาช่วงเช้า ให้เห็นตอนเริ่มงานวันจันทร์
-      { name: "สัญญาใกล้หมดอายุ (สรุปรายสัปดาห์)", task: checkAndNotifyExpiringContracts },
+      { name: "สัญญาใกล้หมดอายุ (ทุกจันทร์)", task: checkAndNotifyExpiringContracts },
     ],
   },
   {
     slot: "บ่าย", hour: 13, minute: 30,
     tasks: [
       { name: "ใบเบิกรออนุมัติค้าง", task: checkAndNotifyPendingExpenses },
-      { name: "Advance เลยกำหนดเคลียร์", task: checkAndNotifyOverdueAdvances },
+      { name: "Advance เลยกำหนดเคลียร์ (ทุกจันทร์)", task: checkAndNotifyOverdueAdvances },
     ],
   },
   {
     slot: "เย็น", hour: 16, minute: 30,
     tasks: [
-      { name: "ใบเสนอราคาค้าง", task: checkAndNotifyStaleQuotations },
-      { name: "ใบวางบิลเลยกำหนด", task: checkAndNotifyOverdueInvoices },
+      { name: "ใบเสนอราคาค้าง (ทุกจันทร์)", task: checkAndNotifyStaleQuotations },
+      { name: "ใบวางบิลเลยกำหนด (ทุกจันทร์)", task: checkAndNotifyOverdueInvoices },
     ],
   },
 ];

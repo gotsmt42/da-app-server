@@ -23,6 +23,7 @@ const baht = (n) => `${(Math.round((Number(n) || 0) * 100) / 100).toLocaleString
  */
 async function checkAndNotifyOverdueAdvances() {
   try {
+    if (!NotifyLog.isWeeklyDay()) return;
     const rows = await Expense.find({
       kind: "advance",
       status: "paid",
@@ -33,7 +34,8 @@ async function checkAndNotifyOverdueAdvances() {
     for (const r of rows) {
       const uid = r.requester?.userId;
       if (!uid) continue;
-      if (!(await NotifyLog.claimOncePerDay("advance-overdue", String(r._id), uid))) continue;
+      // (15 ต.ค. 2569 ผู้ใช้เลือก) Advance เลยกำหนดเคลียร์ = เตือนทุกวันจันทร์
+      if (!(await NotifyLog.claimOncePerWeek("advance-overdue", String(r._id), uid))) continue;
       const days = Math.max(1, moment().diff(moment(r.dueClearAt), "days"));
       await sendPushToUsers([uid], {
         title: "⏰ ถึงเวลาเคลียร์ Advance แล้ว",
@@ -44,7 +46,7 @@ async function checkAndNotifyOverdueAdvances() {
       });
     }
 
-    if (!(await NotifyLog.claimOncePerDay("advance-overdue", "broadcast", "admin+manager"))) return;
+    if (!(await NotifyLog.claimOncePerWeek("advance-overdue", "broadcast", "admin+manager"))) return;
     const sum = rows.reduce((s, r) => s + (Number(r.total) || 0), 0);
     await sendPushToRoles(SUPERVISOR_ROLES, {
       title: "⏰ มี Advance เลยกำหนดเคลียร์",

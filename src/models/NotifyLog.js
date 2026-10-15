@@ -82,4 +82,21 @@ NotifyLog.claimOnce = async function claimOnce(kind, subject, recipient) {
   }
 };
 
+/**
+ * ✅ (15 ต.ค. 2569 ผู้ใช้: "ใบเสนอราคา · ใบวางบิล · Advance · สัญญาใกล้หมดอายุ ให้เตือนทุกวันจันทร์")
+ *    สรุปรายสัปดาห์ — ส่งได้เฉพาะวันจันทร์ (เวลาไทย) และครั้งเดียวต่อสัปดาห์ (ISO week) ต่อเรื่องต่อผู้รับ
+ */
+const thNow = () => new Date(Date.now() + 7 * 60 * 60 * 1000);
+NotifyLog.WEEKLY_DAY = 1; // จันทร์
+NotifyLog.isWeeklyDay = () => thNow().getUTCDay() === NotifyLog.WEEKLY_DAY;
+NotifyLog.claimOncePerWeek = async function claimOncePerWeek(kind, subject, recipient) {
+  if (!NotifyLog.isWeeklyDay()) return false;
+  // ISO week ของวันนี้ (เวลาไทย) — ใช้วันพฤหัสของสัปดาห์เป็นตัวตั้งปี/สัปดาห์ตามมาตรฐาน ISO 8601
+  const d = thNow();
+  const day = d.getUTCDay() || 7;
+  const thu = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 4 - day));
+  const week = Math.ceil(((thu - Date.UTC(thu.getUTCFullYear(), 0, 1)) / 86400000 + 1) / 7);
+  return NotifyLog.claimOnce(kind, `${subject}:${thu.getUTCFullYear()}-W${String(week).padStart(2, "0")}`, recipient);
+};
+
 module.exports = NotifyLog;

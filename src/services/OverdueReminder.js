@@ -207,7 +207,8 @@ async function checkAndNotifyStaleQuotations() {
     const url = staleJobs.length === 1 ? `/quotations?jobId=${staleJobs[0].jobId}` : "/quotations";
 
     // ⚠️ กันแจ้งซ้ำในวันเดียวกัน (ดู models/NotifyLog.js) — ผู้รับเป็นกลุ่ม role จึงใช้ชื่อกลุ่มเป็นคีย์
-    if (await NotifyLog.claimOncePerDay("stale-quotations", "broadcast", "admin+manager")) {
+    // (15 ต.ค. 2569 ผู้ใช้เลือก) ใบเสนอราคาค้าง = เตือนทุกวันจันทร์
+    if (await NotifyLog.claimOncePerWeek("stale-quotations", "broadcast", "admin+manager")) {
     await sendPushToRoles(SUPERVISOR_ROLES, {
       title: `📄 ใบเสนอราคารอติดตาม ${staleJobs.length} ใบ`,
       body: `ไม่ได้ติดต่อลูกค้าเกิน ${QUOTATION_WARNING_DAYS} วัน\nแตะเพื่อติดตามและบันทึกผล`,
@@ -233,7 +234,7 @@ async function checkAndNotifyStaleQuotations() {
 
     for (const [techId, jobIds] of staleByTech.entries()) {
       const techUrl = jobIds.length === 1 ? `/quotations?jobId=${jobIds[0]}` : "/quotations";
-      if (!(await NotifyLog.claimOncePerDay("stale-quotations", "self", techId))) continue;
+      if (!(await NotifyLog.claimOncePerWeek("stale-quotations", "self", techId))) continue;
       await sendPushToUsers(techId, {
         title: `📄 ใบเสนอราคารอติดตาม ${jobIds.length} ใบ`,
         body: `งานที่คุณรับผิดชอบ · ไม่ได้ติดต่อลูกค้าเกิน ${QUOTATION_WARNING_DAYS} วัน\nแตะเพื่อติดตามและบันทึกผล`,
@@ -391,8 +392,7 @@ async function checkAndNotifyOverdueContracts() {
 //
 // 🔁 (15 ต.ค. 2569 ผู้ใช้: "push แจ้งเตือนสัญญาที่ใกล้หมดอายุ ก่อน 3 เดือน และทำให้ชัดเจน ดูง่าย")
 //   • เริ่มเตือนตั้งแต่เหลือ 90 วัน (เดิม 60) — เวลาพอให้เสนอราคาต่อสัญญา/รออนุมัติจากลูกค้า
-//   • สรุป "สัปดาห์ละครั้ง" (ผู้ใช้เลือก) — รอบแรกของสัปดาห์ที่ตัวเช็คทำงาน (ปกติเช้าวันจันทร์) แทนเด้งเรื่องเดิมทุกวัน
-//     กุญแจกันซ้ำผูกกับสัปดาห์ (ISO week) — เซิร์ฟเวอร์ดับวันจันทร์ก็ยังส่งในวันถัดไปของสัปดาห์นั้น ไม่หายทั้งสัปดาห์
+//   • สรุป "สัปดาห์ละครั้ง" ทุกเช้าวันจันทร์ (ผู้ใช้เลือก) แทนเด้งเรื่องเดิมทุกวัน — ดู NotifyLog.claimOncePerWeek
 //   • ข้อความบอกชื่อสัญญา วันหมดอายุ และเหลืออีกกี่วัน ทีละบรรทัด — แตะแล้วเปิดหน้าภาพรวมงานกรองเฉพาะสัญญาใกล้หมดอายุ
 //   • สัญญาที่เพิ่งหมดอายุไม่เกิน 30 วันแจ้งแยกอีกก้อน (เก่ากว่านั้นอยู่ในหน้า "ปิดแล้ว · ประวัติ" ไม่เด้งซ้ำทุกสัปดาห์)
 //
@@ -441,6 +441,7 @@ function expiryPayload(kind, list, personal) {
 
 async function checkAndNotifyExpiringContracts() {
   try {
+    if (!NotifyLog.isWeeklyDay()) return;
     const horizon = moment().add(EXPIRY_WARN_DAYS + 1, "days").toDate();
     const floor = moment().subtract(EXPIRED_NOTIFY_DAYS + 1, "days").toDate();
     const events = await CalendarEvent.find({
@@ -473,7 +474,7 @@ async function checkAndNotifyExpiringContracts() {
 
     const week = today.format("GGGG-[W]WW");
     const send = async (recipientKey, list, deliver, personal) => {
-      if (!(await NotifyLog.claimOnce("contract-expiry-week", week, recipientKey))) return 0;
+      if (!(await NotifyLog.claimOncePerWeek("contract-expiry", "summary", recipientKey))) return 0;
       const expired = list.filter((c) => c.daysLeft < 0);
       const expiring = list.filter((c) => c.daysLeft >= 0);
       if (expiring.length) await deliver(expiryPayload("expiring", expiring, personal));
@@ -512,6 +513,7 @@ async function checkAndNotifyExpiringContracts() {
 // งานส่วนใหญ่ยังไม่ได้วางบิลเลย ถ้าดึงทั้งคอลเลกชันมากรองเองจะหนักขึ้นเรื่อยๆ ตามข้อมูลที่โต
 async function checkAndNotifyOverdueInvoices() {
   try {
+    if (!NotifyLog.isWeeklyDay()) return;
     const now = new Date();
     const events = await CalendarEvent.find({ "billing.dueAt": { $ne: null, $lt: now } })
       .select("company site title time billing")
@@ -526,7 +528,8 @@ async function checkAndNotifyOverdueInvoices() {
     const totalOutstanding = overdue.reduce((sum, { st }) => sum + Math.max(0, st.outstanding), 0);
     const worst = overdue.reduce((a, b) => (b.st.overdueDays > a.st.overdueDays ? b : a));
 
-    if (await NotifyLog.claimOncePerDay("overdue-invoices", "broadcast", "admin+manager")) {
+    // (15 ต.ค. 2569 ผู้ใช้เลือก) ใบวางบิลเลยกำหนด = เตือนทุกวันจันทร์
+    if (await NotifyLog.claimOncePerWeek("overdue-invoices", "broadcast", "admin+manager")) {
       await sendPushToRoles(SUPERVISOR_ROLES, {
         title: `💰 ใบวางบิลเลยกำหนดชำระ ${overdue.length} ใบ`,
         body: `ค้างรับรวม ${Math.round(totalOutstanding).toLocaleString("th-TH")} บาท\nนานสุด ${worst.st.overdueDays} วัน · ${worst.e.company || "ไม่ระบุลูกค้า"}\nแตะเพื่อติดตามการชำระ`,
