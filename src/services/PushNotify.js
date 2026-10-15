@@ -23,13 +23,16 @@ webpush.setVapidDetails(
  *   • Urgency — เตือนประจำวัน = low (ไม่ปลุกเครื่องที่ประหยัดแบต) · เหตุการณ์ที่ต้องลงมือ = high
  * ⚠️ topic ต้องเป็นอักขระ URL-safe base64 ไม่เกิน 32 ตัว — แปลง tag เป็น hash เสมอ (tag มีภาษาไทย/ขีด/ยาวได้)
  */
-const REMINDER_TAGS = /reminder|overdue|unassigned/i;
+const REMINDER_TAGS = /reminder|overdue|unassigned|contract-|stalled|unacked/i;
 function deliveryOptions(payload = {}) {
   const tag = String(payload.tag || "");
   const isReminder = payload.kind === "reminder" || REMINDER_TAGS.test(tag);
+  // 🔁 (15 ต.ค. 2569 ผู้ใช้: "อยากให้แจ้งเตือนเด้งทับแถบหน้าจอมือถือ แบบ LINE") — urgency "high" ทุกเรื่อง
+  //    low = FCM ส่งแบบ normal priority → เครื่องที่พักหน้าจอ (Doze) เก็บไว้ส่งรวดทีหลัง ไม่เด้งตอนนั้น
+  //    เตือนประจำวันถูกจำกัดวันละครั้งที่ NotifyLog อยู่แล้ว ส่งด่วนก็ไม่รบกวนเพิ่ม
   const opts = {
     TTL: Number(payload.ttl) > 0 ? Number(payload.ttl) : (isReminder ? 4 : 12) * 60 * 60,
-    urgency: payload.urgency || (isReminder ? "low" : "high"),
+    urgency: payload.urgency || "high",
   };
   if (tag) opts.topic = crypto.createHash("sha256").update(tag).digest("base64url").slice(0, 32);
   return opts;
@@ -76,9 +79,27 @@ async function saveToInbox(ids, payload) {
 // ✅ ส่ง push ให้ผู้ใช้ตาม userId ทุกอุปกรณ์/เบราว์เซอร์ที่เคย subscribe ไว้ + เก็บลงกล่องแจ้งเตือน
 // ✅ แนบ nid (ไว้ทำเครื่องหมายอ่านแล้วตอนกด) + badge (จำนวนที่ยังไม่อ่าน → ตัวเลขบนไอคอนแอปแบบ LINE)
 // ถ้า endpoint หมดอายุ/ถูกยกเลิก (404/410) ให้ลบ subscription นั้นทิ้งจาก DB ไปเลย
-async function sendPushToUsers(userIds, payload) {
+/**
+ * ✅ (15 ต.ค. 2569 ผู้ใช้: "การแจ้งเตือนทั้งหมด ทำให้ชัดเจน ดูง่าย") — จัดรูปข้อความกลางที่เดียวก่อนส่งทุกเรื่อง
+ *   • หัวเรื่องบรรทัดเดียว สั้น (มือถือตัดหัวเรื่องราว 40 ตัวอักษร)
+ *   • ข้อความ: "— แตะเพื่อ…/— กรุณา…" (คำแนะนำว่าต้องทำอะไร) ขึ้นบรรทัดใหม่ แยกจากรายละเอียดงาน
+ *   • ช่องว่าง/ขึ้นบรรทัดซ้ำซ้อนถูกยุบ
+ */
+function tidyPayload(payload = {}) {
+  const title = String(payload.title || "").replace(/\s+/g, " ").trim();
+  const body = String(payload.body || "")
+    .replace(/\s+[—–-]\s+(?=(แตะ|กรุณา|ถึงวัน|นัดลูกค้า|ติดต่อ))/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+  return { ...payload, title, body };
+}
+
+async function sendPushToUsers(userIds, rawPayload) {
   const ids = [...new Set((Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean).map(String))];
   if (ids.length === 0) return;
+  const payload = tidyPayload(rawPayload);
 
   const inbox = await saveToInbox(ids, payload);
   const subs = await PushSubscription.find({ userId: { $in: ids } });
@@ -132,4 +153,4 @@ async function sendPushToAllUsers(payload, excludeUserIds = [], opts = {}) {
   await sendPushToUsers(ids, payload);
 }
 
-module.exports = { sendPushToUsers, sendPushToRoles, sendPushToAllUsers, deliveryOptions };
+module.exports = { sendPushToUsers, sendPushToRoles, sendPushToAllUsers, deliveryOptions, tidyPayload };

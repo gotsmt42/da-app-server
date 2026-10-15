@@ -65,4 +65,21 @@ NotifyLog.claimOncePerMonth = async function claimOncePerMonth(kind, subject, re
   }
 };
 
+/**
+ * ✅ (15 ต.ค. 2569) "ครั้งเดียวต่อเรื่อง" ไม่ผูกวัน — ใช้กับการเตือนแบบขั้นบันได (เช่น สัญญาเหลือ 90/60/30/7 วัน)
+ *    subject ต้องใส่ทุกอย่างที่ทำให้เป็น "เรื่องใหม่" ไว้เอง (เช่น วันสิ้นสุดสัญญา + ขั้น) — ต่อสัญญาแล้ววันสิ้นสุดเปลี่ยน = เตือนรอบใหม่
+ * ⚠️ แถวยังโดน TTL 45 วันเหมือนเดิม — ใช้กับเรื่องที่ "ขั้น" เปลี่ยนเร็วกว่า 45 วันเท่านั้น (ขั้นเก่าไม่ถูกเช็คซ้ำอีก)
+ */
+NotifyLog.claimOnce = async function claimOnce(kind, subject, recipient) {
+  const key = `${kind}:${subject}:${recipient}:once`;
+  try {
+    await NotifyLog.create({ key, kind });
+    return true;
+  } catch (err) {
+    if (err?.code === 11000) return false;
+    console.error("❌ NotifyLog claim error:", err);
+    return true;
+  }
+};
+
 module.exports = NotifyLog;

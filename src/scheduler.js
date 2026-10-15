@@ -35,6 +35,8 @@ const NOTIFY_SLOTS = [
       { name: "สัญญาเลยกำหนดรอบ", task: checkAndNotifyOverdueContracts },
       { name: "งานพรุ่งนี้ยังไม่รับทราบ", task: checkAndNotifyUnackedJobs },
       { name: "งานใหม่ค้างเกิน 2 วัน", task: checkAndNotifyStalledIntake },
+      // (15 ต.ค. 2569) สรุปสัปดาห์ละครั้ง — ย้ายมาช่วงเช้า ให้เห็นตอนเริ่มงานวันจันทร์
+      { name: "สัญญาใกล้หมดอายุ (สรุปรายสัปดาห์)", task: checkAndNotifyExpiringContracts },
     ],
   },
   {
@@ -49,7 +51,6 @@ const NOTIFY_SLOTS = [
     tasks: [
       { name: "ใบเสนอราคาค้าง", task: checkAndNotifyStaleQuotations },
       { name: "ใบวางบิลเลยกำหนด", task: checkAndNotifyOverdueInvoices },
-      { name: "สัญญาใกล้หมดอายุ", task: checkAndNotifyExpiringContracts },
     ],
   },
 ];

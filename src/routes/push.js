@@ -122,12 +122,17 @@ router.post("/test", verifyToken, async (req, res) => {
     const userId = String(req.userId);
     const devices = await PushSubscription.countDocuments({ userId });
     if (!devices) return res.status(409).json({ message: "ยังไม่มีอุปกรณ์ที่เปิดรับแจ้งเตือน — เปิดสวิตช์ก่อนแล้วลองใหม่" });
-    await sendPushToUsers(userId, {
+    // ✅ (15 ต.ค. 2569) delay — แอปเปิดอยู่บนจอจะเด้งเป็นแบนเนอร์ในแอปแทน ผู้ใช้จึงต้องมีเวลาออกจากแอป/ล็อกจอ
+    //    เพื่อดูว่าแจ้งเตือน "เด้งทับหน้าจอ" ของเครื่องทำงานจริงไหม (สูงสุด 15 วินาที)
+    const delaySec = Math.min(15, Math.max(0, Number(req.body?.delay) || 0));
+    const send = () => sendPushToUsers(userId, {
       title: "🔔 ทดสอบการแจ้งเตือน",
-      body: "ถ้าเห็นข้อความนี้บนจอมือถือ แปลว่าระบบแจ้งเตือนพร้อมใช้งานแล้ว",
-      url: "/about", tag: `push-test-${userId}`, renotify: true, inbox: false, ttl: 120,
-    });
-    res.json({ devices });
+      body: "ถ้าข้อความนี้เด้งทับหน้าจอ แปลว่าตั้งค่าเครื่องครบแล้ว\nแตะเพื่อกลับเข้าแอป",
+      url: "/settings", tag: `push-test-${userId}`, renotify: true, inbox: false, ttl: 120,
+    }).catch((e) => console.error("❌ ส่งแจ้งเตือนทดสอบไม่สำเร็จ:", e.message));
+    if (delaySec > 0) setTimeout(send, delaySec * 1000);
+    else await send();
+    res.json({ devices, delay: delaySec });
   } catch (err) {
     console.error("❌ ส่งแจ้งเตือนทดสอบไม่สำเร็จ:", err);
     res.status(500).json({ message: "ส่งแจ้งเตือนทดสอบไม่สำเร็จ" });

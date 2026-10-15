@@ -6,6 +6,7 @@ const { SUPERVISOR_ROLES, DEPARTMENT, effectiveCapabilities, normalizeRank } = r
 const NotifyLog = require("../models/NotifyLog");
 const { billingStatus } = require("../utils/billing");
 const { DEFAULT_INTERVAL_MONTHS, totalRoundsOf, roundLabelOf } = require("../utils/contractVisits");
+const { formatThai } = require("../utils/thaiDate");
 
 // ✅ เกณฑ์เดียวกับฝั่ง frontend (Operation/index.js) — เลยกำหนดวันสิ้นสุดงานตามแผนจริงมาแล้ว
 // อย่างน้อย 1 สัปดาห์ ถือว่า "ค้างงาน" ต้องแจ้งเตือน
@@ -112,8 +113,8 @@ async function checkAndNotifyOverdueJobs() {
       const daysList = jobs.map((j) => j.daysPastDue);
       const severeCount = daysList.filter((d) => d > SEVERE_DAYS_AFTER_END).length;
       const body = severeCount > 0
-        ? `มี ${daysList.length} งานเลยกำหนดส่งมอบ (${severeCount} งานเกิน 2 สัปดาห์) กรุณาตรวจสอบและปิดงาน`
-        : `มี ${daysList.length} งานเลยกำหนดส่งมอบแล้ว กรุณาตรวจสอบและปิดงาน`;
+        ? `เลยกำหนดส่งมอบ ${daysList.length} งาน (เกิน 2 สัปดาห์ ${severeCount} งาน)\nแตะเพื่อตรวจสอบและขอปิดงาน`
+        : `เลยกำหนดส่งมอบ ${daysList.length} งาน\nแตะเพื่อตรวจสอบและขอปิดงาน`;
 
       // ✅ ค้างแค่งานเดียว — เจาะจงพาไปที่งานนั้นเลย (/operation/:id?group=overdue ตรงกับ pattern เดียว
       // กับที่การ์ด "งานค้างของช่าง" ใน Dashboard ใช้อยู่แล้ว — group=overdue สั่งให้แถบสถานะบนหน้า
@@ -124,7 +125,7 @@ async function checkAndNotifyOverdueJobs() {
       // (ดูเหตุผลเต็มที่ models/NotifyLog.js) ถ้าไม่กันไว้ วัน deploy หลายรอบผู้ใช้จะโดนเรื่องเดิมซ้ำทั้งวัน
       if (!(await NotifyLog.claimOncePerDay("overdue-jobs", "self", techId))) continue;
       await sendPushToUsers(techId, {
-        title: "⚠️ มีงานค้างเกิน 1 สัปดาห์",
+        title: `⚠️ งานค้าง ${daysList.length} งาน`,
         body,
         url,
         tag: "overdue-reminder",
@@ -208,8 +209,8 @@ async function checkAndNotifyStaleQuotations() {
     // ⚠️ กันแจ้งซ้ำในวันเดียวกัน (ดู models/NotifyLog.js) — ผู้รับเป็นกลุ่ม role จึงใช้ชื่อกลุ่มเป็นคีย์
     if (await NotifyLog.claimOncePerDay("stale-quotations", "broadcast", "admin+manager")) {
     await sendPushToRoles(SUPERVISOR_ROLES, {
-      title: "📄 มีใบเสนอราคาที่ต้องติดตาม",
-      body: `มี ${staleJobs.length} ใบเสนอราคาที่ไม่ได้ติดต่อลูกค้ามาเกิน ${QUOTATION_WARNING_DAYS} วันแล้ว กรุณาติดตามและบันทึกผล`,
+      title: `📄 ใบเสนอราคารอติดตาม ${staleJobs.length} ใบ`,
+      body: `ไม่ได้ติดต่อลูกค้าเกิน ${QUOTATION_WARNING_DAYS} วัน\nแตะเพื่อติดตามและบันทึกผล`,
       url,
       tag: "quotation-reminder",
       renotify: true,
@@ -234,8 +235,8 @@ async function checkAndNotifyStaleQuotations() {
       const techUrl = jobIds.length === 1 ? `/quotations?jobId=${jobIds[0]}` : "/quotations";
       if (!(await NotifyLog.claimOncePerDay("stale-quotations", "self", techId))) continue;
       await sendPushToUsers(techId, {
-        title: "📄 มีใบเสนอราคาที่ต้องติดตาม",
-        body: `มี ${jobIds.length} ใบเสนอราคาของงานที่คุณรับผิดชอบ ไม่ได้ติดต่อลูกค้ามาเกิน ${QUOTATION_WARNING_DAYS} วันแล้ว กรุณาติดตามและบันทึกผล`,
+        title: `📄 ใบเสนอราคารอติดตาม ${jobIds.length} ใบ`,
+        body: `งานที่คุณรับผิดชอบ · ไม่ได้ติดต่อลูกค้าเกิน ${QUOTATION_WARNING_DAYS} วัน\nแตะเพื่อติดตามและบันทึกผล`,
         url: techUrl,
         tag: "quotation-reminder",
         renotify: true,
@@ -311,25 +312,26 @@ async function checkAndNotifyOverdueContracts() {
     });
 
     const monthTH = (m) => `${["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."][m.month()]} ${String(m.year() + 543).slice(-2)}`;
+    // ✅ (15 ต.ค. 2569 "ทำให้ชัดเจน ดูง่าย") รายการละบรรทัด แทนคั่นจุลภาคยาวบรรทัดเดียว
     const listOf = (items) => {
-      const names = items.slice(0, 3).map((x) => `${x.site} (${x.round})`);
-      return names.join(", ") + (items.length > 3 ? ` และอีก ${items.length - 3} สัญญา` : "");
+      const names = items.slice(0, 3).map((x) => `• ${x.site} (${x.round})`);
+      return names.join("\n") + (items.length > 3 ? `\nและอีก ${items.length - 3} สัญญา` : "");
     };
     const LEVELS = [
       {
         key: "soon", items: found.soon, once: "month", url: "/contracts",
         title: (n) => `🗓️ เดือนหน้าถึงรอบเข้างาน ${n} สัญญา`,
-        body: (items) => `นัดลูกค้าล่วงหน้า: ${listOf(items)}`,
+        body: (items) => `${listOf(items)}\nแตะเพื่อนัดลูกค้าล่วงหน้า`,
       },
       {
         key: "now", items: found.now, once: "month", url: "/contracts?view=overdue",
         title: (n) => `🔔 เดือนนี้ถึงรอบเข้างาน ${n} สัญญา`,
-        body: (items) => `ยังไม่ได้ลงแผนงาน: ${listOf(items)}`,
+        body: (items) => `${listOf(items)}\nยังไม่ได้ลงแผนงาน — แตะเพื่อลงแผน`,
       },
       {
         key: "overdue", items: found.overdue, once: "day", url: "/contracts?view=overdue",
         title: (n) => `⛔ เลยกำหนดรอบเข้างาน ${n} สัญญา`,
-        body: (items) => `นานสุด ${Math.max(...items.map((x) => x.monthsOverdue))} เดือน — ${listOf(items)} · กรุณาลงแผนงานครั้งถัดไป`,
+        body: (items) => `นานสุด ${Math.max(...items.map((x) => x.monthsOverdue))} เดือน\n${listOf(items)}\nกรุณาลงแผนงานครั้งถัดไป`,
       },
     ];
 
@@ -337,8 +339,10 @@ async function checkAndNotifyOverdueContracts() {
       ? NotifyLog.claimOncePerMonth(kind, subject, recipient)
       : NotifyLog.claimOncePerDay(kind, subject, recipient));
 
-    // ── ผู้จัดคิว (ตำแหน่งที่มีสิทธิ์ assignDispatch) — สรุปทุกสัญญา ──
-    const dispatchRanks = effectiveCapabilities().assignDispatch || SUPERVISOR_ROLES;
+    // ── ผู้จัดคิว (ตำแหน่งที่มีสิทธิ์ assignDispatch) + แอดมิน/กรรมการผู้จัดการ/ผู้จัดการ — สรุปทุกสัญญา ──
+    // ✅ (15 ต.ค. 2569 ผู้ใช้: "รวมถึงกรรมการผู้จัดการด้วย ให้รับแจ้งเตือนเผื่อลืม") — รวม SUPERVISOR_ROLES เสมอ
+    //    ไม่ขึ้นกับว่าตารางสิทธิ์ให้ตำแหน่งนั้นจัดคิวงานหรือไม่
+    const dispatchRanks = [...new Set([...(effectiveCapabilities().assignDispatch || []), ...SUPERVISOR_ROLES])];
     for (const lv of LEVELS) {
       if (!lv.items.length) continue;
       if (!(await claim(lv.once, `contract-round-${lv.key}`, "broadcast", "dispatchers"))) continue;
@@ -383,17 +387,65 @@ async function checkAndNotifyOverdueContracts() {
 // ✅ เช็คสัญญาที่ "ใกล้หมดอายุ / หมดอายุแล้ว" แล้วแจ้งเตือนล่วงหน้า
 // ⚠️ ต่างจาก checkAndNotifyOverdueContracts ด้านบนคนละเรื่องกันโดยสิ้นเชิง: ตัวนั้นดู "รอบเข้างานถัดไป"
 // (ยังอยู่ในสัญญา แค่ยังไม่ลงแผน) ส่วนตัวนี้ดู "วันสิ้นสุดสัญญา" ซึ่งถ้าปล่อยผ่านคือรายได้ต่อเนื่อง
-// หายไปทั้งก้อน — เดิมเห็นได้ทางเดียวคือเปิดหน้าภาพรวมงานมาดูเองเท่านั้น ระบบไม่เคยส่งเสียงเลย
+// หายไปทั้งก้อน
 //
-// ⚠️ เกณฑ์ต้องตรงกับ contractStatusInfo ใน ContractOverview.js เป๊ะๆ (หมดอายุ = เลยวันสิ้นสุดมาแล้ว,
-// ใกล้หมดอายุ = เหลือ ≤ 60 วัน) ไม่งั้นตัวเลขในแจ้งเตือนกับที่เห็นในตารางจะไม่ตรงกัน
-const EXPIRY_WARN_DAYS = 60;
+// 🔁 (15 ต.ค. 2569 ผู้ใช้: "push แจ้งเตือนสัญญาที่ใกล้หมดอายุ ก่อน 3 เดือน และทำให้ชัดเจน ดูง่าย")
+//   • เริ่มเตือนตั้งแต่เหลือ 90 วัน (เดิม 60) — เวลาพอให้เสนอราคาต่อสัญญา/รออนุมัติจากลูกค้า
+//   • สรุป "สัปดาห์ละครั้ง" (ผู้ใช้เลือก) — รอบแรกของสัปดาห์ที่ตัวเช็คทำงาน (ปกติเช้าวันจันทร์) แทนเด้งเรื่องเดิมทุกวัน
+//     กุญแจกันซ้ำผูกกับสัปดาห์ (ISO week) — เซิร์ฟเวอร์ดับวันจันทร์ก็ยังส่งในวันถัดไปของสัปดาห์นั้น ไม่หายทั้งสัปดาห์
+//   • ข้อความบอกชื่อสัญญา วันหมดอายุ และเหลืออีกกี่วัน ทีละบรรทัด — แตะแล้วเปิดหน้าภาพรวมงานกรองเฉพาะสัญญาใกล้หมดอายุ
+//   • สัญญาที่เพิ่งหมดอายุไม่เกิน 30 วันแจ้งแยกอีกก้อน (เก่ากว่านั้นอยู่ในหน้า "ปิดแล้ว · ประวัติ" ไม่เด้งซ้ำทุกสัปดาห์)
+//
+// ⚠️ เกณฑ์ต้องตรงกับ contractStatusInfo ใน da-app/src/shared/utils/contractOverdue.js เป๊ะๆ
+// (CONTRACT_EXPIRY_WARN_DAYS) ไม่งั้นตัวเลขในแจ้งเตือนกับที่เห็นในตารางจะไม่ตรงกัน
+const EXPIRY_WARN_DAYS = 90;
+const EXPIRED_NOTIFY_DAYS = 30;       // หมดอายุแล้ว: แจ้งต่อเฉพาะที่เพิ่งหมดไม่เกิน 30 วัน (กันสัญญาเก่าเด้งทุกสัปดาห์ไม่จบ)
+const EXPIRY_LIST_MAX = 4;
+
+const contractName = (head) => {
+  const name = [head.company, head.site].map((x) => String(x || "").trim()).filter(Boolean);
+  const uniq = name.filter((x, i) => name.indexOf(x) === i).join(" · ");
+  return uniq || head.contractNo || "สัญญา";
+};
+const daysText = (d) => (d === 0 ? "หมดวันนี้" : d === 1 ? "อีก 1 วัน" : `อีก ${d} วัน`);
+
+/** ข้อความแจ้งเตือนของกลุ่มสัญญา (ใกล้หมด / หมดแล้ว) — personal = ผู้รับผิดชอบรายคน */
+function expiryPayload(kind, list, personal) {
+  const n = list.length;
+  const sorted = list.slice().sort((a, b) => a.daysLeft - b.daysLeft);
+  const lines = sorted.slice(0, EXPIRY_LIST_MAX).map((c) => (kind === "expired"
+    ? `• ${c.name} — หมดเมื่อ ${formatThai(c.end, "D MMM YY")}`
+    : `• ${c.name} — ${formatThai(c.end, "D MMM YY")} (${daysText(c.daysLeft)})`));
+  if (n > EXPIRY_LIST_MAX) lines.push(`และอีก ${n - EXPIRY_LIST_MAX} สัญญา`);
+  const mine = personal ? "ที่คุณรับผิดชอบ" : "";
+  if (kind === "expired") {
+    return {
+      title: n === 1 ? `⛔ สัญญา${mine}หมดอายุแล้ว` : `⛔ สัญญา${mine}หมดอายุแล้ว ${n} สัญญา`,
+      body: `${lines.join("\n")}\n${personal ? "แจ้งผู้เกี่ยวข้องเพื่อต่อสัญญา" : "ติดต่อลูกค้าเพื่อต่อสัญญา"}`,
+      url: "/contracts?view=expired",
+      tag: "contract-expired",
+      renotify: true,
+    };
+  }
+  const soonest = sorted[0].daysLeft;
+  return {
+    title: n === 1
+      ? `📄 สัญญา${mine}ใกล้หมดอายุ · ${daysText(soonest)}`
+      : `📄 สัญญา${mine}ใกล้หมดอายุ ${n} สัญญา`,
+    body: `${lines.join("\n")}\n${personal ? "แจ้งผู้เกี่ยวข้องเพื่อเตรียมต่อสัญญา" : "ติดต่อลูกค้าเพื่อเสนอต่อสัญญา"}`,
+    url: "/contracts?status=expiring",
+    tag: "contract-expiring",
+    renotify: true,
+  };
+}
 
 async function checkAndNotifyExpiringContracts() {
   try {
+    const horizon = moment().add(EXPIRY_WARN_DAYS + 1, "days").toDate();
+    const floor = moment().subtract(EXPIRED_NOTIFY_DAYS + 1, "days").toDate();
     const events = await CalendarEvent.find({
       contractGroupId: { $exists: true, $nin: [null, ""] },
-      contractEnd: { $exists: true, $ne: null },
+      contractEnd: { $ne: null, $gte: floor, $lte: horizon },
     })
       .select("contractGroupId contractNo company site contractEnd resPerson team userId responsiblePersonId responsiblePerson")
       .lean();
@@ -407,67 +459,47 @@ async function checkAndNotifyExpiringContracts() {
       byContract.get(e.contractGroupId).push(e);
     });
 
-    const today = moment().startOf("day");
-    const expired = [];  // เลยวันสิ้นสุดมาแล้ว
-    const expiring = []; // เหลือ ≤ 60 วัน
+    const today = moment().utcOffset(7 * 60).startOf("day");
+    const contracts = [];
     byContract.forEach((visits) => {
       const head = visits[0];
-      const end = moment(head.contractEnd).startOf("day");
+      const end = moment(head.contractEnd).utcOffset(7 * 60).startOf("day");
       if (!end.isValid()) return;
       const daysLeft = end.diff(today, "days");
-      if (daysLeft < 0) expired.push({ visits, daysLeft });
-      else if (daysLeft <= EXPIRY_WARN_DAYS) expiring.push({ visits, daysLeft });
+      if (daysLeft > EXPIRY_WARN_DAYS || daysLeft < -EXPIRED_NOTIFY_DAYS) return;
+      contracts.push({ visits, daysLeft, end, name: contractName(head) });
     });
-    if (expired.length === 0 && expiring.length === 0) return;
+    if (contracts.length === 0) return;
 
-    // ── แจ้งแอดมิน/manager ภาพรวม ────────────────────────────────────────
-    // ⚠️ รวมเป็นข้อความเดียว ไม่แยกส่ง 2 ก้อน — คนกลุ่มนี้รับแจ้งเตือนจากทุกระบบอยู่แล้ว การยิงเพิ่ม
-    // เป็น 2 เรื่องต่อวันเรื่องเดียวกันคือทางที่ทำให้คนเริ่มปิดแจ้งเตือนทิ้ง
-    if (await NotifyLog.claimOncePerDay("expiring-contracts", "broadcast", "admin+manager")) {
-      const parts = [];
-      if (expired.length > 0) parts.push(`หมดอายุแล้ว ${expired.length} สัญญา`);
-      if (expiring.length > 0) {
-        const soonest = Math.min(...expiring.map((c) => c.daysLeft));
-        parts.push(`ใกล้หมดอายุ ${expiring.length} สัญญา (เร็วสุดอีก ${soonest} วัน)`);
-      }
-      await sendPushToRoles(SUPERVISOR_ROLES, {
-        title: "📄 มีสัญญาที่ต้องต่ออายุ",
-        body: `${parts.join(" · ")} กรุณาตรวจสอบและติดต่อลูกค้าเพื่อต่อสัญญา`,
-        // ✅ เปิดมาที่แท็บ "สัญญาหมดอายุ" ให้เลย (ดู VIEW_FILTER_VALUES ใน ContractOverview.js)
-        url: "/contracts?view=expired",
-        tag: "contract-expiry-reminder",
-        renotify: true,
-      });
-    }
+    const week = today.format("GGGG-[W]WW");
+    const send = async (recipientKey, list, deliver, personal) => {
+      if (!(await NotifyLog.claimOnce("contract-expiry-week", week, recipientKey))) return 0;
+      const expired = list.filter((c) => c.daysLeft < 0);
+      const expiring = list.filter((c) => c.daysLeft >= 0);
+      if (expiring.length) await deliver(expiryPayload("expiring", expiring, personal));
+      if (expired.length) await deliver(expiryPayload("expired", expired, personal));
+      return list.length;
+    };
 
-    // ── แจ้งผู้รับผิดชอบรายคน ────────────────────────────────────────────
+    // ── แอดมิน/ผู้จัดการ: ภาพรวมทุกสัญญา ──
+    const sent = await send("supervisors", contracts, (p) => sendPushToRoles(SUPERVISOR_ROLES, p), false);
+
+    // ── ผู้รับผิดชอบสัญญา (ทุกตำแหน่ง ยกเว้นแอดมิน/ผู้จัดการที่ได้ภาพรวมไปแล้ว) — เฉพาะสัญญาของตัวเอง ──
     const allUsers = await User.find({}).select("fname rank role").lean();
     const userById = new Map(allUsers.map((u) => [u._id.toString(), u]));
     const userByFname = new Map(allUsers.map((u) => [u.fname, u]));
-
-    const byTech = new Map(); // techId -> { expired, expiring }
-    [...expired, ...expiring].forEach(({ visits, daysLeft }) => {
-      const user = resolveResponsibleUser(visits, userById, userByFname);
-      if (!user || user.role !== "technician") return;
-      const techId = user._id.toString();
-      const cur = byTech.get(techId) || { expired: 0, expiring: 0 };
-      if (daysLeft < 0) cur.expired += 1; else cur.expiring += 1;
-      byTech.set(techId, cur);
+    const mine = new Map();
+    contracts.forEach((c) => {
+      const user = resolveResponsibleUser(c.visits, userById, userByFname);
+      if (!user || SUPERVISOR_ROLES.includes(normalizeRank(user))) return;
+      const id = user._id.toString();
+      if (!mine.has(id)) mine.set(id, []);
+      mine.get(id).push(c);
     });
-
-    for (const [techId, counts] of byTech.entries()) {
-      if (!(await NotifyLog.claimOncePerDay("expiring-contracts", "self", techId))) continue;
-      const parts = [];
-      if (counts.expired > 0) parts.push(`หมดอายุแล้ว ${counts.expired} สัญญา`);
-      if (counts.expiring > 0) parts.push(`ใกล้หมดอายุ ${counts.expiring} สัญญา`);
-      await sendPushToUsers(techId, {
-        title: "📄 มีสัญญาที่ต้องต่ออายุ",
-        body: `สัญญาที่คุณรับผิดชอบ ${parts.join(" · ")} กรุณาแจ้งผู้เกี่ยวข้อง`,
-        url: "/contracts?view=expired",
-        tag: "contract-expiry-reminder",
-        renotify: true,
-      });
+    for (const [uid, list] of mine.entries()) {
+      await send(uid, list, (p) => sendPushToUsers(uid, p), true);
     }
+    if (sent) console.log(`📄 สัญญาใกล้หมดอายุ/หมดอายุ (สรุปสัปดาห์ ${week}): ${sent} สัญญา`);
   } catch (err) {
     console.error("❌ Contract expiry reminder check error:", err);
   }
@@ -496,8 +528,8 @@ async function checkAndNotifyOverdueInvoices() {
 
     if (await NotifyLog.claimOncePerDay("overdue-invoices", "broadcast", "admin+manager")) {
       await sendPushToRoles(SUPERVISOR_ROLES, {
-        title: "💰 มีใบวางบิลเลยกำหนดชำระ",
-        body: `ค้างรับ ${overdue.length} ใบ รวม ${Math.round(totalOutstanding).toLocaleString("th-TH")} บาท (นานสุด ${worst.st.overdueDays} วัน · ${worst.e.company || "ไม่ระบุลูกค้า"})`,
+        title: `💰 ใบวางบิลเลยกำหนดชำระ ${overdue.length} ใบ`,
+        body: `ค้างรับรวม ${Math.round(totalOutstanding).toLocaleString("th-TH")} บาท\nนานสุด ${worst.st.overdueDays} วัน · ${worst.e.company || "ไม่ระบุลูกค้า"}\nแตะเพื่อติดตามการชำระ`,
         // ⚠️ ใช้ชื่อ status ไม่ใช่ tab — ฝั่งหน้าเว็บ /billing เป็นลิงก์เก่าที่พาไปหน้ารวมการเงิน
         // ซึ่งใช้ tab เลือกแท็บของตัวเองอยู่แล้ว ถ้าส่ง tab มาด้วยจะแย่งกันจนเปิดผิดแท็บ
         // (ดู LegacyTabRedirect ใน da-app/src/app/router/index.js และตัวรับค่าใน BillingTracking.js)
@@ -545,8 +577,8 @@ async function checkAndNotifyUnackedJobs() {
       const uid = String(e.resPerson);
       if (!(await NotifyLog.claimOncePerDay("unacked-job", String(e.jobGroupId || e._id), uid))) continue;
       await sendPushToUsers(uid, {
-        title: "📋 พรุ่งนี้มีงาน — กด “รับทราบงาน” ด้วย",
-        body: `${label(e)}${e.jobNo ? ` (${e.jobNo})` : ""}`,
+        title: "📋 พรุ่งนี้มีงาน · กดรับทราบงานด้วย",
+        body: `${label(e)}${e.jobNo ? ` (${e.jobNo})` : ""}\nแตะเพื่อเปิดงานและกดรับทราบ`,
         url: `/operation/${e._id}`,
         tag: `unacked-${e.jobGroupId || e._id}`,
       });
@@ -554,10 +586,10 @@ async function checkAndNotifyUnackedJobs() {
 
     const dispatchRanks = effectiveCapabilities().assignDispatch || SUPERVISOR_ROLES;
     if (await NotifyLog.claimOncePerDay("unacked-jobs", "broadcast", "dispatchers")) {
-      const names = jobs.slice(0, 3).map(label).join(", ") + (jobs.length > 3 ? ` และอีก ${jobs.length - 3} งาน` : "");
+      const names = jobs.slice(0, 3).map((e) => `• ${label(e)}`).join("\n") + (jobs.length > 3 ? `\nและอีก ${jobs.length - 3} งาน` : "");
       await sendPushToRoles(dispatchRanks, {
-        title: `⏳ งานพรุ่งนี้ ${jobs.length} งาน ช่างยังไม่กดรับทราบงาน`,
-        body: names,
+        title: `⏳ งานพรุ่งนี้ ${jobs.length} งาน ช่างยังไม่รับทราบ`,
+        body: `${names}\nแตะเพื่อติดตามช่าง`,
         url: "/operation?group=waiting", // (15 ต.ค. 2569) งานที่ยังไม่รับทราบ = แถบ "รอยืนยัน"
         tag: "unacked-jobs",
       });
@@ -597,7 +629,7 @@ async function checkAndNotifyStalledIntake() {
       const label = e.intakeNote ? String(e.description || "บันทึกงาน").slice(0, 60) : `${e.title || "งาน"} · ${e.site || e.company || "-"}`;
       await sendPushToUsers(uid, {
         title: `⏰ ${what} ${days} วันแล้ว`,
-        body: `${label}${e.jobNo ? ` (${e.jobNo})` : ""}`,
+        body: `${label}${e.jobNo ? ` (${e.jobNo})` : ""}\nแตะเพื่ออัปเดตสถานะงาน`,
         url: "/jobs/intake",
         tag: `stalled-intake-${e._id}`,
       });

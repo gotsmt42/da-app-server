@@ -664,10 +664,13 @@ const RANKS = ROLES;
  * "หายไปเงียบๆ" จากรายชื่อผู้รับแจ้งเตือน ซึ่งเป็นบั๊กที่ไม่มี error ให้เห็นเลย
  * ⚠️ สาขาของเก่าจะใช้ก็ต่อเมื่อ rank ว่างจริงๆ — กันเคส role = "admin" (ตำแหน่งในระบบ) ถูกนับเป็นแอดมินช่าง
  */
+// ✅ (15 ต.ค. 2569) รวมคีย์เก่า (LEGACY_RANK_ALIAS เช่น "admin" → แอดมินช่าง) ด้วย — บัญชีที่ยังเก็บคีย์เก่าไว้
+//    ต้องได้รับแจ้งเตือนตามตำแหน่งเหมือนคนอื่น (เดิมเทียบแค่คีย์ปัจจุบัน บัญชีเก่าหลุดเงียบๆ)
+const withLegacyRanks = (ranks) => [...ranks, ...Object.keys(LEGACY_RANK_ALIAS).filter((k) => ranks.includes(LEGACY_RANK_ALIAS[k]))];
 const rankFilter = (ranks) => ({
   $or: [
-    { rank: { $in: ranks } },
-    { rank: { $in: [null, ""] }, role: { $in: ranks } },
+    { rank: { $in: withLegacyRanks(ranks) } },
+    { rank: { $in: [null, ""] }, role: { $in: withLegacyRanks(ranks) } },
   ],
 });
 const ALL_RANKS = ALL_ROLES;
