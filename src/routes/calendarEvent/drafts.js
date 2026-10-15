@@ -251,6 +251,20 @@ module.exports = (router) => {
     }
   });
 
+  // ✅ (15 ต.ค. 2569 ผู้ใช้: "หน้างานใหม่ ให้ช่างสามารถเข้ามาดูได้ด้วย แต่ไม่สามารถดำเนินการได้")
+  //    รายการงานที่รับผ่านเมนู "งานใหม่" ทั้งหมด (รอดำเนินการ + ลงตาราง/ส่งมอบแล้ว + ปิดแล้ว) สำหรับดูอย่างเดียว
+  //    ทุกคนในแผนกเดียวกันเห็นเหมือนกัน (withDepartmentScope) — การแก้ไข/ส่งลงตาราง/ยกเลิก ยังเช็คสิทธิ์ที่ route ของมันเอง
+  //    ⚠️ ต้องอยู่ก่อน core ("/:id") — ดู index.js
+  router.get("/intake-list", verifyToken, async (req, res) => {
+    try {
+      const jobs = await findEvents(withDepartmentScope({ intakeAt: { $ne: null } }, req), { select: "-activityLog", sort: { intakeAt: -1 } });
+      res.json({ jobs });
+    } catch (err) {
+      console.error("❌ intake-list:", err);
+      res.status(500).json({ message: "โหลดรายการงานใหม่ไม่สำเร็จ" });
+    }
+  });
+
   router.get("/drafts", verifyToken, async (req, res) => {
     try {
       const userId = req.userId;
