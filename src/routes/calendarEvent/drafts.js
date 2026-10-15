@@ -91,7 +91,10 @@ module.exports = (router) => {
         if (!site) req.body.site = "-";
         if (!title) req.body.title = "บันทึกงาน";
       }
-      if (!isIntakeNote && (!site || !title || !system)) {
+      // ✅ (15 ต.ค. 2569) ส่งของ/ขายของ ไม่ถามระบบงาน — บังคับแค่ลูกค้า/โครงการ
+      const isIntakeDelivery = Boolean(req.body.fromIntake && req.body.noVisit && !isIntakeNote);
+      if (isIntakeDelivery && site && !title) req.body.title = "ส่งของ / ขายของ";
+      if (!isIntakeNote && (!site || !(title || req.body.title) || (!system && !isIntakeDelivery))) {
         return res.status(400).json({ message: "กรุณาระบุชื่อโครงการ/ประเภทงาน/ระบบงาน" });
       }
 
@@ -490,7 +493,15 @@ module.exports = (router) => {
       }
 
       const { company, site, title, system, time, team, resPerson, plannedMonth, description } = req.body;
-      if (!site || !title || !system) {
+      // ✅ (15 ต.ค. 2569) งานรับเข้าแบบบันทึกงาน/ส่งของ ไม่บังคับช่องเดียวกับงานเข้างาน (ตรงกับ POST /draft)
+      const nextNote = req.body.intakeNote !== undefined ? Boolean(req.body.intakeNote) : existingEvent.intakeNote;
+      const nextNoVisit = req.body.noVisit !== undefined ? Boolean(req.body.noVisit) : existingEvent.noVisit;
+      const intakeNoteEdit = Boolean(existingEvent.intakeAt && nextNote);
+      const intakeDeliveryEdit = Boolean(existingEvent.intakeAt && nextNoVisit && !nextNote);
+      if (intakeNoteEdit && !String(description || "").trim()) {
+        return res.status(400).json({ message: "กรุณาระบุรายละเอียดงานที่ต้องทำ" });
+      }
+      if (!intakeNoteEdit && (!site || (!title && !intakeDeliveryEdit) || (!system && !intakeDeliveryEdit))) {
         return res.status(400).json({ message: "กรุณาระบุชื่อโครงการ/ประเภทงาน/ระบบงาน" });
       }
       if (!plannedMonth) {
@@ -498,8 +509,8 @@ module.exports = (router) => {
       }
 
       existingEvent.company = company;
-      existingEvent.site = site;
-      existingEvent.title = title;
+      existingEvent.site = site || (intakeNoteEdit ? "-" : site);
+      existingEvent.title = title || (intakeNoteEdit ? "บันทึกงาน" : intakeDeliveryEdit ? "ส่งของ / ขายของ" : title);
       existingEvent.system = system;
       existingEvent.time = time;
       existingEvent.team = team;
