@@ -441,7 +441,8 @@ module.exports = (router) => {
       // ✅ ตัดงาน "วางแผนล่วงหน้า" (unscheduled) ออกเสมอ — ยังไม่มีวันที่จริง ไม่ควรโผล่ในปฏิทิน
       // ✅ ปฏิทินรวม — กรองตามแผนกเช่นกัน ไม่งั้นเซลจะเห็นงานช่างเต็มปฏิทินทั้งที่ไม่เกี่ยวกัน
       // ✅ (12 ต.ค. 2569) หยิบจากคลังงานในหน่วยความจำ ถามฐานข้อมูลแค่ _id (ดู services/eventOpCache.js)
-      const userEvents = await findEvents(withDepartmentScope({ unscheduled: { $ne: true } }, req));
+      // ✅ (15 ต.ค. 2569) งานไม่ต้องเข้างาน (ส่งของ/ขาย) ไม่ขึ้นปฏิทิน
+      const userEvents = await findEvents(withDepartmentScope({ unscheduled: { $ne: true }, noVisit: { $ne: true } }, req));
 
       // 🐛 BUG ที่แก้ (ปฏิทินพังทั้งหน้าถ้ามี event สักตัวที่ไม่มี userId): userId ใน schema ไม่ได้เป็น
       // required — งานที่หลุดมาโดยไม่มี userId (ข้อมูลเก่า/นำเข้า/สร้างผ่านทางอื่น) จะทำให้

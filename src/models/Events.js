@@ -84,6 +84,27 @@ const eventSchema = new mongoose.Schema(
     /** รับงานผ่านเมนู "รับงาน" เมื่อไร/ใคร — มีค่า = งานนี้อยู่ในหน้า "รับงาน" (ตามต่อจนปิดงาน) */
     intakeAt: { type: Date, default: null, index: true },
     intakeBy: { type: String, default: "" },
+    /**
+     * ✅ (15 ต.ค. 2569 ผู้ใช้: "ได้รับแจ้งงานมาเช่น PO หรือใบเสนอราคา ... ลงว่าจากแผนกอะไร")
+     * intakeSource = แผนกที่ส่งงานมา: sales ฝ่ายขาย · service ฝ่ายบริการ · project ฝ่ายโครงการ · customer ลูกค้าแจ้งตรง
+     * intakeDocType/intakeDocNo = เอกสารต้นทาง (po · quotation · other) — ไฟล์อยู่ใน sitePhotoFiles (source:"intake")
+     */
+    intakeSource: { type: String, default: "" },
+    intakeDocType: { type: String, default: "" },
+    intakeDocNo: { type: String, default: "" },
+    /**
+     * ✅ (15 ต.ค. 2569) งาน "ไม่ต้องเข้างาน" (ส่งของ/ขายของ) — ไม่ขึ้นปฏิทิน/งานช่าง
+     * รับงาน → ส่งมอบ (deliveredAt) → อัปโหลดใบวางบิล (invoiceFiles) → ตามรับเงินที่หน้าติดตามวางบิล
+     */
+    noVisit: { type: Boolean, default: false },
+    deliveredAt: { type: Date, default: null },
+    /**
+     * ✅ (15 ต.ค. 2569 ผู้ใช้: "หรืองานที่ต้องการโน๊ตไว้เฉยๆ ที่ต้องทำ") — บันทึกงาน (to-do) ในหน้างานใหม่
+     * ไม่ลงตาราง ไม่ออกเลข Job · ทำเสร็จ = noteDoneAt (หายจากรายการรอ/ป้ายตัวเลข เหมือนงานที่ยกเลิก)
+     */
+    intakeNote: { type: Boolean, default: false },
+    noteDoneAt: { type: Date, default: null },
+    noteDoneBy: { type: String, default: "" },
     /** เวลาที่ส่งลงตาราง (จากงานรอลงตาราง → มีวันเข้างาน) — เรียงงานในหน้า "งานใหม่" ล่าสุดขึ้นก่อน (11 ต.ค. 2569) */
     scheduledAt: { type: Date, default: null },
     /** เวลาที่ยืนยันนัด (สถานะ → ยืนยันแล้ว) — วันที่ใต้ขั้น "ยืนยันแล้ว" ในสายสถานะงาน (11 ต.ค. 2569) */
@@ -521,7 +542,7 @@ eventSchema.pre("save", function (next) {
 //    ออกเลข Job ให้ทุกงานใหม่ที่ไม่ใช่นัดฝ่ายขาย ไม่ว่าจะสร้างจากหน้าไหน (ปฏิทิน · รับงาน · คำขอลงงาน · สัญญา)
 //    งานหลายวัน (jobGroupId เดียวกัน) ใช้เลขเดียวกัน — ปิดตายที่โมเดล ไม่ต้องไล่เติมทีละ route
 eventSchema.pre("save", async function () {
-  if (!this.isNew || this.jobNo || this.department === "sales") return;
+  if (!this.isNew || this.jobNo || this.department === "sales" || this.intakeNote) return;
   const { assignJobNo } = require("../utils/jobNumber");
   await assignJobNo(this);
 });

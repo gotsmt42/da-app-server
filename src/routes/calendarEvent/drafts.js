@@ -27,6 +27,20 @@ const { roundLabelOf } = require("../../utils/contractVisits");
 const { syncGroupsOf } = require("../../services/groupResponsible");
 // ✅ (9 ต.ค. 2569) รับแจ้งงาน = งานรอลงแผน — เก็บผู้ติดต่อ + ข้อมูล Job (ด่วน/ครบกำหนด/อุปกรณ์/รอข้อมูล) ตั้งแต่ตอนรับแจ้ง
 const { pickJobInfo } = require("./jobflow");
+
+/** ✅ (15 ต.ค. 2569) ข้อมูลรับงาน: แผนกที่ส่งงาน · เอกสารต้นทาง · ไม่ต้องเข้างาน — รับเฉพาะค่าที่รู้จัก */
+const INTAKE_SOURCES = ["sales", "service", "project", "customer"];
+const INTAKE_DOC_TYPES = ["po", "quotation", "other"];
+function pickIntakeInfo(body = {}) {
+  const out = {};
+  if (body.intakeSource !== undefined) out.intakeSource = INTAKE_SOURCES.includes(body.intakeSource) ? body.intakeSource : "";
+  if (body.intakeDocType !== undefined) out.intakeDocType = INTAKE_DOC_TYPES.includes(body.intakeDocType) ? body.intakeDocType : "";
+  if (body.intakeDocNo !== undefined) out.intakeDocNo = String(body.intakeDocNo || "").trim().slice(0, 80);
+  if (body.noVisit !== undefined) out.noVisit = Boolean(body.noVisit);
+  if (body.intakeNote !== undefined) out.intakeNote = Boolean(body.intakeNote);
+  if (out.intakeNote) out.noVisit = false;
+  return out;
+}
 const { nextJobNo } = require("../../utils/jobNumber");
 
 const { notifyAssigned } = require("../../services/jobAudit");
@@ -70,7 +84,14 @@ module.exports = (router) => {
         responsiblePerson, responsiblePersonId,
       } = req.body;
 
-      if (!site || !title || !system) {
+      // ✅ (15 ต.ค. 2569) บันทึกงาน (โน๊ต) จากหน้างานใหม่ — บังคับแค่รายละเอียด ช่องโครงการ/ประเภท/ระบบไม่บังคับ
+      const isIntakeNote = Boolean(req.body.fromIntake && req.body.intakeNote);
+      if (isIntakeNote) {
+        if (!String(description || "").trim()) return res.status(400).json({ message: "กรุณาระบุรายละเอียดงานที่ต้องทำ" });
+        if (!site) req.body.site = "-";
+        if (!title) req.body.title = "บันทึกงาน";
+      }
+      if (!isIntakeNote && (!site || !title || !system)) {
         return res.status(400).json({ message: "กรุณาระบุชื่อโครงการ/ประเภทงาน/ระบบงาน" });
       }
 
@@ -135,10 +156,10 @@ module.exports = (router) => {
         // ✅ แผนกมาจาก role ของผู้สร้างเสมอ (เหตุผลเดียวกับ core.js)
         department: departmentOf(req.user) || DEPARTMENT.SERVICE,
         company,
-        site,
+        site: site || req.body.site,
         province: String(req.body.province || "").trim(),
         city: String(req.body.city || "").trim(),
-        title,
+        title: title || req.body.title,
         system,
         time,
         team,
@@ -146,8 +167,9 @@ module.exports = (router) => {
         contactName: String(req.body.contactName || "").trim(),
         contactTel: String(req.body.contactTel || "").trim(),
         ...pickJobInfo(req.body),
+        ...(req.body.fromIntake && !isContractBatch ? pickIntakeInfo(req.body) : {}),
         // ✅ รับผ่านเมนู "รับงาน" — ได้เลข Job และขึ้นในหน้า "รับงาน" ตามต่อจนปิดงาน
-        ...(req.body.fromIntake && !isContractBatch ? { intakeAt: new Date(), intakeBy: creatorName, jobNo: await nextJobNo() } : {}),
+        ...(req.body.fromIntake && !isContractBatch ? { intakeAt: new Date(), intakeBy: creatorName, ...(isIntakeNote ? {} : { jobNo: await nextJobNo() }) } : {}),
         resPerson: resPerson || undefined,
         responsiblePerson: responsiblePerson || undefined,
         responsiblePersonId: responsiblePersonId || undefined,
@@ -255,7 +277,7 @@ module.exports = (router) => {
 
       // ✅ งานวางแผนล่วงหน้าก็แยกแผนกเหมือนกัน
       // ✅ งานที่ยกเลิกแล้ว (เมนู "รับงาน") ไม่ขึ้นในแผงงานล่วงหน้า/ป้ายตัวเลข — หน้า "รับงาน" ขอดูได้ด้วย ?includeCancelled=1
-      if (req.query.includeCancelled !== "1") query.cancelledAt = null;
+      if (req.query.includeCancelled !== "1") { query.cancelledAt = null; query.noteDoneAt = null; }
       // ✅ (12 ต.ค. 2569) คลังงานในหน่วยความจำ (ดู services/eventOpCache.js)
       const drafts = await findEvents(withDepartmentScope(query, req), { sort: { createdAt: -1 } });
       res.json({ drafts });
@@ -393,6 +415,63 @@ module.exports = (router) => {
     }
   });
 
+  // ✅ (15 ต.ค. 2569) บันทึกงาน (โน๊ต) → ทำเสร็จแล้ว / นำกลับมา ({ undo: true })
+  router.put("/:id/note-done", verifyToken, async (req, res) => {
+    try {
+      const ev = await CalendarEvent.findById(req.params.id);
+      if (!ev || !ev.intakeNote) return res.status(404).json({ message: "ไม่พบบันทึกงานนี้" });
+      const isOwner = String(ev.userId) === String(req.userId);
+      const isResp = ev.responsiblePersonId && String(ev.responsiblePersonId) === String(req.userId);
+      if (!can(req.user, "editAnyJob") && !isOwner && !isResp) return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });
+      const name = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ใช้";
+      const undo = Boolean(req.body.undo);
+      ev.noteDoneAt = undo ? null : new Date();
+      ev.noteDoneBy = undo ? "" : name;
+      ev.activityLog.push({
+        userId: String(req.userId), userName: name, action: undo ? "note_reopened" : "note_done", timestamp: new Date(),
+        detail: undo ? "นำบันทึกงานกลับมาทำต่อ" : `ทำเสร็จแล้ว${req.body.note ? ` · ${String(req.body.note).slice(0, 300)}` : ""}`,
+      });
+      await ev.save();
+      res.json({ event: ev });
+    } catch (err) {
+      console.error("❌ note-done:", err);
+      res.status(500).json({ message: "บันทึกไม่สำเร็จ" });
+    }
+  });
+
+  // ✅ (15 ต.ค. 2569 ผู้ใช้: "ถ้าไม่มีเข้างาน เช่นส่งของ ขายของ ก็ไปขั้นตอนของส่งใบวางบิล โดยเอาบิลมาอัพโหลดลง")
+  //    งานไม่ต้องเข้างาน → "ส่งมอบแล้ว": ปิดงานด้านปฏิบัติงาน (สถานะเสร็จสิ้น) ในวันที่ส่งมอบ
+  //    ไม่ขึ้นปฏิทิน/งานช่าง (noVisit) แต่ขึ้นหน้าติดตามวางบิล → อัปโหลดใบวางบิล → ตามรับเงินต่อ
+  router.put("/:id/deliver", verifyToken, async (req, res) => {
+    try {
+      const ev = await CalendarEvent.findById(req.params.id);
+      if (!ev) return res.status(404).json({ message: "ไม่พบงานนี้" });
+      if (!ev.unscheduled || !ev.intakeAt) return res.status(400).json({ message: "งานนี้ไม่ได้อยู่ในขั้นรอส่งมอบ" });
+      if (ev.cancelledAt) return res.status(400).json({ message: "งานนี้ถูกยกเลิกแล้ว — นำกลับมาก่อน" });
+      const isOwner = String(ev.userId) === String(req.userId);
+      if (!can(req.user, "editAnyJob") && !isOwner) return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขงานนี้" });
+
+      const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.date || "")) ? req.body.date : new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const start = new Date(`${day}T00:00:00+07:00`);
+      const at = new Date();
+      const name = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ใช้";
+      Object.assign(ev, {
+        noVisit: true, unscheduled: false, allDay: true, date: start, start, end: new Date(start.getTime() + 86400000),
+        deliveredAt: start, scheduledAt: at,
+        status: "ดำเนินการเสร็จสิ้น", manualStatus: true, closeApprovedAt: at,
+      });
+      ev.activityLog.push({
+        userId: String(req.userId), userName: name, action: "delivered", timestamp: at,
+        detail: `ส่งมอบแล้ว (ไม่ต้องเข้างาน) ${thaiDate(start)}${req.body.note ? ` · ${String(req.body.note).slice(0, 300)}` : ""}`,
+      });
+      await ev.save();
+      res.json({ event: ev });
+    } catch (err) {
+      console.error("❌ deliver:", err);
+      res.status(500).json({ message: "บันทึกส่งมอบไม่สำเร็จ" });
+    }
+  });
+
   // ✅ แก้ไขข้อมูลงานวางแผนล่วงหน้า (ยังไม่ลงตาราง) — ทำเฉพาะฟิลด์ของ draft เท่านั้น (ไม่มีวันที่)
   // แยกจาก PUT /:id (แก้ไขงานที่ลงตารางแล้ว) ที่มี logic แจ้งเตือน/เงื่อนไขซับซ้อนกว่ามาก
   router.put("/:id/draft", verifyToken, async (req, res) => {
@@ -430,6 +509,7 @@ module.exports = (router) => {
       if (req.body.contactName !== undefined) existingEvent.contactName = String(req.body.contactName || "").trim();
       if (req.body.contactTel !== undefined) existingEvent.contactTel = String(req.body.contactTel || "").trim();
       Object.assign(existingEvent, pickJobInfo(req.body));
+      if (existingEvent.intakeAt) Object.assign(existingEvent, pickIntakeInfo(req.body));
 
       // ✅ แก้ไขแผนงานที่ถูกปฏิเสธไปแล้วถือเป็นการส่งขออนุมัติใหม่อัตโนมัติ — route นี้เขียนฟิลด์เนื้อหา
       // งานทุกช่องอยู่แล้วทุกครั้งที่เรียก (ไม่มีการแก้ไขบางส่วน) จึงถือว่าทุกครั้งที่เจ้าของ/ผู้ถูกมอบหมาย

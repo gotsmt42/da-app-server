@@ -567,7 +567,48 @@ async function checkAndNotifyUnackedJobs() {
   }
 }
 
+/**
+ * ✅ (15 ต.ค. 2569 ผู้ใช้: "ให้มีระบบแจ้งเตือนถ้ายังไม่เปลี่ยนสถานะภายใน 2 วัน") — งานในหน้า "งานใหม่" ที่ค้างขั้นเดิม
+ *   • รอดำเนินการ (ยังไม่ส่งลงตาราง / ยังไม่ส่งมอบ / บันทึกงานยังไม่ทำ) นับจากวันรับงาน
+ *   • ไม่ต้องเข้างาน: ส่งมอบแล้วแต่ยังไม่วางบิล นับจากวันส่งมอบ
+ *   (งานที่ลงตารางแล้วมีตัวเตือนของสายงานช่างอยู่แล้ว: รับทราบงาน · งานค้าง)
+ * ผู้รับ: ผู้รับผิดชอบงาน (ไม่มี → คนที่รับงาน) · วันละครั้งต่อคนต่องานจนกว่าจะขยับขั้น
+ */
+const STALL_DAYS = 2;
+async function checkAndNotifyStalledIntake() {
+  try {
+    const cutoff = new Date(Date.now() - STALL_DAYS * 86400000);
+    const rows = await CalendarEvent.find({
+      intakeAt: { $ne: null }, cancelledAt: null, noteDoneAt: null,
+      $or: [
+        { unscheduled: true, intakeAt: { $lt: cutoff } },
+        { noVisit: true, unscheduled: { $ne: true }, deliveredAt: { $lt: cutoff }, "invoiceFiles.0": { $exists: false }, "billing.invoicedAt": null },
+      ],
+    }).select("_id title site company jobNo intakeAt deliveredAt unscheduled noVisit intakeNote description responsiblePersonId userId").lean();
+    for (const e of rows) {
+      const uid = String(e.responsiblePersonId || e.userId || "");
+      if (!uid) continue;
+      if (!(await NotifyLog.claimOncePerDay("stalled-intake", String(e._id), uid))) continue;
+      const since = e.unscheduled ? e.intakeAt : e.deliveredAt;
+      const days = Math.floor((Date.now() - new Date(since).getTime()) / 86400000);
+      const what = e.intakeNote ? "บันทึกงานยังไม่ได้ทำ"
+        : e.unscheduled ? (e.noVisit ? "ยังไม่ส่งมอบ" : "ยังไม่ส่งลงตาราง")
+          : "ส่งมอบแล้วแต่ยังไม่วางบิล";
+      const label = e.intakeNote ? String(e.description || "บันทึกงาน").slice(0, 60) : `${e.title || "งาน"} · ${e.site || e.company || "-"}`;
+      await sendPushToUsers(uid, {
+        title: `⏰ ${what} ${days} วันแล้ว`,
+        body: `${label}${e.jobNo ? ` (${e.jobNo})` : ""}`,
+        url: "/jobs/intake",
+        tag: `stalled-intake-${e._id}`,
+      });
+    }
+  } catch (err) {
+    console.error("❌ checkAndNotifyStalledIntake:", err.message);
+  }
+}
+
 module.exports = {
+  checkAndNotifyStalledIntake,
   checkAndNotifyUnackedJobs,
   checkAndNotifyOverdueJobs,
   checkAndNotifyStaleQuotations,

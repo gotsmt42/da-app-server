@@ -100,17 +100,21 @@ module.exports = (router) => {
       const result = await uploadToCloudinary();
 
       // ✅ เอกสารแต่ละชนิดเก็บเป็น array แนบได้หลายไฟล์ — push ไฟล์ใหม่เข้าไปแทนการทับของเดิม
-      const arrField = `${type}Files`;
+      // ✅ (15 ต.ค. 2569) type "intake" = เอกสารรับงาน (PO/ใบเสนอราคา) → เก็บใน "ไฟล์แนบ" ของงาน ติดป้ายที่มา
+      const isIntakeDoc = type === "intake";
+      const INTAKE_DOC_LABEL = { po: "PO", quotation: "ใบเสนอราคา", other: "เอกสาร" };
+      const arrField = isIntakeDoc ? "sitePhotoFiles" : `${type}Files`;
       const newFileEntry = {
         fileName: originalName,
         fileUrl: result.secure_url,
         fileType: fileType,
         uploadedAt: new Date(),
-        ...(type === "sitePhoto" ? { uploadedBy: [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") } : {}),
+        ...(type === "sitePhoto" || isIntakeDoc ? { uploadedBy: [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") } : {}),
+        ...(isIntakeDoc ? { source: "intake", sourceLabel: `เอกสารรับงาน · ${INTAKE_DOC_LABEL[eventForLock.intakeDocType] || "เอกสาร"}${eventForLock.intakeDocNo ? ` ${eventForLock.intakeDocNo}` : ""}` } : {}),
       };
 
       // ⚠️ รูปหน้างานของนัดเซลไม่มีแนวคิด "ส่งเอกสารแล้ว" — ไม่ตั้ง documentSentSitePhoto
-      const setFields = type === "sitePhoto" ? {} : {
+      const setFields = type === "sitePhoto" || isIntakeDoc ? {} : {
         [`documentSent${capitalize(type)}`]: true,
       };
       // ถ้ามีไฟล์แนบจริง แปลว่าเอกสารนี้ "มี" แน่นอน ไม่ว่าจะเคยติ๊ก "ไม่มี" ไว้ก่อนหรือไม่

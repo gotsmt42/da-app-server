@@ -5,6 +5,7 @@ const {
   checkAndNotifyExpiringContracts,
   checkAndNotifyOverdueInvoices,
   checkAndNotifyUnackedJobs,
+  checkAndNotifyStalledIntake,
 } = require("./services/OverdueReminder");
 const { checkAndNotifyUnassignedDispatch } = require("./services/DispatchReminder");
 const { checkAndNotifyOverdueAdvances, checkAndNotifyPendingExpenses } = require("./services/ExpenseReminder");
@@ -33,6 +34,7 @@ const NOTIFY_SLOTS = [
       { name: "งานค้าง", task: checkAndNotifyOverdueJobs },
       { name: "สัญญาเลยกำหนดรอบ", task: checkAndNotifyOverdueContracts },
       { name: "งานพรุ่งนี้ยังไม่รับทราบ", task: checkAndNotifyUnackedJobs },
+      { name: "งานใหม่ค้างเกิน 2 วัน", task: checkAndNotifyStalledIntake },
     ],
   },
   {
