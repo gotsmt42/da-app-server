@@ -306,6 +306,24 @@ router.post("/check-in", verifyToken, async (req, res) => {
       return res.status(409).json({ message: `งานนี้บันทึกเข้างานวันที่ ${today} แล้ว (${thTime(already.checkIn?.at)} โดย ${already.userName})`, attendance: already });
     }
 
+    // 🐛 (15 ต.ค. 2569 ผู้ใช้: "การบันทึกเข้างาน เด้งมาให้กดซ้ำทั้งที่งานเข้าวันเดียว")
+    //    งานนัดไว้ N วัน = บันทึกเข้างานได้ N วัน — เข้าช้ากว่านัด (นอกวันนัด) ก็นับเป็นวันของงานนั้น
+    //    บันทึกครบจำนวนวันแล้ว ไม่ให้บันทึกเพิ่มในวันที่ไม่ได้นัด (วันที่นัดไว้จริงยังบันทึกได้เสมอ)
+    {
+      const firstDay = bkkDay(ev.start);
+      const endRaw = ev.end ? new Date(new Date(ev.end).getTime() - (ev.allDay ? 86400000 : 0)) : ev.start;
+      const lastDay = bkkDay(endRaw) < firstDay ? firstDay : bkkDay(endRaw);
+      const planned = Math.min(366, Math.round((new Date(`${lastDay}T00:00:00Z`) - new Date(`${firstDay}T00:00:00Z`)) / 86400000) + 1);
+      const isPlannedToday = today >= firstDay && today <= lastDay;
+      if (!isPlannedToday) {
+        const rows = await Attendance.find({ eventId: ev._id }).select("checkIn.at workDay").lean();
+        const days = new Set(rows.map((r) => (r.checkIn?.at ? bkkDay(r.checkIn.at) : r.workDay)).filter(Boolean));
+        if (days.size >= planned) {
+          return res.status(409).json({ message: `งานนี้บันทึกเข้างานครบ ${planned} วันตามที่นัดไว้แล้ว — ไม่ต้องบันทึกซ้ำ` });
+        }
+      }
+    }
+
     const note = String(req.body.note || "").trim().slice(0, 500);
     const photos = takeFiles(ev.sitePhotoFiles, req.body.photoIds, "before");
     // ✅ (10 ต.ค. 2569 ผู้ใช้: "การเช็คอินต้องอัปรูปภาพหน้างานก่อนถึงจะกดได้")
