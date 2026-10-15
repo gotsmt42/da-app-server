@@ -257,7 +257,19 @@ module.exports = (router) => {
   //    ⚠️ ต้องอยู่ก่อน core ("/:id") — ดู index.js
   router.get("/intake-list", verifyToken, async (req, res) => {
     try {
-      const jobs = await findEvents(withDepartmentScope({ intakeAt: { $ne: null } }, req), { select: "-activityLog", sort: { intakeAt: -1 } });
+      // 🔁 (15 ต.ค. 2569 ผู้ใช้: "หน้างานใหม่ให้ช่างเห็นแค่ของตัวเอง") — คนจัดคิวเห็นทั้งแผนก · คนอื่นเห็นเฉพาะงานที่ตัวเองรับไว้
+      //    หรือเป็นผู้รับผิดชอบ/หัวหน้าทีม
+      const manager = can(req.user, "assignDispatch") || can(req.user, "editAnyJob");
+      const uid = String(req.userId);
+      const fname = req.user?.fname || "";
+      const query = manager ? { intakeAt: { $ne: null } } : {
+        intakeAt: { $ne: null },
+        $or: [
+          { userId: req.userId }, { responsiblePersonId: uid }, { resPerson: req.userId },
+          ...(fname ? [{ responsiblePerson: fname }, { team: fname }] : []),
+        ],
+      };
+      const jobs = await findEvents(withDepartmentScope(query, req), { select: "-activityLog", sort: { intakeAt: -1 } });
       res.json({ jobs });
     } catch (err) {
       console.error("❌ intake-list:", err);
