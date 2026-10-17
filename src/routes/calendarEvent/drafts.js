@@ -27,10 +27,41 @@ const { roundLabelOf } = require("../../utils/contractVisits");
 const { syncGroupsOf } = require("../../services/groupResponsible");
 // ✅ (9 ต.ค. 2569) รับแจ้งงาน = งานรอลงแผน — เก็บผู้ติดต่อ + ข้อมูล Job (ด่วน/ครบกำหนด/อุปกรณ์/รอข้อมูล) ตั้งแต่ตอนรับแจ้ง
 const { pickJobInfo } = require("./jobflow");
+const { effectiveCapabilities } = require("../../config/roles");
 
 /** ✅ (15 ต.ค. 2569) ข้อมูลรับงาน: แผนกที่ส่งงาน · เอกสารต้นทาง · ไม่ต้องเข้างาน — รับเฉพาะค่าที่รู้จัก */
 const INTAKE_SOURCES = ["sales", "service", "project", "customer"];
 const INTAKE_DOC_TYPES = ["po", "quotation", "other"];
+const INTAKE_SOURCE_LABEL = { sales: "ฝ่ายขาย", service: "ฝ่ายบริการ", project: "ฝ่ายโครงการ", customer: "ลูกค้าแจ้งตรง" };
+const INTAKE_DOC_LABEL = { po: "PO", quotation: "ใบเสนอราคา", other: "เอกสาร" };
+
+/**
+ * ✅ (17 ต.ค. 2569 ผู้ใช้: "การเพิ่มงานใหม่เข้าระบบควรมีระบบ push แจ้งเตือนด้วยให้สมบูรณ์")
+ *    ข้อความแจ้งเตือนงานใหม่จากเมนู "งานใหม่" — บอกรูปแบบงาน · งานอะไร · ที่ไหน · ที่มา/เอกสาร/เดือน · ใครรับ · ต้องทำอะไรต่อ
+ */
+function intakePushOf(draft, creatorName, pending) {
+  const mode = draft.intakeNote ? "note" : draft.noVisit ? "delivery" : "visit";
+  const head = mode === "note" ? "📝 บันทึกงานใหม่" : mode === "delivery" ? "🚚 งานส่งของใหม่" : "🆕 งานใหม่เข้าระบบ";
+  const what = mode === "note"
+    ? String(draft.description || "บันทึกงาน").replace(/\s+/g, " ").slice(0, 80)
+    : [[draft.title, draft.system].filter(Boolean).join(" · "), draft.site && draft.site !== "-" ? draft.site : draft.company].filter(Boolean).join(" — ");
+  const facts = [
+    draft.intakeSource ? `จาก${INTAKE_SOURCE_LABEL[draft.intakeSource] || draft.intakeSource}` : "",
+    draft.intakeDocType || draft.intakeDocNo ? `${INTAKE_DOC_LABEL[draft.intakeDocType] || "เอกสาร"}${draft.intakeDocNo ? ` ${draft.intakeDocNo}` : ""}` : "",
+    mode === "visit" && draft.plannedMonth ? `ตั้งใจเข้างาน ${thaiDate(`${draft.plannedMonth}-01`).replace(/^1 /, "")}` : "",
+    draft.urgent || draft.priority === "urgent" ? "⚡ ด่วน" : "",
+  ].filter(Boolean).join(" · ");
+  const next = pending ? "รออนุมัติ — แตะเพื่อตรวจสอบ"
+    : mode === "note" ? "แตะเพื่อดูบันทึก"
+      : mode === "delivery" ? "แตะเพื่อส่งมอบ/วางบิล" : "แตะเพื่อส่งลงตาราง";
+  return {
+    title: `${head}${draft.jobNo ? ` · ${draft.jobNo}` : ""}`,
+    body: [what, facts, `รับงานโดย ${creatorName} · ${next}`].filter(Boolean).join("\n"),
+    url: pending ? "/dispatch?tab=approvals" : "/jobs/intake",
+    tag: `intake-new-${draft._id}`,
+    renotify: true,
+  };
+}
 function pickIntakeInfo(body = {}) {
   const out = {};
   if (body.intakeSource !== undefined) out.intakeSource = INTAKE_SOURCES.includes(body.intakeSource) ? body.intakeSource : "";
@@ -229,7 +260,15 @@ module.exports = (router) => {
       // EventCalendar/index.js) deep-link นั้นจึงพาไปหน้าที่ไม่มีการ์ดนี้อยู่ ต้องส่งไปหน้า "ภาพรวมงาน"
       // ซึ่งเป็นที่เดียวที่จัดการสัญญาฉบับร่างได้จริงแทน — และเดือนอาจว่างได้แล้ว (สัญญาเปล่า) จึงไม่ต่อ
       // ท้ายข้อความ/URL ถ้าไม่มีค่า กัน "เดือน undefined" โผล่ในแจ้งเตือน
-      if (draft.approvalStatus === "pending") {
+      // ✅ (17 ต.ค. 2569) งานใหม่จากเมนู "งานใหม่" — แจ้งแอดมิน/ผู้จัดการ/ผู้จัดคิวทุกครั้ง (เดิมไม่มีใครได้แจ้งถ้าแอดมินรับเอง)
+      //    ยกเว้นคนที่รับงานเอง · ผู้รับผิดชอบที่ถูกมอบหมาย (ได้แจ้งเตือน "มอบหมายให้คุณ" ไปแล้ว)
+      if (draft.intakeAt) {
+        const caps = effectiveCapabilities();
+        const ranks = [...new Set([...SUPERVISOR_ROLES, ...(caps.assignDispatch || [])])];
+        const skip = [String(req.userId), draft.responsiblePersonId ? String(draft.responsiblePersonId) : ""].filter(Boolean);
+        sendPushToRoles(ranks, intakePushOf(draft, creatorName, draft.approvalStatus === "pending"), skip)
+          .catch((err) => console.error("❌ Push notify error (intake-new):", err));
+      } else if (draft.approvalStatus === "pending") {
         const monthSuffix = resolvedPlannedMonth ? ` · เดือน ${resolvedPlannedMonth}` : "";
         sendPushToRoles(SUPERVISOR_ROLES, {
           title: `⏳ ${creatorName} ส่งแผนงานล่วงหน้ารออนุมัติ`,
