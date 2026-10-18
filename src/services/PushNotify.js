@@ -4,6 +4,7 @@ const PushSubscription = require("../models/PushSubscription");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
 const { publish } = require("./realtime");
+const { sendNativeToUsers } = require("./NativePush");
 const { rankFilter, departmentOf } = require("../config/roles");
 
 webpush.setVapidDetails(
@@ -110,6 +111,13 @@ async function sendPushToUsers(userIds, rawPayload) {
     return JSON.stringify({ ...rest, ...(meta.nid ? { nid: meta.nid } : {}), ...(meta.unread !== undefined ? { badge: meta.unread } : {}) });
   };
 
+  // ✅ แอปมือถือ (Android/iPhone) — ผ่าน Firebase · ข้อความ/ลิงก์/badge ชุดเดียวกับ Web Push · ไม่ตั้งค่า Firebase = ข้าม
+  const native = sendNativeToUsers(ids, rest, {
+    ttlSec: options.TTL,
+    collapse: options.topic || "",
+    metaFor: (userId) => inbox.get(userId),
+  }).catch((err) => console.error("❌ แจ้งเตือนแอปมือถือไม่สำเร็จ:", err.message));
+
   await Promise.all(
     subs.map(async (sub) => {
       try {
@@ -127,6 +135,7 @@ async function sendPushToUsers(userIds, rawPayload) {
       }
     })
   );
+  await native;
 }
 
 // ✅ ส่ง push ให้ทุกคนที่มี Rank (ตำแหน่งในองค์กร) อยู่ในรายการที่ระบุ (เช่น แจ้งแอดมิน/ผู้จัดการตอนช่างขอปิดงาน)

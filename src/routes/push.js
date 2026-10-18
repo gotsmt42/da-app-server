@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const PushSubscription = require("../models/PushSubscription");
+const DeviceToken = require("../models/DeviceToken");
 const verifyToken = require("../middleware/auth");
 const Notification = require("../models/Notification");
 const { sendPushToUsers } = require("../services/PushNotify");
@@ -35,6 +36,41 @@ router.post("/subscribe", verifyToken, async (req, res) => {
 });
 
 // ✅ ยกเลิกรับแจ้งเตือนของอุปกรณ์นี้
+/**
+ * ✅ แอปมือถือ (Android/iPhone) ลงทะเบียน FCM token ของเครื่อง — เรียกทุกครั้งที่เปิดแอป/ล็อกอิน
+ * ⚠️ upsert ตาม token (ไม่ใช่ userId) — เครื่องเดียวกันเปลี่ยนคนล็อกอิน = ย้ายเจ้าของ ไม่ส่งแจ้งเตือนคนเก่าเข้าเครื่องคนใหม่
+ */
+router.post("/native/register", verifyToken, async (req, res) => {
+  try {
+    const token = String(req.body?.token || "").trim();
+    const platform = String(req.body?.platform || "");
+    if (!token || token.length > 4096 || !["android", "ios"].includes(platform)) {
+      return res.status(400).json({ message: "ข้อมูลเครื่องไม่ถูกต้อง" });
+    }
+    await DeviceToken.findOneAndUpdate(
+      { token },
+      { token, platform, userId: String(req.userId), appVersion: String(req.body?.appVersion || "").slice(0, 40), lastSeenAt: new Date() },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    res.json({ message: "registered" });
+  } catch (err) {
+    console.error("❌ ลงทะเบียนเครื่องแอปมือถือไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ลงทะเบียนการแจ้งเตือนไม่สำเร็จ" });
+  }
+});
+
+/** ออกจากระบบบนแอปมือถือ — เลิกส่งแจ้งเตือนเข้าเครื่องนี้ */
+router.post("/native/unregister", verifyToken, async (req, res) => {
+  try {
+    const token = String(req.body?.token || "").trim();
+    if (token) await DeviceToken.deleteOne({ token, userId: String(req.userId) });
+    res.json({ message: "unregistered" });
+  } catch (err) {
+    console.error("❌ ยกเลิกเครื่องแอปมือถือไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ยกเลิกการแจ้งเตือนไม่สำเร็จ" });
+  }
+});
+
 router.post("/unsubscribe", verifyToken, async (req, res) => {
   try {
     const { endpoint } = req.body;

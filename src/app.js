@@ -34,6 +34,10 @@ const app = express();
 const ALLOWED_ORIGINS = [
   "https://da-app.vercel.app", // production
   "http://localhost:3000", // dev
+  // ✅ แอปมือถือ TidTam (Capacitor) — หน้าเว็บในแอปเรียก API จาก origin เหล่านี้ (ไม่ใช่โดเมนเว็บ)
+  //    Android = https://localhost (androidScheme: "https") · iPhone = capacitor://localhost
+  "https://localhost",
+  "capacitor://localhost",
 ];
 
 // URL ของ deployment/preview บน Vercel ของโปรเจกต์นี้เท่านั้น
