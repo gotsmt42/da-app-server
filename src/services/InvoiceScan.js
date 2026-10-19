@@ -11,7 +11,7 @@
 const Anthropic = require("@anthropic-ai/sdk");
 
 // ⚠️ ตั้งเป็นค่าคงที่ไว้ที่เดียว — ถ้าวันหนึ่งจะเปลี่ยนรุ่น เปลี่ยนที่นี่จุดเดียว
-const MODEL = "claude-opus-5";
+const MODEL = "claude-sonnet-5-5"; // ✅ (19 ต.ค. 2569 ผู้ใช้เลือก Sonnet — ถูกกว่า Opus หลายเท่า อ่านใบเสนอราคา/ใบวางบิลได้ดี)
 
 const isEnabled = () => Boolean(process.env.ANTHROPIC_API_KEY);
 
