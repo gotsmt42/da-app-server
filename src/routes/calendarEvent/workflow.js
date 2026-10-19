@@ -140,19 +140,18 @@ module.exports = (router) => {
       }
       const file = (ev.quotationFiles || []).find((f) => String(f._id) === String(req.body.fileId));
       if (!file) return res.status(404).json({ message: "ไม่พบไฟล์ใบเสนอราคานี้ในงาน" });
-      const isPdf = /pdf/i.test(file.fileType || "") || /\.pdf$/i.test(file.fileName || "");
-      const isImage = /^image\//.test(file.fileType || "") || /\.(png|jpe?g|webp|gif)$/i.test(file.fileName || "");
-      if (!isPdf && !isImage) return res.status(400).json({ message: "อ่านได้เฉพาะรูปภาพหรือ PDF" });
+      const { isPdfFile, isImageFile } = require("../../services/aiFileSource");
+      if (!isPdfFile(file) && !isImageFile(file)) return res.status(400).json({ message: "อ่านได้เฉพาะรูปภาพหรือ PDF" });
       // apply = เติมช่องที่ยังว่างให้เลย (ผู้ใช้เลือก "เติมให้อัตโนมัติ") · ไม่ส่ง = คืนแค่ผลอ่าน
       if (req.body.apply) {
         const out = await QuotationScan.autoFillQuotation(ev._id, file._id);
         return res.json({ result: out?.result || null, filled: out?.filled || [] });
       }
-      const result = await QuotationScan.scanQuotationFile({ fileUrl: file.fileUrl, isPdf });
+      const result = await QuotationScan.scanQuotationFile(file);
       res.json({ result });
     } catch (err) {
-      console.error("❌ อ่านใบเสนอราคาด้วย AI ไม่สำเร็จ:", err?.message);
-      res.status(502).json({ message: "อ่านไฟล์ไม่สำเร็จ กรุณาลองใหม่หรือกรอกเอง" });
+      console.error("❌ อ่านใบเสนอราคาด้วย AI ไม่สำเร็จ:", err?.status, err?.message);
+      res.status(502).json({ message: require("../../services/aiFileSource").safeAiError(err) });
     }
   });
 

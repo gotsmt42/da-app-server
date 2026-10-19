@@ -28,7 +28,6 @@ const getClient = () => {
 const EXTRACT_TOOL = {
   name: "record_invoice",
   description: "บันทึกตัวเลขที่อ่านได้จากใบวางบิล/ใบแจ้งหนี้",
-  strict: true,
   input_schema: {
     type: "object",
     properties: {
@@ -77,7 +76,8 @@ async function scanInvoiceImage(imageUrl) {
         content: [
           // ⚠️ ส่งเป็น URL ตรงๆ ไม่ต้องดาวน์โหลดมาแปลง base64 — ไฟล์อยู่บน Cloudinary เป็น public URL
           // อยู่แล้ว การดึงมาเองเปลืองทั้งเวลาและหน่วยความจำของเซิร์ฟเวอร์โดยไม่ได้อะไรเพิ่ม
-          { type: "image", source: { type: "url", url: imageUrl } },
+          // 🐛 (19 ต.ค. 2569) ส่ง base64 ที่ดึงเอง (รูปย่อจาก Cloudinary) แทน URL — URL ตรงถูกปฏิเสธเมื่อรูปใหญ่/ไฟล์ raw
+          await require("./aiFileSource").toContentBlock({ fileUrl: imageUrl, fileType: "image/jpeg" }),
           { type: "text", text: "อ่านใบวางบิลในรูปนี้แล้วบันทึกผ่านเครื่องมือ" },
         ],
       },

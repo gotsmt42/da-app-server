@@ -9,6 +9,7 @@
  */
 const Anthropic = require("@anthropic-ai/sdk");
 const { MODEL, isEnabled } = require("./InvoiceScan");
+const { toContentBlock, isPdfFile, isImageFile } = require("./aiFileSource");
 
 let client = null;
 const getClient = () => {
@@ -19,7 +20,6 @@ const getClient = () => {
 const EXTRACT_TOOL = {
   name: "record_quotation",
   description: "บันทึกข้อมูลที่อ่านได้จากใบเสนอราคา",
-  strict: true,
   input_schema: {
     type: "object",
     properties: {
@@ -52,9 +52,10 @@ const SYSTEM = `คุณคือผู้ช่วยฝ่ายขายข�
 - ถ้าไม่ใช่ใบเสนอราคา ให้ตั้ง found = false`;
 
 /**
- * @param {{ fileUrl: string, isPdf: boolean }} file ไฟล์บน Cloudinary (public URL)
+ * @param {{ fileUrl: string, fileName?: string, fileType?: string }} file ไฟล์ใบเสนอราคาบน Cloudinary
  */
-async function scanQuotationFile({ fileUrl, isPdf }) {
+async function scanQuotationFile(file) {
+  const block = await toContentBlock(file);
   const res = await getClient().messages.create({
     model: MODEL,
     max_tokens: 2000,
@@ -64,9 +65,7 @@ async function scanQuotationFile({ fileUrl, isPdf }) {
     messages: [{
       role: "user",
       content: [
-        isPdf
-          ? { type: "document", source: { type: "url", url: fileUrl } }
-          : { type: "image", source: { type: "url", url: fileUrl } },
+        block,
         { type: "text", text: "อ่านใบเสนอราคานี้แล้วบันทึกผ่านเครื่องมือ" },
       ],
     }],
@@ -90,10 +89,8 @@ async function autoFillQuotation(eventId, fileId) {
   const files = ev.quotationFiles || [];
   const file = fileId ? files.find((f) => String(f._id) === String(fileId)) : files[files.length - 1];
   if (!file) return null;
-  const isPdf = /pdf/i.test(file.fileType || "") || /\.pdf$/i.test(file.fileName || "");
-  const isImage = /^image\//.test(file.fileType || "") || /\.(png|jpe?g|webp|gif)$/i.test(file.fileName || "");
-  if (!isPdf && !isImage) return null;
-  const r = await scanQuotationFile({ fileUrl: file.fileUrl, isPdf });
+  if (!isPdfFile(file) && !isImageFile(file)) return null;
+  const r = await scanQuotationFile(file);
   if (!r?.found) return { filled: [], result: r };
 
   const day = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? new Date(`${v}T00:00:00+07:00`) : null);

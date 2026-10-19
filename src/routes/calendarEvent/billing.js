@@ -138,9 +138,9 @@ module.exports = (router) => {
       const result = await InvoiceScan.scanInvoiceImage(file.fileUrl);
       res.json({ result });
     } catch (err) {
-      console.error("❌ Error scanning invoice:", err);
-      // ⚠️ ไม่โยน error ดิบกลับไปหน้าจอ — ข้อความจาก SDK อาจมีรายละเอียดคำขอ/คีย์ปนมาได้
-      res.status(502).json({ message: "อ่านรูปไม่สำเร็จ กรุณาลองใหม่หรือกรอกยอดเอง" });
+      console.error("❌ Error scanning invoice:", err?.status, err?.message);
+      // ⚠️ ไม่โยน error ดิบกลับไปหน้าจอ — แปลงเป็นข้อความที่ปลอดภัย (คีย์ผิด/เครดิตหมด/ไฟล์อ่านไม่ได้)
+      res.status(502).json({ message: require("../../services/aiFileSource").safeAiError(err) });
     }
   });
 
