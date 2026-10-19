@@ -7,15 +7,15 @@
  * ✅ เงื่อนไขเริ่มนับ (ทั้งงาน = jobGroupId เดียวกัน): มีไฟล์ใบเสนอราคา + งานส่งแล้ว (ขอปิดงานแล้ว หรือปิดงานแล้ว)
  *    วันเริ่มนับ = วันหลังสุดระหว่าง "อัปไฟล์ใบล่าสุด" กับ "ส่งงาน/ปิดงาน"
  *    → ตั้ง quotationStatus = "sent" ให้เอง (ตรรกะติดตาม/แจ้งเตือน/แดชบอร์ดเดิมใช้ต่อได้ทั้งหมด)
+ * 🔁 (19 ต.ค. 2569 ผู้ใช้: "ขั้นตอนการนับให้เริ่มตั้งแต่ที่ช่างอัปไฟล์ลงในงาน · ไม่ต้องมากดเอง")
+ *    เงื่อนไขใหม่: มีไฟล์ใบเสนอราคาในงาน = เริ่มนับทันที ไม่ต้องรอส่งงาน/ปิดงาน · วันเริ่มนับ = วันที่อัปไฟล์ใบแรก
  * ⚠️ ไม่แตะใบที่มีสถานะแล้ว (ส่ง/อนุมัติ/ปฏิเสธ/แก้ไข) — และใบที่ฝ่ายบริหารกด "ย้อนสถานะ" จะถูกเริ่มนับใหม่
  *    อัตโนมัติอีกครั้งถ้ายังเข้าเงื่อนไข (ตั้งใจ: ไม่มีสถานะ "รอส่ง" ค้างอีกต่อไป)
  */
 const CalendarEvent = require("../models/Events");
 
-const DONE_STATUS = "ดำเนินการเสร็จสิ้น";
-
-const latestDate = (...ds) => ds.filter((d) => d && !Number.isNaN(new Date(d).getTime()))
-  .reduce((a, d) => (!a || new Date(d) > a ? new Date(d) : a), null);
+const earliestDate = (...ds) => ds.filter((d) => d && !Number.isNaN(new Date(d).getTime()))
+  .reduce((a, d) => (!a || new Date(d) < a ? new Date(d) : a), null);
 
 /**
  * @param {object} [scope] — { ids: [eventId] } เฉพาะงานที่เกี่ยวข้อง (หลังอัปไฟล์/แก้งาน) · ไม่ส่ง = กวาดทั้งระบบ
@@ -58,11 +58,7 @@ async function syncQuotationStart(scope = {}) {
     if (list.some((r) => r.quotationStatus)) continue;
     const files = list.flatMap((r) => r.quotationFiles || []);
     if (!files.length) continue;
-    const doneRows = list.filter((r) => r.status === DONE_STATUS || r.closeRequested === true || r.closeApprovedAt);
-    if (!doneRows.length) continue;
-    const lastUpload = latestDate(...files.map((f) => f.uploadedAt));
-    const doneAt = latestDate(...doneRows.map((r) => r.closeApprovedAt || r.closeRequestedAt || r.updatedAt));
-    const sentAt = latestDate(lastUpload, doneAt) || new Date();
+    const sentAt = earliestDate(...files.map((f) => f.uploadedAt)) || new Date();
     const filter2 = list[0].jobGroupId ? { jobGroupId: key } : { _id: list[0]._id };
     const res = await CalendarEvent.updateMany(
       { ...filter2, $or: [{ quotationStatus: null }, { quotationStatus: { $exists: false } }] },
@@ -71,7 +67,7 @@ async function syncQuotationStart(scope = {}) {
     if (res.modifiedCount) {
       started += 1;
       await CalendarEvent.updateOne({ _id: list[0]._id }, {
-        $push: { activityLog: { action: "quotation_sent", detail: "เริ่มนับติดตามใบเสนอราคาอัตโนมัติ (แนบใบเสนอราคาและส่งงานแล้ว)", userId: "", userName: "ระบบ", timestamp: new Date() } },
+        $push: { activityLog: { action: "quotation_sent", detail: "เริ่มนับติดตามใบเสนอราคาอัตโนมัติ (แนบไฟล์ใบเสนอราคาแล้ว)", userId: "", userName: "ระบบ", timestamp: new Date() } },
       });
     }
   }
