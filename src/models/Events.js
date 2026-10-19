@@ -286,6 +286,8 @@ const eventSchema = new mongoose.Schema(
       fields: { type: [String], default: undefined },
       confidence: { type: String, default: "" },
       note: { type: String, default: "" },
+      fileCount: { type: Number, default: 0 },            // จำนวนไฟล์ที่อ่านรอบล่าสุด
+      quotations: { type: [mongoose.Schema.Types.Mixed], default: undefined }, // รายใบ: { quotationNo, files[], quotationDate, grandTotal, totalText, issues[] }
     },
     quotationContact: {               // ผู้ติดต่อฝั่งลูกค้าที่รับใบเสนอราคา
       name: { type: String, default: "" },

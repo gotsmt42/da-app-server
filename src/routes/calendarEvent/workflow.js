@@ -138,16 +138,15 @@ module.exports = (router) => {
       if (!can(req.user, "editFinance") && !isJobParticipant(ev, req.userId, req.user.fname)) {
         return res.status(403).json({ message: "อ่านใบเสนอราคาได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
       }
-      const file = (ev.quotationFiles || []).find((f) => String(f._id) === String(req.body.fileId));
-      if (!file) return res.status(404).json({ message: "ไม่พบไฟล์ใบเสนอราคานี้ในงาน" });
       const { isPdfFile, isImageFile } = require("../../services/aiFileSource");
-      if (!isPdfFile(file) && !isImageFile(file)) return res.status(400).json({ message: "อ่านได้เฉพาะรูปภาพหรือ PDF" });
-      // apply = เติมช่องที่ยังว่างให้เลย (ผู้ใช้เลือก "เติมให้อัตโนมัติ") · ไม่ส่ง = คืนแค่ผลอ่าน
+      if (!(ev.quotationFiles || []).some((f) => isPdfFile(f) || isImageFile(f))) return res.status(400).json({ message: "อ่านได้เฉพาะรูปภาพหรือ PDF" });
+      // 🔁 อ่าน "ทุกไฟล์" ของงานพร้อมกัน (ใบเดียวอาจแยกหลายไฟล์ · งานเดียวอาจมีหลายใบ)
+      // apply = เติมให้เลย (ช่องว่าง/ช่องที่ AI เติมไว้เอง) · ไม่ส่ง = คืนแค่ผลอ่าน
       if (req.body.apply) {
-        const out = await QuotationScan.autoFillQuotation(ev._id, file._id);
+        const out = await QuotationScan.autoFillQuotation(ev._id);
         return res.json({ result: out?.result || null, filled: out?.filled || [] });
       }
-      const result = await QuotationScan.scanQuotationFile(file);
+      const result = await QuotationScan.scanQuotationFiles(ev.quotationFiles);
       res.json({ result });
     } catch (err) {
       console.error("❌ อ่านใบเสนอราคาด้วย AI ไม่สำเร็จ:", err?.status, err?.message);

@@ -77,7 +77,7 @@ async function scanInvoiceImage(imageUrl) {
           // ⚠️ ส่งเป็น URL ตรงๆ ไม่ต้องดาวน์โหลดมาแปลง base64 — ไฟล์อยู่บน Cloudinary เป็น public URL
           // อยู่แล้ว การดึงมาเองเปลืองทั้งเวลาและหน่วยความจำของเซิร์ฟเวอร์โดยไม่ได้อะไรเพิ่ม
           // 🐛 (19 ต.ค. 2569) ส่ง base64 ที่ดึงเอง (รูปย่อจาก Cloudinary) แทน URL — URL ตรงถูกปฏิเสธเมื่อรูปใหญ่/ไฟล์ raw
-          await require("./aiFileSource").toContentBlock({ fileUrl: imageUrl, fileType: "image/jpeg" }),
+          ...(await require("./aiFileSource").toContentBlocks({ fileUrl: imageUrl, fileType: "image/jpeg" })), // รูปยาวตัดเป็นช่วง
           { type: "text", text: "อ่านใบวางบิลในรูปนี้แล้วบันทึกผ่านเครื่องมือ" },
         ],
       },

@@ -36,6 +36,42 @@ async function toContentBlock(file) {
   return { type: "image", source: { type: "base64", media_type: mediaType, data: buf.toString("base64") } };
 }
 
+/**
+ * 🐛 (19 ต.ค. 2569 ผู้ใช้: "ราคาไม่ตรงมั่ว · เลขที่ด้วย") ภาพหน้าจอมือถือแนวตั้งยาว ถูก AI ย่อเหลือด้านยาว ~1568px
+ *    ตัวเลขเล็กจนอ่านผิด → ตัดรูปยาวเป็นช่วงๆ (ซ้อนกันเล็กน้อย) ส่งทีละช่วงให้ตัวหนังสือใหญ่พอ
+ *    ขนาดจริงของรูปถามจาก Cloudinary (fl_getinfo) · ตัดด้วย c_crop ที่ Cloudinary ไม่ต้องมีไลบรารีรูปในเซิร์ฟเวอร์
+ */
+async function imageSize(url) {
+  if (!/\/image\/upload\//.test(url || "")) return null;
+  try {
+    const r = await fetch(url.replace("/image/upload/", "/image/upload/fl_getinfo/"));
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j?.input?.width && j?.input?.height ? { w: j.input.width, h: j.input.height } : null;
+  } catch { return null; }
+}
+
+const fetchImageBlock = async (url) => {
+  const res = await fetch(url);
+  if (!res.ok) throw Object.assign(new Error(`ดึงไฟล์ไม่สำเร็จ (${res.status})`), { userMessage: "ดึงไฟล์จากที่เก็บไม่สำเร็จ" });
+  return { type: "image", source: { type: "base64", media_type: "image/jpeg", data: Buffer.from(await res.arrayBuffer()).toString("base64") } };
+};
+
+/**
+ * @returns {Promise<object[]>} content blocks ของไฟล์เดียว — รูปยาวได้หลายช่วง (บนลงล่าง) · PDF/รูปปกติได้ 1 ชิ้น
+ */
+async function toContentBlocks(file) {
+  if (isPdfFile(file)) return [await toContentBlock(file)];
+  const size = await imageSize(file.fileUrl);
+  if (!size || size.h / size.w <= 1.5) return [await toContentBlock(file)];
+  const tileH = Math.round(size.w * 1.2);
+  const overlap = Math.round(size.w * 0.12);
+  const ys = [];
+  for (let y = 0; y < size.h - overlap && ys.length < 5; y += tileH - overlap) ys.push(Math.min(y, Math.max(0, size.h - tileH)));
+  return Promise.all([...new Set(ys)].map((y) => fetchImageBlock(file.fileUrl.replace("/image/upload/",
+    `/image/upload/c_crop,x_0,y_${y},w_${size.w},h_${Math.min(tileH, size.h - y)}/c_limit,w_1400,h_1700,q_auto:good,f_jpg/`))));
+}
+
 /** เรียก AI · ถ้ารุ่นไม่รับการบังคับเครื่องมือ (tool_choice) ลองใหม่แบบ auto อีกครั้ง */
 async function createMessage(client, params) {
   try {
@@ -63,4 +99,4 @@ const safeAiError = (err) => {
   return `อ่านไฟล์ไม่สำเร็จ${status ? ` [${status}]` : ""}${apiMsg ? ` (${apiMsg})` : ""} กรุณาลองใหม่หรือกรอกเอง`;
 };
 
-module.exports = { toContentBlock, createMessage, isPdfFile, isImageFile, safeAiError };
+module.exports = { toContentBlock, toContentBlocks, createMessage, isPdfFile, isImageFile, safeAiError };
