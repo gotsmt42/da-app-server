@@ -541,9 +541,13 @@ module.exports = (router) => {
         deliveredAt: start, scheduledAt: at,
         status: "ดำเนินการเสร็จสิ้น", manualStatus: true, closeApprovedAt: at,
       });
+      // ✅ (19 ต.ค. 2569 ผู้ใช้: "การส่งของให้ดูด้วยว่าต้องวางบิลไหม ให้เลือกก่อน · ถ้าไม่มีอะไร สถานะคือเสร็จสิ้น")
+      //    noBilling = ไม่ต้องวางบิล → จบงานเลย (invoiceApplicable = false) · ไม่ส่ง = ต้องวางบิล (ค่าเดิม)
+      if (req.body.noBilling === true) ev.invoiceApplicable = false;
+      else if (req.body.noBilling === false) ev.invoiceApplicable = true;
       ev.activityLog.push({
         userId: String(req.userId), userName: name, action: "delivered", timestamp: at,
-        detail: `ส่งมอบแล้ว (ไม่ต้องเข้างาน) ${thaiDate(start)}${req.body.note ? ` · ${String(req.body.note).slice(0, 300)}` : ""}`,
+        detail: `ส่งของแล้ว (ไม่ต้องเข้างาน) ${thaiDate(start)}${req.body.noBilling === true ? " · ไม่ต้องวางบิล" : ""}${req.body.note ? ` · ${String(req.body.note).slice(0, 300)}` : ""}`,
       });
       await ev.save();
       res.json({ event: ev });
