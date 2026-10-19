@@ -36,6 +36,19 @@ async function toContentBlock(file) {
   return { type: "image", source: { type: "base64", media_type: mediaType, data: buf.toString("base64") } };
 }
 
+/** เรียก AI · ถ้ารุ่นไม่รับการบังคับเครื่องมือ (tool_choice) ลองใหม่แบบ auto อีกครั้ง */
+async function createMessage(client, params) {
+  try {
+    return await client.messages.create(params);
+  } catch (err) {
+    const msg = String(err?.error?.error?.message || err?.message || "");
+    if (err?.status === 400 && params.tool_choice && /tool_choice|tool choice/i.test(msg)) {
+      return client.messages.create({ ...params, tool_choice: { type: "auto" } });
+    }
+    throw err;
+  }
+}
+
 /** ข้อความ error ที่ปลอดภัยให้หน้าจอ (ไม่มีคีย์/รายละเอียดคำขอ) */
 const safeAiError = (err) => {
   if (err?.userMessage) return err.userMessage;
@@ -44,8 +57,10 @@ const safeAiError = (err) => {
   if (status === 402 || /credit balance/i.test(err?.message || "")) return "เครดิต AI หมด — เติมเครดิตที่ console.anthropic.com";
   if (status === 404) return "ไม่พบรุ่น AI ที่ตั้งไว้";
   if (status === 429) return "ใช้งาน AI ถี่เกินไป ลองใหม่อีกครั้ง";
-  if (status === 400) return `AI อ่านไฟล์นี้ไม่ได้${/image|pdf|document/i.test(err?.message || "") ? " (รูปแบบ/ขนาดไฟล์)" : ""}`;
-  return "อ่านไฟล์ไม่สำเร็จ กรุณาลองใหม่หรือกรอกเอง";
+  // 🐛 (19 ต.ค. 2569 ผู้ใช้: "อ่านไม่ได้ซักไฟล์") ข้อความจาก API (ภาษาอังกฤษ) ไม่มีคีย์ปน — แนบท้ายให้เห็นสาเหตุจริง
+  const apiMsg = String(err?.error?.error?.message || "").replace(/sk-ant-[\w-]+/g, "***").slice(0, 180);
+  if (status === 400) return `AI อ่านไฟล์นี้ไม่ได้${apiMsg ? ` (${apiMsg})` : ""}`;
+  return `อ่านไฟล์ไม่สำเร็จ${status ? ` [${status}]` : ""}${apiMsg ? ` (${apiMsg})` : ""} กรุณาลองใหม่หรือกรอกเอง`;
 };
 
-module.exports = { toContentBlock, isPdfFile, isImageFile, safeAiError };
+module.exports = { toContentBlock, createMessage, isPdfFile, isImageFile, safeAiError };

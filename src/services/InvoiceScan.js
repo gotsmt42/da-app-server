@@ -62,7 +62,7 @@ const SYSTEM = `คุณคือผู้ช่วยฝ่ายบัญช�
  * @returns {Promise<object>} ค่าที่อ่านได้ พร้อม confidence/note ให้คนตรวจซ้ำ
  */
 async function scanInvoiceImage(imageUrl) {
-  const res = await getClient().messages.create({
+  const res = await require("./aiFileSource").createMessage(getClient(), {
     model: MODEL,
     max_tokens: 2000,
     system: SYSTEM,

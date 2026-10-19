@@ -9,7 +9,7 @@
  */
 const Anthropic = require("@anthropic-ai/sdk");
 const { MODEL, isEnabled } = require("./InvoiceScan");
-const { toContentBlock, isPdfFile, isImageFile } = require("./aiFileSource");
+const { toContentBlock, createMessage, isPdfFile, isImageFile } = require("./aiFileSource");
 
 let client = null;
 const getClient = () => {
@@ -56,7 +56,7 @@ const SYSTEM = `คุณคือผู้ช่วยฝ่ายขายข�
  */
 async function scanQuotationFile(file) {
   const block = await toContentBlock(file);
-  const res = await getClient().messages.create({
+  const res = await createMessage(getClient(), {
     model: MODEL,
     max_tokens: 2000,
     system: SYSTEM,
