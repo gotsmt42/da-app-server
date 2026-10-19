@@ -137,6 +137,7 @@ const NOT_A_CHANGE = [
   /^\/auth\/(login|validate-password)(\/|$)/,
   /^\/files\/files\/download-zip/,
   /^\/events\/[^/]+\/billing\/scan/,
+  /^\/events\/[^/]+\/quotation\/scan/,
   /^\/expenses\/[^/]+\/blank-claim-form/,
 ];
 

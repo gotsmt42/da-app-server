@@ -124,6 +124,33 @@ module.exports = (router) => {
    * body: { action?: "send"|"approve"|"reject"|"reset", ...ฟิลด์ข้อมูลใบเสนอราคา }
    * สิทธิ์: ผู้เกี่ยวข้องกับงาน หรือ editFinance · มูลค่า/ย้อนสถานะ = editFinance เท่านั้น
    */
+  /**
+   * ✅ (19 ต.ค. 2569 ผู้ใช้: "วิเคราะห์ข้อมูลในภาพหรือไฟล์อัตโนมัติว่าราคารวมเท่าไร") — ให้ AI อ่านไฟล์ใบเสนอราคา
+   * ⚠️ ไม่บันทึกอะไรเลย คืนค่าให้หน้าจอแสดงแล้วคนกด "ใช้ค่านี้" · รับเฉพาะ fileId ที่แนบกับงานนี้จริง (กัน SSRF/เผาโควตา)
+   */
+  router.post("/:id/quotation/scan", verifyToken, async (req, res) => {
+    try {
+      const QuotationScan = require("../../services/QuotationScan");
+      if (!QuotationScan.isEnabled()) return res.status(503).json({ message: "ยังไม่ได้เปิดใช้งานการอ่านเอกสารด้วย AI (ไม่พบ ANTHROPIC_API_KEY)" });
+      const ev = await CalendarEvent.findById(req.params.id)
+        .select("quotationFiles userId team resPerson responsiblePerson responsiblePersonId teamMembers").lean();
+      if (!ev) return res.status(404).json({ message: "ไม่พบงานนี้" });
+      if (!can(req.user, "editFinance") && !isJobParticipant(ev, req.userId, req.user.fname)) {
+        return res.status(403).json({ message: "อ่านใบเสนอราคาได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
+      }
+      const file = (ev.quotationFiles || []).find((f) => String(f._id) === String(req.body.fileId));
+      if (!file) return res.status(404).json({ message: "ไม่พบไฟล์ใบเสนอราคานี้ในงาน" });
+      const isPdf = /pdf/i.test(file.fileType || "") || /\.pdf$/i.test(file.fileName || "");
+      const isImage = /^image\//.test(file.fileType || "") || /\.(png|jpe?g|webp|gif)$/i.test(file.fileName || "");
+      if (!isPdf && !isImage) return res.status(400).json({ message: "อ่านได้เฉพาะรูปภาพหรือ PDF" });
+      const result = await QuotationScan.scanQuotationFile({ fileUrl: file.fileUrl, isPdf });
+      res.json({ result });
+    } catch (err) {
+      console.error("❌ อ่านใบเสนอราคาด้วย AI ไม่สำเร็จ:", err?.message);
+      res.status(502).json({ message: "อ่านไฟล์ไม่สำเร็จ กรุณาลองใหม่หรือกรอกเอง" });
+    }
+  });
+
   router.put("/:id/quotation", verifyToken, async (req, res) => {
     try {
       const anchor = await CalendarEvent.findById(req.params.id);
