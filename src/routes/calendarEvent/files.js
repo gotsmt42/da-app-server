@@ -132,6 +132,12 @@ module.exports = (router) => {
       // ✅ แนบใบเสนอราคาของงานที่ส่งงานแล้ว = เริ่มนับติดตามทันที (services/quotationAutoStart.js)
       if (type === "quotation") await syncQuotationStartSafe({ ids: [eventId] });
 
+      const savedFilesForAi = updatedEvent[arrField] || [];
+      // ✅ (19 ต.ค. 2569) แนบใบเสนอราคา → AI อ่านแล้วเติมช่องที่ยังว่างให้เอง (ทำเบื้องหลัง ไม่ให้การอัปโหลดช้า)
+      if (type === "quotation" && savedFilesForAi.length) {
+        require("../../services/QuotationScan").autoFillQuotationSafe(eventId, savedFilesForAi[savedFilesForAi.length - 1]._id);
+      }
+
       const savedFiles = updatedEvent[arrField] || [];
       const savedFile = savedFiles[savedFiles.length - 1];
 

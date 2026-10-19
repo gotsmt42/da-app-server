@@ -133,7 +133,7 @@ module.exports = (router) => {
       const QuotationScan = require("../../services/QuotationScan");
       if (!QuotationScan.isEnabled()) return res.status(503).json({ message: "ยังไม่ได้เปิดใช้งานการอ่านเอกสารด้วย AI (ไม่พบ ANTHROPIC_API_KEY)" });
       const ev = await CalendarEvent.findById(req.params.id)
-        .select("quotationFiles userId team resPerson responsiblePerson responsiblePersonId teamMembers").lean();
+        .select("_id quotationFiles userId team resPerson responsiblePerson responsiblePersonId teamMembers").lean();
       if (!ev) return res.status(404).json({ message: "ไม่พบงานนี้" });
       if (!can(req.user, "editFinance") && !isJobParticipant(ev, req.userId, req.user.fname)) {
         return res.status(403).json({ message: "อ่านใบเสนอราคาได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
@@ -143,6 +143,11 @@ module.exports = (router) => {
       const isPdf = /pdf/i.test(file.fileType || "") || /\.pdf$/i.test(file.fileName || "");
       const isImage = /^image\//.test(file.fileType || "") || /\.(png|jpe?g|webp|gif)$/i.test(file.fileName || "");
       if (!isPdf && !isImage) return res.status(400).json({ message: "อ่านได้เฉพาะรูปภาพหรือ PDF" });
+      // apply = เติมช่องที่ยังว่างให้เลย (ผู้ใช้เลือก "เติมให้อัตโนมัติ") · ไม่ส่ง = คืนแค่ผลอ่าน
+      if (req.body.apply) {
+        const out = await QuotationScan.autoFillQuotation(ev._id, file._id);
+        return res.json({ result: out?.result || null, filled: out?.filled || [] });
+      }
       const result = await QuotationScan.scanQuotationFile({ fileUrl: file.fileUrl, isPdf });
       res.json({ result });
     } catch (err) {
@@ -198,6 +203,11 @@ module.exports = (router) => {
       const qValid = $set.quotationValidUntil !== undefined ? $set.quotationValidUntil : anchor.quotationValidUntil;
       if (qDate && qValid && qValid < qDate) return res.status(400).json({ message: "วันยืนราคาต้องไม่ก่อนวันที่ใบเสนอราคา" });
 
+      // ช่องที่คนแก้เอง = ตรวจแล้ว → เอาออกจากรายการที่ AI เติม (ป้าย "AI" หายเฉพาะช่องนั้น)
+      if (anchor.quotationAiFilled?.fields?.length) {
+        const touched = ["quotationNo", "quotationDate", "quotationValidUntil", "quotationAmount", "quotationContact"].filter((key) => body[key] !== undefined);
+        if (touched.length) $set["quotationAiFilled.fields"] = anchor.quotationAiFilled.fields.filter((f) => !touched.includes(f));
+      }
       let log = changes.length ? ["quotation_updated", `แก้ข้อมูลใบเสนอราคา (${changes.join(" · ")})`] : null;
       const action = String(body.action || "");
       if (action) {

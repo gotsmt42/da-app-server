@@ -76,4 +76,59 @@ async function scanQuotationFile({ fileUrl, isPdf }) {
   return call.input;
 }
 
-module.exports = { scanQuotationFile, isEnabled, MODEL };
+/**
+ * ✅ (19 ต.ค. 2569 ผู้ใช้เลือก "เติมให้อัตโนมัติเลย") อ่านไฟล์แล้วเติม "เฉพาะช่องที่ยังว่าง" ให้ทั้งงาน (ทุกวันของ jobGroupId)
+ *    เลขที่ · วันที่ · ยืนราคา · มูลค่า (ยอดรวม) · ผู้ติดต่อ — ไม่ทับค่าที่คนกรอกไว้ · จดลงประวัติ + quotationAiFilled
+ *    แจ้งหน้าจอทุกเครื่องให้โหลดใหม่ (realtime "events")
+ * @returns {Promise<{filled: string[], result: object}|null>}
+ */
+async function autoFillQuotation(eventId, fileId) {
+  if (!isEnabled()) return null;
+  const CalendarEvent = require("../models/Events");
+  const ev = await CalendarEvent.findById(eventId).lean();
+  if (!ev) return null;
+  const files = ev.quotationFiles || [];
+  const file = fileId ? files.find((f) => String(f._id) === String(fileId)) : files[files.length - 1];
+  if (!file) return null;
+  const isPdf = /pdf/i.test(file.fileType || "") || /\.pdf$/i.test(file.fileName || "");
+  const isImage = /^image\//.test(file.fileType || "") || /\.(png|jpe?g|webp|gif)$/i.test(file.fileName || "");
+  if (!isPdf && !isImage) return null;
+  const r = await scanQuotationFile({ fileUrl: file.fileUrl, isPdf });
+  if (!r?.found) return { filled: [], result: r };
+
+  const day = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? new Date(`${v}T00:00:00+07:00`) : null);
+  const $set = {};
+  const filled = [];
+  if (!ev.quotationNo && r.quotationNo) { $set.quotationNo = String(r.quotationNo).slice(0, 60); filled.push("quotationNo"); }
+  if (!ev.quotationDate && day(r.quotationDate)) { $set.quotationDate = day(r.quotationDate); filled.push("quotationDate"); }
+  if (!ev.quotationValidUntil && day(r.validUntil)) { $set.quotationValidUntil = day(r.validUntil); filled.push("quotationValidUntil"); }
+  const vat = Number(r.vatAmount) || 0;
+  const total = Number(r.grandTotal) || (Number(r.amountBeforeVat) + vat) || 0;
+  if (!ev.quotationAmount && total > 0) {
+    $set.quotationAmount = Math.round(total * 100) / 100;
+    $set.quotationVatIncluded = vat > 0 || Number(r.grandTotal) > Number(r.amountBeforeVat);
+    filled.push("quotationAmount");
+  }
+  const c = ev.quotationContact || {};
+  if ((!c.name && r.contactName) || (!c.phone && r.contactPhone) || (!c.email && r.contactEmail)) {
+    $set.quotationContact = { name: c.name || r.contactName || "", phone: c.phone || r.contactPhone || "", email: c.email || r.contactEmail || "" };
+    filled.push("quotationContact");
+  }
+  if (!filled.length) return { filled, result: r };
+  const prev = (ev.quotationAiFilled?.fields || []);
+  $set.quotationAiFilled = { at: new Date(), fields: [...new Set([...prev, ...filled])], confidence: r.confidence || "", note: r.note || "" };
+  const filter = ev.jobGroupId ? { jobGroupId: ev.jobGroupId } : { _id: ev._id };
+  await CalendarEvent.updateMany(filter, { $set });
+  const LABEL = { quotationNo: "เลขที่", quotationDate: "วันที่", quotationValidUntil: "ยืนราคา", quotationAmount: "มูลค่า", quotationContact: "ผู้ติดต่อ" };
+  await CalendarEvent.updateOne({ _id: ev._id }, {
+    $push: { activityLog: { action: "quotation_ai_filled", detail: `AI อ่านไฟล์ใบเสนอราคาแล้วเติม: ${filled.map((k) => LABEL[k]).join(" · ")}${total ? ` (ยอดรวม ${total.toLocaleString("th-TH")} บาท)` : ""}`, userId: "", userName: "ระบบ (AI)", timestamp: new Date() } },
+  });
+  try { require("./realtime").publish({ topic: "events", id: String(ev._id), action: "put", origin: "", by: "" }); } catch { /* ไม่ขวาง */ }
+  return { filled, result: r };
+}
+
+/** เรียกแบบไม่รอผล (หลังอัปโหลด) — ล้มเหลวต้องไม่กระทบคำขอหลัก */
+const autoFillQuotationSafe = (eventId, fileId) =>
+  autoFillQuotation(eventId, fileId).catch((err) => { console.error("❌ AI เติมใบเสนอราคาไม่สำเร็จ:", err?.message); return null; });
+
+module.exports = { scanQuotationFile, autoFillQuotation, autoFillQuotationSafe, isEnabled, MODEL };

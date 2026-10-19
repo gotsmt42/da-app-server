@@ -279,6 +279,14 @@ const eventSchema = new mongoose.Schema(
     quotationDate: Date,              // วันที่ในใบเสนอราคา
     quotationValidUntil: Date,        // ยืนราคาถึงวันที่
     quotationVatIncluded: { type: Boolean, default: false }, // มูลค่ารวม VAT แล้วหรือยัง
+    // ✅ (19 ต.ค. 2569 ผู้ใช้เลือก "เติมให้อัตโนมัติเลย") ช่องที่ AI อ่านจากไฟล์แล้วเติมให้ — หน้าจอติดป้าย "AI" ให้ตรวจ/แก้
+    //    แก้ช่องไหนเองแล้ว ช่องนั้นหลุดจากรายการ (ถือว่าคนตรวจแล้ว)
+    quotationAiFilled: {
+      at: { type: Date, default: null },
+      fields: { type: [String], default: undefined },
+      confidence: { type: String, default: "" },
+      note: { type: String, default: "" },
+    },
     quotationContact: {               // ผู้ติดต่อฝั่งลูกค้าที่รับใบเสนอราคา
       name: { type: String, default: "" },
       phone: { type: String, default: "" },
