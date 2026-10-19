@@ -316,6 +316,17 @@ const eventSchema = new mongoose.Schema(
         uploadedAt: { type: Date, default: Date.now },
       },
     ],
+    // ✅ (19 ต.ค. 2569 ผู้ใช้: "อยากให้แนบหรือกรอกเอกสารภายหลังกดได้งาน หรือไม่ได้งานด้วย")
+    //    เอกสารผลลัพธ์ของใบเสนอราคา — PO/หนังสือตอบรับ (ได้งาน) · อีเมล/หนังสือปฏิเสธ (ไม่ได้งาน)
+    quotationResultFiles: [
+      {
+        fileName: String,
+        fileUrl: String,
+        fileType: String,
+        uploadedAt: { type: Date, default: Date.now },
+        uploadedBy: String,
+      },
+    ],
     reportFiles: [
       {
         fileName: String,

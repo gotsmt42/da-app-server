@@ -148,6 +148,17 @@ module.exports = (router) => {
         $set.quotationContact = { name: str(c.name, 120), phone: str(c.phone, 40), email: str(c.email, 120) };
         changes.push("ผู้ติดต่อ");
       }
+      // ✅ (19 ต.ค. 2569) แก้/เติมรายละเอียดผลภายหลังได้ (เลข PO · วันที่ลูกค้าตอบ · หมายเหตุ/เหตุผล) โดยไม่เปลี่ยนสถานะ
+      if (body.quotationPoNo !== undefined) { $set.quotationPoNo = str(body.quotationPoNo, 60); changes.push("เลข PO"); }
+      if (body.quotationDecisionNote !== undefined) {
+        $set.quotationDecisionNote = str(body.quotationDecisionNote, 500);
+        if (anchor.quotationStatus === "rejected" && !$set.quotationDecisionNote) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ไม่ได้งาน" });
+        changes.push(anchor.quotationStatus === "rejected" ? "เหตุผล" : "หมายเหตุผล");
+      }
+      if (body.quotationDecisionAt !== undefined) {
+        const d = parseDay(body.quotationDecisionAt, true);
+        if (d) { $set.quotationDecisionAt = d; changes.push("วันที่ลูกค้าตอบ"); }
+      }
       if (body.quotationNextFollowUpAt !== undefined) { $set.quotationNextFollowUpAt = parseDay(body.quotationNextFollowUpAt); changes.push("นัดติดตาม"); }
       if (body.quotationAmount !== undefined) {
         if (!isFinance) return res.status(403).json({ message: "แก้มูลค่าใบเสนอราคาได้เฉพาะฝ่ายบริหาร/การเงิน" });
@@ -205,6 +216,8 @@ module.exports = (router) => {
           $push: { activityLog: { action: log[0], detail: log[1], userId: String(req.userId), userName: actorName, timestamp: now } },
         });
       }
+      // แก้ผล (reset) แล้วใบที่มีไฟล์อยู่ → เริ่มนับติดตามต่อทันที (กลับไป "รอลูกค้าตอบ") ไม่ค้างที่ "กำลังเริ่มนับ"
+      if (action === "reset") await require("../../services/quotationAutoStart").syncQuotationStartSafe({ ids: [anchor._id] });
       const event = await CalendarEvent.findById(anchor._id).lean();
       res.json({ event });
     } catch (err) {

@@ -35,7 +35,8 @@ module.exports = (router) => {
         return res.status(404).send("ไม่พบแผนงาน");
       }
       const isAdminOrManager = can(req.user, "editAnyJob");
-      if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && type !== "quotation") {
+      // ✅ เอกสารผลลัพธ์ใบเสนอราคา (quotationResult) ก็เกิดหลังงานปิดได้ — ยกเว้นแบบเดียวกับใบเสนอราคา
+      if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && type !== "quotation" && type !== "quotationResult") {
         return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถแก้ไขไฟล์ได้");
       }
 
@@ -109,12 +110,12 @@ module.exports = (router) => {
         fileUrl: result.secure_url,
         fileType: fileType,
         uploadedAt: new Date(),
-        ...(type === "sitePhoto" || isIntakeDoc ? { uploadedBy: [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") } : {}),
+        ...(type === "sitePhoto" || isIntakeDoc || type === "quotationResult" ? { uploadedBy: [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") } : {}),
         ...(isIntakeDoc ? { source: "intake", sourceLabel: `เอกสารรับงาน · ${INTAKE_DOC_LABEL[eventForLock.intakeDocType] || "เอกสาร"}${eventForLock.intakeDocNo ? ` ${eventForLock.intakeDocNo}` : ""}` } : {}),
       };
 
       // ⚠️ รูปหน้างานของนัดเซลไม่มีแนวคิด "ส่งเอกสารแล้ว" — ไม่ตั้ง documentSentSitePhoto
-      const setFields = type === "sitePhoto" || isIntakeDoc ? {} : {
+      const setFields = type === "sitePhoto" || isIntakeDoc || type === "quotationResult" ? {} : {
         [`documentSent${capitalize(type)}`]: true,
       };
       // ถ้ามีไฟล์แนบจริง แปลว่าเอกสารนี้ "มี" แน่นอน ไม่ว่าจะเคยติ๊ก "ไม่มี" ไว้ก่อนหรือไม่
@@ -161,7 +162,7 @@ module.exports = (router) => {
         return res.status(404).send("ไม่พบแผนงาน");
       }
       const isAdminOrManager = can(req.user, "editAnyJob");
-      if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && type !== "quotation") {
+      if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && type !== "quotation" && type !== "quotationResult") {
         return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถลบไฟล์ได้");
       }
 
@@ -182,7 +183,7 @@ module.exports = (router) => {
       }
 
       const remaining = updatedEvent[arrField]?.length || 0;
-      if (type !== "sitePhoto") {
+      if (type !== "sitePhoto" && type !== "quotationResult") {
         await CalendarEvent.updateOne(
           { _id: id },
           { $set: { [`documentSent${capitalize(type)}`]: remaining > 0 } }
