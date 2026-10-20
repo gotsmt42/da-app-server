@@ -6,6 +6,8 @@ const {
   checkAndNotifyOverdueInvoices,
   checkAndNotifyUnackedJobs,
   checkAndNotifyStalledIntake,
+  checkAndNotifyUnconfirmedJobs,
+  checkAndNotifyMissingCheckin,
 } = require("./services/OverdueReminder");
 const { checkAndNotifyUnassignedDispatch } = require("./services/DispatchReminder");
 const { checkAndNotifyOverdueAdvances, checkAndNotifyPendingExpenses } = require("./services/ExpenseReminder");
@@ -33,10 +35,19 @@ const NOTIFY_SLOTS = [
       { name: "คำขอแจ้งงานค้าง", task: checkAndNotifyUnassignedDispatch },
       { name: "งานค้าง", task: checkAndNotifyOverdueJobs },
       { name: "สัญญาเลยกำหนดรอบ", task: checkAndNotifyOverdueContracts },
-      { name: "งานพรุ่งนี้ยังไม่รับทราบ", task: checkAndNotifyUnackedJobs },
+      { name: "งานวันนี้/พรุ่งนี้ยังไม่รับทราบ", task: checkAndNotifyUnackedJobs },
+      // ✅ (20 ต.ค. 2569 ผู้ใช้: "เตือนช่างกันลืม") รับทราบแล้วแต่ยังไม่ยืนยันนัด (งานภายใน 3 วัน)
+      { name: "งานใกล้ถึงยังไม่ยืนยันนัด", task: checkAndNotifyUnconfirmedJobs },
       { name: "งานใหม่ค้างเกิน 2 วัน", task: checkAndNotifyStalledIntake },
       // (15 ต.ค. 2569) สรุปสัปดาห์ละครั้ง — ย้ายมาช่วงเช้า ให้เห็นตอนเริ่มงานวันจันทร์
       { name: "สัญญาใกล้หมดอายุ (ทุกจันทร์)", task: checkAndNotifyExpiringContracts },
+    ],
+  },
+  {
+    // ✅ (20 ต.ค. 2569 ผู้ใช้: "ไม่กดบันทึกงานเมื่อถึงเวลา เตือนให้ชัดเจน กันลืม") — สายๆ ควรถึงหน้างานแล้ว
+    slot: "สาย", hour: 10, minute: 30,
+    tasks: [
+      { name: "ถึงวันเข้างานยังไม่บันทึกเข้างาน", task: checkAndNotifyMissingCheckin },
     ],
   },
   {

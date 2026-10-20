@@ -553,7 +553,8 @@ async function checkAndNotifyOverdueInvoices() {
 async function checkAndNotifyUnackedJobs() {
   try {
     const tz = 7 * 60;
-    const from = moment().utcOffset(tz).add(1, "day").startOf("day").toDate();
+    // 🔁 (20 ต.ค. 2569 ผู้ใช้: "เตือนช่างว่ามีงานที่ไม่กดรับทราบ กันลืม") งานวันนี้ + พรุ่งนี้ที่ยังไม่รับทราบ
+    const from = moment().utcOffset(tz).startOf("day").toDate();
     const to = moment().utcOffset(tz).add(2, "day").startOf("day").toDate();
     const events = await CalendarEvent.find({
       department: { $ne: DEPARTMENT.SALES },
@@ -561,10 +562,12 @@ async function checkAndNotifyUnackedJobs() {
       approvalStatus: { $ne: "pending" },
       status: { $nin: ["ดำเนินการเสร็จสิ้น"] },
       start: { $gte: from, $lt: to },
-      resPerson: { $nin: [null, ""] },
+      // 🐛 (20 ต.ค. 2569) คนกดรับทราบคือ "ผู้รับผิดชอบงาน" (ไม่มี → หัวหน้าทีม) — เดิมเตือนหัวหน้าทีมเสมอ และงานที่มีแต่ผู้รับผิดชอบไม่ถูกเตือน
+      $or: [{ responsiblePersonId: { $nin: [null, ""] } }, { resPerson: { $nin: [null, ""] } }],
       "acks.0": { $exists: false },
+      "ackDeclined.userId": { $in: [null, ""] },
       // 🐛 (11 ต.ค. 2569) ติดตามการรับทราบทุกงานที่ยังไม่ปิด (เลิกตัดตามวันเริ่มใช้ระบบ — ตรงกับ ackTracked ฝั่งหน้าจอ)
-    }).select("_id title site company jobNo resPerson jobGroupId").lean();
+    }).select("_id title site company jobNo resPerson responsiblePersonId jobGroupId start").lean();
     if (!events.length) return;
 
     const seen = new Set();
@@ -577,11 +580,12 @@ async function checkAndNotifyUnackedJobs() {
     const label = (e) => `${e.title || "งาน"} · ${e.site || e.company || "-"}`;
 
     for (const e of jobs) {
-      const uid = String(e.resPerson);
+      const uid = String(e.responsiblePersonId || e.resPerson);
       if (!(await NotifyLog.claimOncePerDay("unacked-job", String(e.jobGroupId || e._id), uid))) continue;
+      const isToday = moment(e.start).utcOffset(tz).isSame(moment().utcOffset(tz), "day");
       await sendPushToUsers(uid, {
-        title: "📋 พรุ่งนี้มีงาน · กดรับทราบงานด้วย",
-        body: `${label(e)}${e.jobNo ? ` (${e.jobNo})` : ""}\nแตะเพื่อเปิดงานและกดรับทราบ`,
+        title: isToday ? "⚠️ งานวันนี้ยังไม่กดรับทราบ" : "📋 พรุ่งนี้มีงาน · กดรับทราบงานด้วย",
+        body: `${label(e)}${e.jobNo ? ` (${e.jobNo})` : ""}\nแตะเพื่อเปิดงานและกดรับทราบ → ยืนยันนัดหมาย`,
         url: `/operation/${e._id}`,
         tag: `unacked-${e.jobGroupId || e._id}`,
       });
@@ -649,7 +653,93 @@ async function checkAndNotifyStalledIntake() {
   }
 }
 
+/**
+ * ✅ (20 ต.ค. 2569 ผู้ใช้: "เตือนช่าง ไม่กดบันทึกงานเมื่อถึงเวลา ให้ชัดเจน กันลืม")
+ * รับทราบแล้วแต่ยังไม่ยืนยันนัดหมาย — งานที่เข้าวันนี้ถึง 2 วันข้างหน้า → แจ้งผู้รับผิดชอบ (ไม่มี → หัวหน้าทีม)
+ */
+async function checkAndNotifyUnconfirmedJobs() {
+  try {
+    const tz = 7 * 60;
+    const from = moment().utcOffset(tz).startOf("day").toDate();
+    const to = moment().utcOffset(tz).add(3, "day").startOf("day").toDate();
+    const events = await CalendarEvent.find({
+      department: { $ne: DEPARTMENT.SALES }, unscheduled: { $ne: true }, cancelledAt: null,
+      approvalStatus: { $nin: ["pending", "rejected"] },
+      status: "กำลังรอยืนยัน", "acks.0": { $exists: true },
+      start: { $gte: from, $lt: to },
+    }).select("_id title site company jobNo resPerson responsiblePersonId jobGroupId start").lean();
+    const seen = new Set();
+    for (const e of events) {
+      const k = String(e.jobGroupId || e._id);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const uid = String(e.responsiblePersonId || e.resPerson || "");
+      if (!uid) continue;
+      if (!(await NotifyLog.claimOncePerDay("unconfirmed-job", k, uid))) continue;
+      const day = formatThai(moment(e.start).utcOffset(tz), "D MMM");
+      await sendPushToUsers(uid, {
+        title: "📅 ยังไม่ยืนยันนัดหมาย",
+        body: `${e.title || "งาน"} · ${e.site || e.company || "-"}${e.jobNo ? ` (${e.jobNo})` : ""} · เข้างาน ${day}\nยืนยันกับลูกค้าแล้วกด "ยืนยันนัดหมาย" — หัวหน้าทีมจึงบันทึกเข้างานได้`,
+        url: `/technician/jobs?job=${e._id}`,
+        tag: `unconfirmed-${k}`,
+      });
+    }
+  } catch (err) {
+    console.error("❌ checkAndNotifyUnconfirmedJobs:", err.message);
+  }
+}
+
+/**
+ * ✅ (20 ต.ค. 2569 ผู้ใช้: "เตือนช่าง ไม่กดบันทึกงานเมื่อถึงเวลา กันลืม") — ถึงวันเข้างานแล้ว (รวมทุกวันของงานหลายวัน)
+ *    แต่หัวหน้าทีมยังไม่บันทึกเข้างานของ "วันนี้" → แจ้งหัวหน้าทีม · แจ้งผู้รับผิดชอบด้วยถ้าเป็นคนละคน
+ *    ข้าม: งานปิด/ขอปิดแล้ว · ยังไม่ยืนยันนัด (มีตัวเตือนของมันเอง) · บันทึกครบตามจำนวนวันแล้ว
+ */
+async function checkAndNotifyMissingCheckin() {
+  try {
+    const Attendance = require("../models/Attendance");
+    const tz = 7 * 60;
+    const now = moment().utcOffset(tz);
+    const today0 = now.clone().startOf("day");
+    const tomorrow0 = today0.clone().add(1, "day");
+    const events = await CalendarEvent.find({
+      department: { $ne: DEPARTMENT.SALES }, unscheduled: { $ne: true }, cancelledAt: null, noVisit: { $ne: true },
+      approvalStatus: { $nin: ["pending", "rejected"] },
+      status: { $in: ["ยืนยันแล้ว", "กำลังดำเนินการ"] }, closeRequested: { $ne: true },
+      start: { $lt: tomorrow0.toDate() },
+      $or: [{ end: { $gt: today0.toDate() } }, { end: null, start: { $gte: today0.toDate() } }],
+    }).select("_id title site company jobNo resPerson responsiblePersonId team jobGroupId start end allDay").lean();
+    for (const e of events) {
+      // วันสุดท้ายของงาน (allDay: end เป็นวันถัดไป 00:00)
+      const last = e.end ? moment(e.end).utcOffset(tz).subtract(e.allDay ? 1 : 0, "day").startOf("day") : moment(e.start).utcOffset(tz).startOf("day");
+      const first = moment(e.start).utcOffset(tz).startOf("day");
+      if (today0.isBefore(first) || today0.isAfter(last.isBefore(first) ? first : last)) continue;
+      const head = String(e.resPerson || (!e.team ? e.responsiblePersonId : "") || "");
+      if (!head) continue;
+      const done = await Attendance.exists({ eventId: e._id, "checkIn.at": { $gte: today0.toDate(), $lt: tomorrow0.toDate() } });
+      if (done) continue;
+      const planned = last.diff(first, "days") + 1;
+      const dayNo = today0.diff(first, "days") + 1;
+      if (!(await NotifyLog.claimOncePerDay("missing-checkin", String(e._id), head))) continue;
+      const msg = {
+        title: planned > 1 ? `⏰ ยังไม่บันทึกเข้างานวันนี้ (วันที่ ${dayNo}/${planned})` : "⏰ ถึงวันเข้างานแล้ว · ยังไม่บันทึกเข้างาน",
+        body: `${e.title || "งาน"} · ${e.site || e.company || "-"}${e.jobNo ? ` (${e.jobNo})` : ""}\nถึงหน้างานแล้วกด "บันทึกเข้างาน" พร้อมถ่ายรูปหน้างาน`,
+        url: `/technician/jobs?job=${e._id}`,
+        tag: `missing-checkin-${e._id}`,
+      };
+      await sendPushToUsers(head, msg);
+      const resp = String(e.responsiblePersonId || "");
+      if (resp && resp !== head && (await NotifyLog.claimOncePerDay("missing-checkin", String(e._id), resp))) {
+        await sendPushToUsers(resp, { ...msg, title: `⏰ ทีม${e.team ? ` ${e.team}` : ""} ยังไม่บันทึกเข้างานวันนี้${planned > 1 ? ` (วันที่ ${dayNo}/${planned})` : ""}` });
+      }
+    }
+  } catch (err) {
+    console.error("❌ checkAndNotifyMissingCheckin:", err.message);
+  }
+}
+
 module.exports = {
+  checkAndNotifyUnconfirmedJobs,
+  checkAndNotifyMissingCheckin,
   checkAndNotifyStalledIntake,
   checkAndNotifyUnackedJobs,
   checkAndNotifyOverdueJobs,
