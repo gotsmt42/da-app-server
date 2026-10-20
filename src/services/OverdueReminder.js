@@ -619,13 +619,20 @@ async function checkAndNotifyStalledIntake() {
         { unscheduled: true, intakeAt: { $lt: cutoff } },
         { noVisit: true, unscheduled: { $ne: true }, deliveredAt: { $lt: cutoff }, "invoiceFiles.0": { $exists: false }, "billing.invoicedAt": null },
       ],
-    }).select("_id title site company jobNo intakeAt deliveredAt unscheduled noVisit intakeNote description responsiblePersonId userId").lean();
+    }).select("_id title site company jobNo intakeAt deliveredAt unscheduled noVisit intakeNote description responsiblePersonId userId plannedMonth").lean();
     for (const e of rows) {
       const uid = String(e.responsiblePersonId || e.userId || "");
       if (!uid) continue;
-      if (!(await NotifyLog.claimOncePerDay("stalled-intake", String(e._id), uid))) continue;
-      const since = e.unscheduled ? e.intakeAt : e.deliveredAt;
+      let since = e.unscheduled ? e.intakeAt : e.deliveredAt;
+      // 🐛 (20 ต.ค. 2569 ผู้ใช้: "ทำไมขึ้นค้างงาน ทั้งที่กำหนดเข้าเดือน ม.ค.") งานที่วางแผนเข้าเดือนข้างหน้ายังไม่ค้าง
+      //    นับจากต้นเดือนที่วางแผน (ถ้าช้ากว่าวันรับงาน) — ตรงกับหน้า "รับงาน" ฝั่งแอป
+      if (e.unscheduled && !e.noVisit && !e.intakeNote && /^\d{4}-\d{2}$/.test(String(e.plannedMonth || ""))) {
+        const planStart = new Date(`${e.plannedMonth}-01T00:00:00+07:00`);
+        if (planStart > new Date(since)) since = planStart;
+      }
       const days = Math.floor((Date.now() - new Date(since).getTime()) / 86400000);
+      if (days < STALL_DAYS) continue;
+      if (!(await NotifyLog.claimOncePerDay("stalled-intake", String(e._id), uid))) continue;
       const what = e.intakeNote ? "บันทึกงานยังไม่ได้ทำ"
         : e.unscheduled ? (e.noVisit ? "ยังไม่ส่งมอบ" : "ยังไม่ส่งลงตาราง")
           : "ส่งมอบแล้วแต่ยังไม่วางบิล";
