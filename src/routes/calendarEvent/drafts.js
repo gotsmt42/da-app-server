@@ -30,7 +30,7 @@ const { pickJobInfo } = require("./jobflow");
 const { effectiveCapabilities } = require("../../config/roles");
 
 /** ✅ (15 ต.ค. 2569) ข้อมูลรับงาน: แผนกที่ส่งงาน · เอกสารต้นทาง · ไม่ต้องเข้างาน — รับเฉพาะค่าที่รู้จัก */
-const INTAKE_SOURCES = ["sales", "service", "project", "customer"];
+const INTAKE_SOURCES = ["sales", "service", "project", "customer", "calendar", "dispatch"]; // calendar = ลงตารางตรง · dispatch = คำขอลงงาน (20 ต.ค. 2569)
 const INTAKE_DOC_TYPES = ["po", "quotation", "other"];
 const INTAKE_SOURCE_LABEL = { sales: "ฝ่ายขาย", service: "ฝ่ายบริการ", project: "ฝ่ายโครงการ", customer: "ลูกค้าแจ้งตรง" };
 const INTAKE_DOC_LABEL = { po: "PO", quotation: "ใบเสนอราคา", other: "เอกสาร" };

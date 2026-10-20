@@ -300,16 +300,23 @@ module.exports = (router) => {
       if (!sharedJobNo && !isContractBatch && Array.isArray(dates) && dates.length > 1 && buildEventData(dates[0]).department !== "sales") {
         sharedJobNo = await nextJobNo();
       }
-      const groupIntake = sharedJobNo
+      let groupIntake = sharedJobNo
         ? await CalendarEvent.findOne({ jobGroupId, intakeAt: { $ne: null } }).select("intakeAt intakeBy").lean()
         : null;
+      // ✅ (20 ต.ค. 2569 ผู้ใช้: "หน้างานเข้า อยากให้เวลากดลงตาราง หรือคำขอลงงาน มันเข้ามาด้วย" → เลือก "แยก 2 แท็บเหมือนเดิม")
+      //    งานช่างที่ลงตารางตรงจากปฏิทิน (ไม่ผ่านรับงาน) เข้าหน้า "งานเข้า" ด้วย ติดตามต่อที่เดียว — ป้ายที่มา "ตารางงาน"
+      //    ⚠️ ไม่รวม: นัดฝ่ายขาย · สร้างรอบสัญญาทั้งชุด (หลายสิบครั้งในทีเดียว) · เพิ่มวันให้งานที่อยู่ในงานเข้าแล้ว (ใช้ของเดิม)
+      if (!groupIntake && !isContractBatch && buildEventData().department !== DEPARTMENT.SALES) {
+        const prevInGroup = jobGroupId ? await CalendarEvent.exists({ jobGroupId }) : null;
+        if (!prevInGroup) groupIntake = { intakeAt: new Date(), intakeBy: creatorName, intakeSource: "calendar", scheduledAt: new Date() };
+      }
       let events;
       if (Array.isArray(dates) && dates.length > 0) {
         events = await Promise.all(
-          dates.map((d) => new CalendarEvent({ ...buildEventData(d), ...(sharedJobNo ? { jobNo: sharedJobNo } : {}), ...(groupIntake ? { intakeAt: groupIntake.intakeAt, intakeBy: groupIntake.intakeBy } : {}) }).save())
+          dates.map((d) => new CalendarEvent({ ...buildEventData(d), ...(sharedJobNo ? { jobNo: sharedJobNo } : {}), ...(groupIntake ? { intakeAt: groupIntake.intakeAt, intakeBy: groupIntake.intakeBy, ...(groupIntake.intakeSource ? { intakeSource: groupIntake.intakeSource, scheduledAt: groupIntake.scheduledAt } : {}) } : {}) }).save())
         );
       } else {
-        events = [await new CalendarEvent({ ...buildEventData(), ...(sharedJobNo ? { jobNo: sharedJobNo } : {}), ...(groupIntake ? { intakeAt: groupIntake.intakeAt, intakeBy: groupIntake.intakeBy } : {}) }).save()];
+        events = [await new CalendarEvent({ ...buildEventData(), ...(sharedJobNo ? { jobNo: sharedJobNo } : {}), ...(groupIntake ? { intakeAt: groupIntake.intakeAt, intakeBy: groupIntake.intakeBy, ...(groupIntake.intakeSource ? { intakeSource: groupIntake.intakeSource, scheduledAt: groupIntake.scheduledAt } : {}) } : {}) }).save()];
       }
 
       // ✅ เพิ่มวัน/ครั้งเข้างานที่มีอยู่แล้ว (สัญญา/โปรเจคหลายวัน) → รับผู้รับผิดชอบของงานนั้นตามภาพรวมงาน

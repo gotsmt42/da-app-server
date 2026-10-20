@@ -799,6 +799,11 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
       // (classifyJob) คืนค่าว่าง แล้วการ์ดขึ้นเป็น "ไม่ระบุ" ทั้งที่รู้อยู่แล้วว่าเป็นงานทั่วไป
       jobClassification: "general",
       isConfirmedGeneral: true,
+      // ✅ (20 ต.ค. 2569 ผู้ใช้: "คำขอลงงานที่อนุมัติแล้ว ให้เข้าหน้างานเข้าด้วย") ติดตามต่อที่หน้า "งานเข้า" แท็บกำลังทำ
+      intakeAt: new Date(),
+      intakeBy: me.name,
+      intakeSource: "dispatch",
+      scheduledAt: new Date(),
       // ⚠️ ต้องกระจายท้ายสุด — งานตามสัญญาต้องทับ jobClassification/visitCount ของงานทั่วไปด้านบน
       // (ว่างเปล่าเมื่อใบนี้ไม่ได้ผูกสัญญา จึงไม่กระทบเส้นทางเดิมเลย)
       ...contractFields,
