@@ -342,7 +342,8 @@ router.post("/check-in", verifyToken, async (req, res) => {
 
     // นอกวันนัด: วันนี้ (เวลาไทย) ไม่อยู่ในช่วงวันเข้างานของงานนี้
     const startDay = bkkDay(ev.start || ev.date);
-    const lastDay = ev.end ? addDays(bkkDay(ev.end), ev.allDay === false ? 0 : -1) : startDay;
+    // 🐛 (20 ต.ค. 2569 ผู้ใช้: "งานหลายช่วงวันยังมีผิด") เดิม allDay ไม่ระบุก็ถอย 1 วัน — ไม่ตรงกับการนับวันนัดด้านบน/หน้าจอ
+    const lastDay = ev.end ? addDays(bkkDay(ev.end), ev.allDay ? -1 : 0) : startDay;
     const offSchedule = today < startDay || today > (lastDay < startDay ? startDay : lastDay);
 
     const name = personName(req.user);
@@ -403,9 +404,21 @@ router.post("/check-in", verifyToken, async (req, res) => {
 
     const responsibleId = ev.responsiblePersonId ? String(ev.responsiblePersonId) : "";
     const pushRecipients = new Set([responsibleId, uid].filter(Boolean));
+    // ✅ (20 ต.ค. 2569 ผู้ใช้: "การแจ้งเตือนให้ชัดเจน · งานหลายช่วงวัน") งานหลายวันบอกว่าเป็นวันที่เท่าไรจากทั้งหมด
+    let dayInfo = "";
+    {
+      const firstDay = bkkDay(ev.start);
+      const lastDayP = ev.end ? addDays(bkkDay(ev.end), ev.allDay ? -1 : 0) : firstDay;
+      const planned = Math.max(1, Math.round((new Date(`${lastDayP < firstDay ? firstDay : lastDayP}T00:00:00Z`) - new Date(`${firstDay}T00:00:00Z`)) / 86400000) + 1);
+      if (planned > 1) {
+        const done = new Set((await Attendance.find({ eventId: ev._id }).select("checkIn.at workDay").lean())
+          .map((r) => (r.checkIn?.at ? bkkDay(r.checkIn.at) : r.workDay)).filter(Boolean)).size;
+        dayInfo = ` · วันที่ ${Math.min(done, planned)}/${planned}${done >= planned ? " (ครบ)" : ""}`;
+      }
+    }
     const attendancePush = {
-      title: `📍 ${name} บันทึกเข้างานแล้ว`,
-      body: `${jobLabelOf(ev)} · ${thTime(stamp.at)}${where}`,
+      title: `📍 ${name} บันทึกเข้างานแล้ว${dayInfo}`,
+      body: `${jobLabelOf(ev)} · ${thTime(stamp.at)}${offSchedule ? " · นอกวันนัด" : ""}${where}`,
       url: `/operation/${ev._id}`,
       // แยก tag ตามวัน เพื่อให้การเข้างานคนละวันไม่ทับแจ้งเตือนเดิมของงานเดียวกัน
       tag: `attendance-${ev._id}-${today}`,

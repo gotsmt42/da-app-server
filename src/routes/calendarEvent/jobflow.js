@@ -87,6 +87,25 @@ async function resolveFollowUps(ev, byName, resolution) {
 
 const jobLabelOf = (ev) => `${ev.title || "งาน"} · ${ev.site || ev.company || "-"}${ev.jobNo ? ` (${ev.jobNo})` : ""}`;
 
+/**
+ * ✅ (20 ต.ค. 2569 ผู้ใช้: "การแจ้งเตือนให้ชัดเจน · งานหลายช่วงวันยังมีผิด") วันเข้างานของทั้งงาน เป็นข้อความสั้น
+ *    งานวันเดียว "20 ต.ค." · หลายวันติดกัน "15–16 เม.ย." · หลายช่วง (jobGroupId) "15 เม.ย., 2 พ.ค. (2 ช่วง)"
+ */
+const thDay = (d) => new Date(d).toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok", day: "numeric", month: "short" });
+const sessionText = (e) => {
+  if (!e?.start) return "-";
+  const lastMs = e.end ? new Date(e.end).getTime() - (e.allDay ? 86400000 : 0) : new Date(e.start).getTime();
+  const a = thDay(e.start);
+  const b = thDay(Math.max(lastMs, new Date(e.start).getTime()));
+  return a === b ? a : `${a}–${b}`;
+};
+const scheduleTextOf = (docs) => {
+  const list = (docs || []).filter((d) => d?.start).sort((x, y) => new Date(x.start) - new Date(y.start));
+  if (!list.length) return "-";
+  if (list.length === 1) return sessionText(list[0]);
+  return `${list.slice(0, 3).map(sessionText).join(", ")}${list.length > 3 ? " …" : ""} (${list.length} ช่วง)`;
+};
+
 function registerJobflow(router) {
   // ── ขั้น 4: ช่างกด "รับทราบงาน" ─────────────────────────────────────────────
   router.put("/:id/ack", verifyToken, async (req, res) => {
@@ -108,6 +127,16 @@ function registerJobflow(router) {
         return d.save();
       }));
       const events = await CalendarEvent.find(groupFilter(ev)).select("-activityLog").lean();
+      // ✅ (20 ต.ค. 2569 ผู้ใช้: "การแจ้งเตือนให้ชัดเจน") แจ้งผู้ลงงาน + ผู้จัดคิวว่ารับทราบแล้ว และขั้นถัดไปคืออะไร
+      const ackPush = {
+        title: `👍 ${name} รับทราบงานแล้ว`,
+        body: `${jobLabelOf(ev)} · เข้างาน ${scheduleTextOf(events)} — ขั้นถัดไป: ยืนยันนัดหมาย`,
+        url: `/operation/${ev._id}`,
+        tag: `ack-${ev.jobGroupId || ev._id}`,
+      };
+      const ranks = effectiveCapabilities().assignDispatch || SUPERVISOR_ROLES;
+      sendPushToRoles(ranks, ackPush, [uid]).catch(() => {});
+      if (ev.userId && String(ev.userId) !== uid) sendPushToUsers(String(ev.userId), ackPush).catch(() => {});
       res.json({ events });
     } catch (err) {
       console.error(err);
@@ -188,17 +217,26 @@ function registerJobflow(router) {
         return d.save();
       }));
 
+      const events = await CalendarEvent.find(groupFilter(ev)).select("-activityLog").lean();
+      const when = scheduleTextOf(events);
       if (ev.resPerson && String(ev.resPerson) !== uid) {
-        const day = ev.start ? new Date(ev.start).toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok", day: "numeric", month: "short" }) : "-";
         sendPushToUsers(String(ev.resPerson), {
           title: `✅ ${name} ยืนยันนัดหมายแล้ว`,
-          body: `${jobLabelOf(ev)} · เข้างาน ${day} — ถึงวันแล้วกด "บันทึกเข้างาน"`,
+          body: `${jobLabelOf(ev)} · เข้างาน ${when} — ถึงวันแล้วกด "บันทึกเข้างาน"${events.length > 1 || /–/.test(when) ? " (บันทึกทุกวันที่เข้างาน)" : ""}`,
           url: await require("../../services/jobAudit").jobUrlFor(ev.resPerson, ev._id),
           tag: `confirm-${ev.jobGroupId || ev._id}`,
           renotify: true,
         }).catch(() => {});
       }
-      const events = await CalendarEvent.find(groupFilter(ev)).select("-activityLog").lean();
+      // แจ้งผู้ลงงาน (ถ้าไม่ใช่คนกดเอง/หัวหน้าทีม) ให้รู้ว่านัดหมายยืนยันแล้ว
+      if (ev.userId && ![uid, String(ev.resPerson || "")].includes(String(ev.userId))) {
+        sendPushToUsers(String(ev.userId), {
+          title: `✅ ยืนยันนัดหมายแล้ว · ${name}`,
+          body: `${jobLabelOf(ev)} · เข้างาน ${when}`,
+          url: `/operation/${ev._id}`,
+          tag: `confirm-${ev.jobGroupId || ev._id}`,
+        }).catch(() => {});
+      }
       res.json({ events });
     } catch (err) {
       console.error(err);
