@@ -31,3 +31,6 @@ app.listen(PORT, () => {
 });
 
 startSchedulers();
+
+// ✅ (21 ต.ค. 2569) งานเก่าที่ลงจากใบแจ้งงาน → เติมเข้าหน้ารับงาน (รอฐานข้อมูลเชื่อมต่อก่อน)
+setTimeout(() => require("./src/services/dispatchJobSync").backfillDispatchIntake(), 15000);

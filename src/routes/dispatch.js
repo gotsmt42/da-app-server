@@ -30,7 +30,7 @@ const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers, sendPushToRoles } = require("../services/PushNotify");
 const { jobUrlFor } = require("../services/jobAudit");
-const { repairOrphans } = require("../services/dispatchJobSync");
+const { repairOrphans, backfillDispatchIntake } = require("../services/dispatchJobSync");
 const { totalRoundsOf } = require("../utils/contractVisits");
 
 const router = express.Router();
@@ -304,6 +304,7 @@ router.get("/", verifyToken, async (req, res) => {
 
     const dispatches = await Dispatch.find(query).sort({ requestedAt: -1 }).lean();
     await attachJob(dispatches);
+    backfillDispatchIntake(); // ไม่รอ — ให้งานเก่าที่ลงจากใบแจ้งงานโผล่ในหน้ารับงาน
     res.json({ dispatches });
   } catch (err) {
     console.error("❌ ดึงใบมอบหมายไม่สำเร็จ:", err);
