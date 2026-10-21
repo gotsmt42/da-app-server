@@ -92,6 +92,8 @@ const eventSchema = new mongoose.Schema(
     intakeSource: { type: String, default: "" },
     intakeDocType: { type: String, default: "" },
     intakeDocNo: { type: String, default: "" },
+    // ✅ (21 ต.ค. 2569) งานที่ลงจากใบแจ้งงาน — เลขที่ใบแจ้งงาน (WO-xxxxx) ไว้อ้างอิง/ค้นหาในหน้ารับงาน
+    dispatchNo: { type: String, default: "" },
     /**
      * ✅ (15 ต.ค. 2569) งาน "ไม่ต้องเข้างาน" (ส่งของ/ขายของ) — ไม่ขึ้นปฏิทิน/งานช่าง
      * รับงาน → ส่งมอบ (deliveredAt) → อัปโหลดใบวางบิล (invoiceFiles) → ตามรับเงินที่หน้าติดตามวางบิล

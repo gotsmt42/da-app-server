@@ -30,7 +30,7 @@ const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers, sendPushToRoles } = require("../services/PushNotify");
 const { jobUrlFor } = require("../services/jobAudit");
-const { repairOrphans, backfillDispatchIntake } = require("../services/dispatchJobSync");
+const { repairOrphans, backfillDispatchIntake, enrichFromDispatchSafe } = require("../services/dispatchJobSync");
 const { totalRoundsOf } = require("../utils/contractVisits");
 
 const router = express.Router();
@@ -849,6 +849,7 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
       me);
     await dispatch.save();
     await linkDispatchFilesSafe(dispatch, event._id);
+    await enrichFromDispatchSafe(dispatch); // ✅ (21 ต.ค. 2569) ผู้แจ้ง · แผนก · เลขที่ใบ · เอกสารอ้างอิง · ผู้ติดต่อ เข้าหน้ารับงานครบ
 
     if (responsible) {
       sendPushToUsers([String(responsible._id)], {

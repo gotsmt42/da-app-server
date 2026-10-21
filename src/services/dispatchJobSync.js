@@ -61,33 +61,62 @@ async function repairOrphans(docs, existingIds) {
 }
 
 /**
- * 🔁 (21 ต.ค. 2569 ผู้ใช้: "หน้าคำขอลงงานให้รวมกับหน้ารับงาน" · "deploy แล้วไม่ขึ้น")
- *    งานที่ลงแผนจากใบแจ้งงานก่อนมี intakeAt ไม่โผล่ในหน้ารับงาน (หน้ารับงานกรองด้วย intakeAt)
- *    → เติม intakeAt (= วันที่แจ้ง) + intakeSource "dispatch" ให้ทั้งกลุ่มงาน · ครั้งเดียวต่องาน
+ * 🔁 (21 ต.ค. 2569 ผู้ใช้: "รายละเอียดไม่ตรง และไม่ครบถ้วน") งานที่ลงจากใบแจ้งงาน — เติมข้อมูลจากใบให้ครบในหน้ารับงาน
+ *    วันรับงาน (วันที่แจ้ง) · รับงานจาก (แผนกของผู้แจ้ง) · ผู้แจ้ง · เลขที่ใบแจ้งงาน · เอกสารอ้างอิง (QT/PO ที่แนบมา)
+ *    ผู้ติดต่อ · รายละเอียด · เลข JOB (งานเก่าที่ยังไม่มี) — เติมเฉพาะช่องที่ยังว่าง ไม่ทับของที่แก้ไว้แล้ว
+ */
+async function enrichFromDispatch(d) {
+  if (!d?.eventId) return 0;
+  const { departmentOf } = require("../config/roles");
+  const { assignJobNo } = require("../utils/jobNumber");
+  const ev = await CalendarEvent.findById(d.eventId).select("_id jobGroupId").lean();
+  if (!ev) return 0;
+  const filter = ev.jobGroupId ? { jobGroupId: ev.jobGroupId } : { _id: ev._id };
+  const list = await CalendarEvent.find(filter);
+  const dept = departmentOf(d.requestedBy?.role);
+  const atts = d.attachments || [];
+  const docType = atts.some((a) => a.docType === "po") ? "po" : atts.some((a) => a.docType === "quotation") ? "quotation" : "";
+  const c = d.customer || {};
+  let jobNo = list.find((e) => e.jobNo)?.jobNo || "";
+  let n = 0;
+  for (const e of list) {
+    if (!e.intakeAt) e.intakeAt = d.requestedAt || d.createdAt || new Date();
+    if (!e.intakeSource || e.intakeSource === "dispatch") e.intakeSource = dept || "dispatch";
+    if (d.requestedBy?.name) e.intakeBy = d.requestedBy.name;
+    if (!e.dispatchNo && d.dispatchNo) e.dispatchNo = d.dispatchNo;
+    if (!e.intakeDocType && docType) e.intakeDocType = docType;
+    if (!e.contactName && c.contactName) e.contactName = c.contactName;
+    if (!e.contactTel && c.contactTel) e.contactTel = c.contactTel;
+    if (!e.description && (d.detail || d.note)) e.description = d.detail || d.note;
+    if (!e.jobNo) { if (!jobNo) jobNo = await assignJobNo(e); else e.jobNo = jobNo; }
+    if (e.isModified()) { await e.save(); n += 1; }
+  }
+  return n;
+}
+const enrichFromDispatchSafe = (d) => enrichFromDispatch(d).catch((err) => console.error("⚠️ เติมข้อมูลงานจากใบแจ้งงานไม่สำเร็จ:", err?.message));
+
+/**
+ * งานที่ลงจากใบแจ้งงานแต่ยังไม่ได้เติมข้อมูล (ไม่มี intakeAt หรือ dispatchNo) → เติมให้ครบ
  * เรียกตอนเปิดเซิร์ฟเวอร์ · ตอนดึงรายการใบแจ้งงาน · ตอนดึงรายการงานใหม่
  */
 let backfilling = null;
 function backfillDispatchIntake() {
   if (backfilling) return backfilling;
   backfilling = (async () => {
-    const ds = await Dispatch.find({ eventId: { $ne: null }, status: { $ne: "cancelled" } }).select("eventId requestedAt createdAt").lean();
+    const ds = await Dispatch.find({ eventId: { $ne: null }, status: { $ne: "cancelled" } }).lean();
     if (!ds.length) return 0;
-    const missing = await CalendarEvent.find({ _id: { $in: ds.map((d) => d.eventId) }, intakeAt: null }).select("_id jobGroupId").lean();
-    for (const ev of missing) {
-      const d = ds.find((x) => String(x.eventId) === String(ev._id));
-      const at = d?.requestedAt || d?.createdAt || new Date();
-      const filter = ev.jobGroupId ? { jobGroupId: ev.jobGroupId, intakeAt: null } : { _id: ev._id };
-      await CalendarEvent.updateMany(filter, { $set: { intakeAt: at, intakeSource: "dispatch" } });
-    }
-    if (missing.length) {
-      console.log(`✅ เติมงานจากใบแจ้งงานเข้าหน้ารับงาน ${missing.length} งาน`);
-      // หน้าที่เปิดอยู่โหลดใหม่เอง (ไม่ต้องกดรีเฟรช)
+    const need = await CalendarEvent.find({ _id: { $in: ds.map((d) => d.eventId) }, $or: [{ intakeAt: null }, { dispatchNo: { $in: [null, ""] } }] }).select("_id").lean();
+    const ids = new Set(need.map((e) => String(e._id)));
+    let n = 0;
+    for (const d of ds) if (ids.has(String(d.eventId))) n += await enrichFromDispatch(d);
+    if (n) {
+      console.log(`✅ เติมข้อมูลงานจากใบแจ้งงานเข้าหน้ารับงาน ${n} รายการ`);
       try { require("./realtime").publish({ topic: "events", action: "put" }); } catch { /* ไม่ขวาง */ }
     }
-    return missing.length;
+    return n;
   })().catch((err) => { console.error("⚠️ เติมงานจากใบแจ้งงานเข้าหน้ารับงานไม่สำเร็จ:", err?.message); return 0; })
     .finally(() => { backfilling = null; });
   return backfilling;
 }
 
-module.exports = { releaseDispatchOfEvent, releaseDispatchOfEventSafe, repairOrphans, backfillDispatchIntake };
+module.exports = { releaseDispatchOfEvent, releaseDispatchOfEventSafe, repairOrphans, backfillDispatchIntake, enrichFromDispatch, enrichFromDispatchSafe };
