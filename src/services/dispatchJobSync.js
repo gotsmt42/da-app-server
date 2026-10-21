@@ -79,7 +79,11 @@ function backfillDispatchIntake() {
       const filter = ev.jobGroupId ? { jobGroupId: ev.jobGroupId, intakeAt: null } : { _id: ev._id };
       await CalendarEvent.updateMany(filter, { $set: { intakeAt: at, intakeSource: "dispatch" } });
     }
-    if (missing.length) console.log(`✅ เติมงานจากใบแจ้งงานเข้าหน้ารับงาน ${missing.length} งาน`);
+    if (missing.length) {
+      console.log(`✅ เติมงานจากใบแจ้งงานเข้าหน้ารับงาน ${missing.length} งาน`);
+      // หน้าที่เปิดอยู่โหลดใหม่เอง (ไม่ต้องกดรีเฟรช)
+      try { require("./realtime").publish({ topic: "events", action: "put" }); } catch { /* ไม่ขวาง */ }
+    }
     return missing.length;
   })().catch((err) => { console.error("⚠️ เติมงานจากใบแจ้งงานเข้าหน้ารับงานไม่สำเร็จ:", err?.message); return 0; })
     .finally(() => { backfilling = null; });
