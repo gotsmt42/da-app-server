@@ -71,6 +71,8 @@ async function enrichFromDispatch(d) {
   const { assignJobNo } = require("../utils/jobNumber");
   const ev = await CalendarEvent.findById(d.eventId).select("_id jobGroupId").lean();
   if (!ev) return 0;
+  // ไฟล์ที่แนบมากับใบ (QT/PO) ต้องอยู่ที่งานจริง — ไม่งั้นช่องเอกสารอ้างอิงบอกว่ามีแต่เปิดไม่ได้
+  await require("./dispatchFiles").linkDispatchFilesSafe(d, d.eventId);
   const filter = ev.jobGroupId ? { jobGroupId: ev.jobGroupId } : { _id: ev._id };
   const list = await CalendarEvent.find(filter);
   const dept = departmentOf(d.requestedBy?.role);
