@@ -294,6 +294,27 @@ module.exports = (router) => {
   //    รายการงานที่รับผ่านเมนู "งานใหม่" ทั้งหมด (รอดำเนินการ + ลงตาราง/ส่งมอบแล้ว + ปิดแล้ว) สำหรับดูอย่างเดียว
   //    ทุกคนในแผนกเดียวกันเห็นเหมือนกัน (withDepartmentScope) — การแก้ไข/ส่งลงตาราง/ยกเลิก ยังเช็คสิทธิ์ที่ route ของมันเอง
   //    ⚠️ ต้องอยู่ก่อน core ("/:id") — ดู index.js
+  /**
+   * 🔁 (21 ต.ค. 2569 ผู้ใช้: "หน้าคำขอลงงานให้รวมกับหน้ารับงาน") — งานที่ลงแผนจากใบแจ้งงานก่อนมีระบบ intakeAt
+   *    ไม่โผล่ในหน้ารับงาน → เติม intakeAt (= วันที่แจ้ง) + intakeSource "dispatch" ให้ทั้งกลุ่มงาน ครั้งเดียวต่องาน
+   */
+  const backfillDispatchIntake = async () => {
+    try {
+      const Dispatch = require("../../models/Dispatch");
+      const ds = await Dispatch.find({ eventId: { $ne: null }, status: { $ne: "cancelled" } }).select("eventId requestedAt createdAt").lean();
+      if (!ds.length) return;
+      const missing = await CalendarEvent.find({ _id: { $in: ds.map((d) => d.eventId) }, intakeAt: null }).select("_id jobGroupId").lean();
+      for (const ev of missing) {
+        const d = ds.find((x) => String(x.eventId) === String(ev._id));
+        const at = d?.requestedAt || d?.createdAt || new Date();
+        const filter = ev.jobGroupId ? { jobGroupId: ev.jobGroupId, intakeAt: null } : { _id: ev._id };
+        await CalendarEvent.updateMany(filter, { $set: { intakeAt: at, intakeSource: "dispatch" } });
+      }
+    } catch (err) {
+      console.error("⚠️ เติมงานจากใบแจ้งงานเข้าหน้ารับงานไม่สำเร็จ:", err?.message);
+    }
+  };
+
   router.get("/intake-list", verifyToken, async (req, res) => {
     try {
       // 🔁 (15 ต.ค. 2569 ผู้ใช้: "หน้างานใหม่ให้ช่างเห็นแค่ของตัวเอง") — คนจัดคิวเห็นทั้งแผนก · คนอื่นเห็นเฉพาะงานที่ตัวเองรับไว้
@@ -308,6 +329,7 @@ module.exports = (router) => {
           ...(fname ? [{ responsiblePerson: fname }, { team: fname }] : []),
         ],
       };
+      await backfillDispatchIntake();
       const jobs = await findEvents(withDepartmentScope(query, req), { select: "-activityLog", sort: { intakeAt: -1 } });
       res.json({ jobs });
     } catch (err) {
