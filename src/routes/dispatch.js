@@ -30,6 +30,7 @@ const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers, sendPushToRoles } = require("../services/PushNotify");
 const { jobUrlFor } = require("../services/jobAudit");
+const { repairOrphans } = require("../services/dispatchJobSync");
 const { totalRoundsOf } = require("../utils/contractVisits");
 
 const router = express.Router();
@@ -196,8 +197,10 @@ async function attachJob(docs) {
   const ids = list.map((d) => d?.eventId).filter(Boolean);
   if (ids.length === 0) return docs;
   const events = await CalendarEvent.find({ _id: { $in: ids } })
-    .select("status start end responsiblePerson team date").lean();
+    .select("status start end responsiblePerson team date unscheduled plannedMonth jobNo approvalStatus").lean();
   const byId = new Map(events.map((e) => [String(e._id), e]));
+  // ✅ (21 ต.ค. 2569) ใบที่ผูกงานซึ่งถูกลบไปแล้ว → กลับมารอลงแผนงาน (ตรงกับความจริง)
+  await repairOrphans(list, new Set(byId.keys()));
   list.forEach((d) => {
     const ev = d?.eventId ? byId.get(String(d.eventId)) : null;
     if (!d) return;
@@ -207,6 +210,10 @@ async function attachJob(docs) {
           start: ev.start || ev.date,
           end: ev.end,
           responsiblePerson: ev.responsiblePerson || ev.team || "",
+          unscheduled: Boolean(ev.unscheduled),
+          plannedMonth: ev.plannedMonth || "",
+          jobNo: ev.jobNo || "",
+          approvalStatus: ev.approvalStatus || "approved",
         }
       : null;
   });

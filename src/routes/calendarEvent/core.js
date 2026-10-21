@@ -29,6 +29,7 @@ const { syncGroupsOf, syncGroupResponsible, groupFilterOf } = require("../../ser
 const { groupJobNo, nextJobNo } = require("../../utils/jobNumber");
 const { findEvents } = require("../../services/eventOpCache");
 const { pickJobInfo, resolveFollowUps } = require("./jobflow");
+const { releaseDispatchOfEventSafe } = require("../../services/dispatchJobSync");
 
 /** ลายเซ็นของรายการกิจกรรมหนึ่งบรรทัด — ใช้เทียบว่าเป็นรายการเดียวกันไหม (_id ใช้ไม่ได้ ดูด้านล่าง) */
 const logSignature = (log) =>
@@ -1017,6 +1018,8 @@ module.exports = (router) => {
 
       // Delete file from database
       await CalendarEvent.findByIdAndDelete(id);
+      // ✅ (21 ต.ค. 2569) ใบแจ้งงานที่ผูกงานนี้ไว้ ต้องไม่ค้างว่า "ลงแผนงานแล้ว" — ย้ายไปช่วงที่เหลือ หรือกลับมารอลงแผนงาน
+      await releaseDispatchOfEventSafe(existingEvent, req.user);
 
       res.status(200).send("Event deleted successfully");
     } catch (err) {
