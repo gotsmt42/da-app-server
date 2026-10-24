@@ -164,6 +164,8 @@ const sanitizeItems = (raw, kind) =>
         advanceItemIndex: kind === "claim" && Number.isInteger(idx) && idx >= 0 ? idx : null,
         receiptNo: kind === "claim" ? String(it?.receiptNo || "").trim().slice(0, 60) : "",
         workDate: parseDay(it?.workDate),
+        timeFrom: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(it?.timeFrom || "")) ? String(it.timeFrom) : "",
+        timeTo: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(it?.timeTo || "")) ? String(it.timeTo) : "",
         person: {
           userId: /^[a-f0-9]{24}$/i.test(String(it?.person?.userId || "")) ? String(it.person.userId) : "",
           name: String(it?.person?.name || "").trim().slice(0, 80),
