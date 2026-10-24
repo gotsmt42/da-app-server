@@ -360,7 +360,7 @@ const resolveJob = async (eventId) => {
   const empty = { title: "", system: "", company: "", site: "", docNo: "", start: null, end: null, round: "", visitCount: 0, part: 0, partCount: 0 };
   if (!id) return { eventId: "", jobKey: "", jobGroupKey: "", job: empty };
   if (!/^[a-f0-9]{24}$/i.test(id)) return null;
-  const ev = await CalendarEvent.findById(id).select("title system company site docNo start end time visitCount jobGroupId contractNo contractStart contractEnd contractYears intervalMonths").lean();
+  const ev = await CalendarEvent.findById(id).select("title system company site docNo jobNo start end time visitCount jobGroupId contractNo contractStart contractEnd contractYears intervalMonths").lean();
   if (!ev) return null;
 
   const ranges = await rangesOfJob(ev.jobGroupId);
@@ -372,7 +372,7 @@ const resolveJob = async (eventId) => {
     jobGroupKey: ev.jobGroupId || "",        // ทั้งงาน (ไว้ดูภาพรวม ไม่ได้ใช้กันซ้ำ)
     job: {
       title: ev.title || "", system: ev.system || "", company: ev.company || "", site: ev.site || "",
-      docNo: ev.docNo || "", start: ev.start || null, end: ev.end || ev.start || null,
+      docNo: ev.docNo || "", jobNo: ev.jobNo || "", start: ev.start || null, end: ev.end || ev.start || null,
       round: ev.time === undefined || ev.time === null ? "" : String(ev.time), visitCount: Number(ev.visitCount) || 0,
       ...contractInfoOf(ev),
       part: part > 0 ? part : 0, partCount: ranges.length > 1 ? ranges.length : 0,
@@ -399,11 +399,43 @@ const findActiveAdvanceForJob = async (linked, excludeId = null) => {
   const query = {
     kind: "advance",
     status: { $ne: "cancelled" },
-    $or: [{ jobKey: linked.eventId }, { eventId: linked.eventId }],
+    $or: [{ jobKey: linked.eventId }, { eventId: linked.eventId }, { "jobs.eventId": linked.eventId }],
   };
   if (excludeId) query._id = { $ne: excludeId };
   return Expense.findOne(query).select("docNo status total requester createdBy job").lean();
 };
+
+/** ทุกงานในรายการ — งานแรกที่มีใบ Advance อยู่แล้ว (null = ออกได้ทุกงาน) */
+const findActiveAdvanceForJobs = async (list, excludeId = null) => {
+  for (const l of list || []) {
+    const adv = await findActiveAdvanceForJob(l, excludeId);
+    if (adv) return { adv, linked: l };
+  }
+  return null;
+};
+
+/**
+ * ✅ (24 ต.ค. 2569 ผู้ใช้: "ใบเบิก/เคลมทุกใบ อ้างอิงงานได้หลายงานพร้อมกัน")
+ * อ่านรายการงานจากฟอร์ม (eventIds อาร์เรย์/JSON/คั่นจุลภาค · หรือ eventId เดี่ยวแบบเดิม) → snapshot ทุกงาน
+ * @returns {Promise<{linked, list, jobs}|{error}>} linked = งานแรก (งานหลักของใบ) · jobs = snapshot ไว้เก็บในใบ
+ */
+const MAX_JOBS = 20;
+const resolveJobList = async (body) => {
+  let ids = body?.eventIds !== undefined ? body.eventIds : body?.eventId;
+  if (typeof ids === "string") {
+    try { ids = ids.trim().startsWith("[") ? JSON.parse(ids) : ids.split(","); } catch { ids = []; }
+  }
+  ids = [...new Set((Array.isArray(ids) ? ids : [ids]).map((x) => String(x || "").trim()).filter(Boolean))].slice(0, MAX_JOBS);
+  if (!ids.length) {
+    const none = await resolveJob("");
+    return { linked: none, list: [], jobs: [] };
+  }
+  const list = await Promise.all(ids.map((id) => resolveJob(id)));
+  if (list.some((x) => !x)) return { error: "ไม่พบงานที่เลือกบางงาน — อาจถูกลบไปแล้ว กรุณาเลือกใหม่" };
+  const jobs = list.map((x) => ({ eventId: x.eventId, jobKey: x.jobKey, jobGroupKey: x.jobGroupKey || "", ...x.job }));
+  return { linked: list[0], list, jobs };
+};
+
 
 const duplicateAdvanceMessage = (adv) => {
   const part = adv.job?.part && adv.job?.partCount ? `ช่วงที่ ${adv.job.part}/${adv.job.partCount} ของ` : "";
@@ -906,13 +938,14 @@ router.get("/jobs", verifyToken, async (req, res) => {
       ? await Expense.find({
         kind: "advance",
         status: { $ne: "cancelled" },
-        $or: [{ jobKey: { $in: eventIds } }, { eventId: { $in: eventIds } }],
-      }).select("docNo status jobKey eventId").lean()
+        $or: [{ jobKey: { $in: eventIds } }, { eventId: { $in: eventIds } }, { "jobs.eventId": { $in: eventIds } }],
+      }).select("docNo status jobKey eventId jobs.eventId").lean()
       : [];
     const advByEvent = new Map();
     advances.forEach((a) => {
-      const key = eventIds.includes(String(a.jobKey)) ? String(a.jobKey) : String(a.eventId);
-      if (key && !advByEvent.has(key)) advByEvent.set(key, { _id: a._id, docNo: a.docNo, status: a.status });
+      // ใบที่อ้างอิงหลายงาน — ทุกงานในใบถือว่ามีใบ Advance แล้ว
+      const keys = [a.jobKey, a.eventId, ...(a.jobs || []).map((j) => j.eventId)].map(String).filter((k) => eventIds.includes(k));
+      keys.forEach((key) => { if (!advByEvent.has(key)) advByEvent.set(key, { _id: a._id, docNo: a.docNo, status: a.status }); });
     });
 
     /**
@@ -978,9 +1011,9 @@ router.get("/job-advance/:eventId", verifyToken, async (req, res) => {
         const ids = ranges.map((r) => String(r._id));
         const used = await Expense.find({
           kind: "advance", status: { $ne: "cancelled" },
-          $or: [{ jobKey: { $in: ids } }, { eventId: { $in: ids } }],
-        }).select("jobKey eventId").lean();
-        const usedIds = new Set(used.map((u) => (ids.includes(String(u.jobKey)) ? String(u.jobKey) : String(u.eventId))));
+          $or: [{ jobKey: { $in: ids } }, { eventId: { $in: ids } }, { "jobs.eventId": { $in: ids } }],
+        }).select("jobKey eventId jobs.eventId").lean();
+        const usedIds = new Set(used.flatMap((u) => [u.jobKey, u.eventId, ...(u.jobs || []).map((j) => j.eventId)].map(String).filter((k) => ids.includes(k))));
         siblings = {
           part: ids.indexOf(linked.eventId) + 1,
           partCount: ids.length,
@@ -1191,7 +1224,6 @@ router.get("/", verifyToken, async (req, res) => {
     const statuses = String(req.query.status || "").split(",").map((s) => s.trim()).filter((s) => Expense.STATUS.includes(s));
     if (statuses.length) query.status = { $in: statuses };
     if (req.query.userId && can(req.user, "viewAllExpenses")) query["requester.userId"] = String(req.query.userId);
-    if (req.query.eventId) query.eventId = String(req.query.eventId);
     if (req.query.advanceId) query.advanceId = String(req.query.advanceId);
     const from = parseDay(req.query.from);
     const to = parseDay(req.query.to);
@@ -1203,11 +1235,14 @@ router.get("/", verifyToken, async (req, res) => {
     const q = String(req.query.q || "").trim().slice(0, 80);
     const and = [];
     if (query.$or) { and.push({ $or: query.$or }); delete query.$or; }
+    // ใบที่อ้างอิงหลายงาน — งานนี้อาจเป็นงานรองของใบ (jobs[])
+    if (req.query.eventId) and.push({ $or: [{ eventId: String(req.query.eventId) }, { "jobs.eventId": String(req.query.eventId) }] });
     if (q) {
       const rx = new RegExp(escapeRegex(q), "i");
       and.push({ $or: [
         { docNo: rx }, { subject: rx }, { "requester.name": rx }, { "job.title": rx }, { "contractor.name": rx },
         { "job.site": rx }, { "job.company": rx }, { "advance.docNo": rx }, { "items.description": rx },
+        { "jobs.title": rx }, { "jobs.site": rx }, { "jobs.company": rx }, { "jobs.jobNo": rx },
       ] });
     }
     if (and.length) query.$and = and;
@@ -1254,12 +1289,15 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
       if (!requesterUser) return res.status(400).json({ message: "ไม่พบผู้เบิกที่เลือก" });
     }
 
-    const linked = await resolveJob(req.body.eventId);
-    if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
-    // 🔒 1 ช่วงงาน ออกใบ Advance ได้ 1 ใบ (ช่วงอื่นของงานเดียวกันเบิกแยกได้ — ดู activeAdvanceJob ใน models/Expense.js)
-    const existing = await findActiveAdvanceForJob(linked);
-    if (existing) {
-      return res.status(409).json({ message: duplicateAdvanceMessage(existing), advance: { _id: existing._id, docNo: existing.docNo, status: existing.status } });
+    const jl = await resolveJobList(req.body);
+    if (jl.error) return res.status(400).json({ message: jl.error });
+    const linked = jl.linked;
+    // 🔒 1 ช่วงงาน ออกใบ Advance ได้ 1 ใบ — ตรวจทุกงานที่อ้างอิง (ดู activeAdvanceJob ใน models/Expense.js)
+    const dup = await findActiveAdvanceForJobs(jl.list);
+    if (dup) {
+      const existing = dup.adv;
+      const which = jl.list.length > 1 ? `${[dup.linked.job.title, dup.linked.job.site].filter(Boolean).join(" · ")}: ` : "";
+      return res.status(409).json({ message: which + duplicateAdvanceMessage(existing), advance: { _id: existing._id, docNo: existing.docNo, status: existing.status } });
     }
 
     // ✅ บัญชีที่บริษัทจะโอนเงินล่วงหน้าให้ (ผู้ใช้ขอ "ทำในใบ advance ด้วย") — ต้องเป็นบัญชีของผู้เบิกเท่านั้น
@@ -1282,6 +1320,7 @@ router.post("/advances", verifyToken, upload.array("files", 10), async (req, res
       },
       createdBy: me,
       ...linked,
+      jobs: jl.jobs,
       ...(linked.jobKey ? { activeAdvanceJob: linked.jobKey } : {}),
       items,
       total,
@@ -1375,6 +1414,9 @@ router.post("/claims", verifyToken, upload.array("files", 15), async (req, res) 
       createdBy: me,
       eventId: advance.eventId,
       job: advance.job,
+      jobKey: advance.jobKey || "",
+      jobGroupKey: advance.jobGroupKey || "",
+      jobs: advance.jobs || [],
       items,
       total,
       advanceId: String(advance._id),
@@ -1444,8 +1486,9 @@ router.post("/reimbursements", verifyToken, upload.array("files", 15), async (re
       if (!requesterUser) return res.status(400).json({ message: "ไม่พบผู้เบิกที่เลือก" });
     }
 
-    const linked = await resolveJob(req.body.eventId);
-    if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
+    const jl = await resolveJobList(req.body);
+    if (jl.error) return res.status(400).json({ message: jl.error });
+    const linked = jl.linked;
 
     // ✅ บัญชีรับเงินคืนค่าสำรองจ่าย — ต้องเป็นบัญชีของผู้เบิก (คนที่สำรองจ่าย) เท่านั้น
     const payToResult = await resolvePayTo(req.body.payToAccountId, requesterUser._id);
@@ -1468,6 +1511,7 @@ router.post("/reimbursements", verifyToken, upload.array("files", 15), async (re
       },
       createdBy: me,
       ...linked,
+      jobs: jl.jobs,
       items,
       total,
       // ⚠️ ไม่มีใบ Advance — ต้องเคลียร์ค่า snapshot ให้เป็นศูนย์ชัดเจน ไม่ปล่อยค่าว่างคลุมเครือ
@@ -1794,19 +1838,21 @@ router.put("/:id", verifyToken, upload.array("files", 15), async (req, res) => {
         doc.jobGroupKey = rr.linked.jobGroupKey || "";
         doc.job = rr.linked.job;
         doc.jobRanges = rr.ranges;
-      } else if (req.body.eventId !== undefined) {
-        const linked = await resolveJob(req.body.eventId);
-        if (!linked) return res.status(400).json({ message: "ไม่พบงานที่เลือกผูก — อาจถูกลบไปแล้ว" });
+      } else if (req.body.eventIds !== undefined || req.body.eventId !== undefined) {
+        const jl = await resolveJobList(req.body);
+        if (jl.error) return res.status(400).json({ message: jl.error });
+        const linked = jl.linked;
         if (doc.kind === "advance") {
           // 🔒 ย้ายใบไปผูกงานที่มีใบ Advance อยู่แล้วไม่ได้ (ไม่นับตัวเอง — แก้ใบเดิมโดยไม่เปลี่ยนงานต้องผ่าน)
-          const existing = await findActiveAdvanceForJob(linked, doc._id);
-          if (existing) return res.status(409).json({ message: duplicateAdvanceMessage(existing) });
+          const dup = await findActiveAdvanceForJobs(jl.list, doc._id);
+          if (dup) return res.status(409).json({ message: duplicateAdvanceMessage(dup.adv) });
           doc.activeAdvanceJob = linked.jobKey || undefined;
         }
         doc.eventId = linked.eventId;
         doc.jobKey = linked.jobKey;
         doc.jobGroupKey = linked.jobGroupKey || "";
         doc.job = linked.job;
+        doc.jobs = jl.jobs;
       }
       if (doc.kind === "advance" && req.body.dueClearAt !== undefined) doc.dueClearAt = parseDay(req.body.dueClearAt);
       const requesterId = String(req.body.requesterId || "").trim();

@@ -228,6 +228,22 @@ const expenseSchema = new mongoose.Schema(
      * (เซ็ตจาก resolveJob ใน routes/expenses.js ทุกครั้งที่ผูกงาน — ห้ามรับค่าจาก client)
      */
     jobKey: { type: String, default: "", index: true },
+    /**
+     * ✅ (24 ต.ค. 2569 ผู้ใช้: "ใบเบิก/เคลมทุกใบ อ้างอิงงานได้หลายงานพร้อมกัน — บางทีทำรายการเดียวแต่อ้างอิงหลายงาน")
+     * งานทั้งหมดที่ใบนี้อ้างอิง (snapshot ต่องาน) — งานแรก = งานหลักของใบ (eventId/job/jobKey ด้านบนคืองานแรกเสมอ
+     * เพื่อให้รายงาน/ตัวกรอง/ใบเก่าทำงานเหมือนเดิม) · ใบเก่าที่ผูกงานเดียวไม่มีฟิลด์นี้ = อ่านจาก eventId/job
+     * ⚠️ ใบ Advance: ทุกงานในรายการถูกนับว่า "มีใบ Advance แล้ว" (1 ช่วงงานออกได้ 1 ใบ เหมือนเดิม)
+     */
+    jobs: {
+      type: [{
+        _id: false,
+        eventId: String, jobKey: String, jobGroupKey: String,
+        title: String, system: String, company: String, site: String, docNo: String, jobNo: String,
+        start: Date, end: Date, round: String, visitCount: Number, part: Number, partCount: Number,
+        contractNo: String, contractStart: Date, contractEnd: Date, contractYears: Number, intervalMonths: Number,
+      }],
+      default: [],
+    },
     /** กุญแจ "ทั้งงาน" (jobGroupId) — ใช้ดูภาพรวมว่างานนี้เบิกไปแล้วกี่ช่วง ไม่ได้ใช้กันซ้ำ */
     jobGroupKey: { type: String, default: "", index: true },
     /**
