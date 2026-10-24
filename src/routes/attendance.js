@@ -289,6 +289,11 @@ router.post("/check-in", verifyToken, async (req, res) => {
     }
     const site = await siteCoordsOf(ev);
     const stamp = readStamp(req.body, site);
+    // 🔒 (24 ต.ค. 2569 ผู้ใช้: "ไม่อนุญาตถ้าไม่เปิดตำแหน่ง ไม่ให้กดบันทึกเข้างานได้") ต้องมีพิกัดจริงเสมอ
+    //    (ยกเว้นเครื่องทดสอบที่ไม่ใช่ production — ลิงก์ http ในวง LAN ใช้ GPS ไม่ได้ทางเทคนิค)
+    if (stamp.gps !== "ok" && process.env.NODE_ENV === "production") {
+      return res.status(400).json({ message: "ต้องเปิดตำแหน่ง (GPS) ก่อนบันทึกเข้างาน — อนุญาตการเข้าถึงตำแหน่ง แล้วกดบันทึกอีกครั้ง", code: "GPS_REQUIRED" });
+    }
     // ใช้เวลาจากเซิร์ฟเวอร์แปลงเป็นวันไทยเป็นค่าหลัก ไม่เชื่อวันจากเครื่องผู้ใช้
     const today = bkkDay(stamp.at);
     const dayStart = new Date(`${today}T00:00:00+07:00`);
