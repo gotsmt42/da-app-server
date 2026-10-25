@@ -304,10 +304,15 @@ module.exports = (router) => {
       const ServiceReportSummary = require("../../models/ServiceReportSummary");
       const prev = await ServiceReportSummary.findOne({ jobKey: ctx.jobKey }).lean();
       if (!prev) return res.status(404).json({ message: "ยังไม่มีสรุป — กด “สรุปด้วย AI” ก่อน" });
-      const { normalize } = require("../../services/ServiceReportScan");
+      const { normalize, unreadableFiles } = require("../../services/ServiceReportScan");
       const by = srActor(req);
       const now = new Date();
       const confirm = Boolean(req.body?.confirm);
+      // ⛔ ไฟล์ที่ AI อ่านไม่ได้/ไม่ครบ (ถ่ายไม่ชัด) — ยืนยันไม่ได้ ต้องถ่ายใหม่แล้วอ่านใหม่ (ผู้ใช้ 25 ต.ค. 2569)
+      const bad = unreadableFiles(prev.aiData);
+      if (confirm && bad.length) {
+        return res.status(409).json({ message: `ยืนยันไม่ได้ — AI อ่านไฟล์ที่ ${bad.map((x) => x.no).join(", ")} ไม่ได้/ไม่ครบ (ถ่ายไม่ชัด) ให้ถ่ายใหม่ให้ชัด แนบแทน แล้วกดอ่านใหม่` });
+      }
       const $set = { status: confirm ? "confirmed" : "draft", eventIds: ctx.eventIds };
       if (req.body?.data) {
         Object.assign($set, { data: { ...normalize(req.body.data), fileCount: prev.data?.fileCount || prev.files?.length || 0 }, editedAt: now, editedBy: by });

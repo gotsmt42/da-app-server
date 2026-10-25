@@ -42,12 +42,25 @@ const SUMMARY_TOOL = {
     type: "object",
     properties: {
       found: { type: "boolean", description: "เป็นใบ Service Report และอ่านเนื้อหาได้" },
-      summary: str("สรุปงานที่ทำ 1–2 ประโยค (มีตัวเลขก่อน/หลังถ้าเขียนไว้)"),
-      workDone: strArr("งานที่ทำตามลำดับ ข้อละ 1 ประโยคสั้น ไม่ซ้ำกับ summary"),
-      issueSummary: str("สรุปปัญหาที่พบ 1–2 ประโยค · ไม่มีปัญหาให้ค่าว่าง"),
+      fileChecks: {
+        type: "array",
+        description: "ไฟล์ละ 1 แถว ครบทุกไฟล์ — ยืนยันว่าเปิดอ่านครบ และบอกตรงๆ ว่าไฟล์ไหนอ่านไม่ได้",
+        items: {
+          type: "object",
+          properties: {
+            no: { type: "integer", description: "เลขไฟล์ (ไฟล์ที่ N)" },
+            status: { type: "string", enum: ["ok", "partial", "unreadable"], description: "อ่านได้ครบ / อ่านได้บางส่วน / อ่านไม่ได้" },
+            note: str("สั้นมาก: มีเนื้อหาอะไร เช่น 'Tower 2 ตรวจ Smoke ชั้น 10–20' · ถ้าอ่านไม่ได้ บอกสาเหตุและส่วนที่อ่านไม่ได้ เช่น 'ภาพเบลอ อ่านครึ่งล่างไม่ได้'"),
+          },
+          required: ["no", "status", "note"],
+        },
+      },
+      summary: str("ภาพรวมงาน 1 ประโยคสั้น (ทำอะไร ที่ระบบไหน ผลรวมเป็นอย่างไร)"),
+      workDone: strArr("รายละเอียดงานที่ทำ แยกเป็นข้อ ต้องมีอย่างน้อย 1 ข้อเสมอ · ข้อละ 1 เรื่อง/1 จุด/1 อุปกรณ์ · ตัวเลขก่อน-หลัง แยกตาม Tower/ชั้น/Loop เป็นคนละข้อ"),
+      issueSummary: str("สรุปปัญหา 1 ประโยคสั้น · ไม่มีปัญหาให้ค่าว่าง"),
       issues: {
         type: "array",
-        description: "1 แถว = 1 จุด หรือ 1 รายการอุปกรณ์",
+        description: "ทุกปัญหา/จุดค้าง/อุปกรณ์เสีย ต้องมีแถวที่นี่ (1 แถว = 1 จุด หรือ 1 รุ่นอุปกรณ์) — อย่าเขียนไว้แค่ใน issueSummary",
         items: {
           type: "object",
           properties: {
@@ -63,7 +76,7 @@ const SUMMARY_TOOL = {
       reviewNotes: strArr("เฉพาะจุดที่อ่านไม่ชัด/กำกวมจริง ระบุไฟล์ สั้นๆ ไม่เกิน 5 ข้อ"),
       confidence: { type: "string", enum: ["high", "medium", "low"] },
     },
-    required: ["found", "summary", "workDone", "issueSummary", "issues", "reviewNotes", "confidence"],
+    required: ["found", "fileChecks", "summary", "workDone", "issueSummary", "issues", "reviewNotes", "confidence"],
   },
 };
 
@@ -74,9 +87,15 @@ const SYSTEM = `คุณถอดใบ Service Report (ลายมือ ง�
 ข้าม: หัวกระดาษ (บริษัท เลขที่ โครงการ วันที่ เวลา ผู้ติดต่อ ช่องติ๊ก) และท้ายกระดาษ (ลายเซ็น ชื่อช่าง/ลูกค้า ความเห็นลูกค้า) รวมถึงหัว/ท้ายของแผ่นต่อ
 
 กติกา:
+- ต้องอ่านครบทุกไฟล์ทุกหน้า (ไม่ใช่แค่ไฟล์แรก) · รายละเอียดจากทุกไฟล์ต้องอยู่ใน workDone/issues · fileChecks ครบทุกไฟล์
+- ไฟล์/ส่วนที่ถ่ายไม่ชัด เบลอ มืด ถูกตัด หรือลายมืออ่านไม่ออก: บอกตรงๆ ใน fileChecks (partial/unreadable + สาเหตุ) และห้ามเดาเนื้อหาส่วนนั้น — ไม่ต้องใส่ข้อมูลที่ไม่แน่ใจลง workDone/issues
+  (partial = อ่านไม่ได้ทั้งบรรทัด/ทั้งช่วงขึ้นไป · คำเดียวที่ไม่ชัดให้ใส่ reviewNotes แทน) — ระบบจะไม่ออกเอกสารจนกว่าจะถ่ายใหม่ให้ชัด
 - ถอดตามที่เขียนจริง ตัวเลข/รุ่น/จำนวนต้องตรงต้นฉบับ ห้ามเดา · ไม่ชัดให้ใส่ตามที่อ่านได้แล้วบอกใน reviewNotes
-- เขียนให้คนนอกอ่านเข้าใจ (แก้คำย่อ/สะกดผิดได้) กระชับ ไม่ซ้ำความ · คงตัวเลขเช่น "Trouble 291 เหลือ 174 จุด"
-- อุปกรณ์ที่ต้องเปลี่ยนแยกแถวละรุ่นใน issues · จุดค้างก็เป็นแถว
+- เขียนแบบรายงานมืออาชีพ อ่านง่าย: แยกเป็นข้อ ข้อละเรื่องเดียว ประโยคสั้น ภาษาสุภาพ (แก้คำย่อ/สะกดผิดได้) คงตัวเลขตามต้นฉบับ
+- summary/issueSummary เป็นภาพรวมสั้นๆ เท่านั้น — รายละเอียดทั้งหมดต้องอยู่ใน workDone และ issues ที่แยกเป็นข้อ
+- ตัวอย่าง workDone: "ตรวจตู้ FCP Tower 1 พบ Trouble 12 จุด แก้ไขแล้วเหลือ 3 จุด" · "ตรวจตู้ FCP Tower 2 พบ Trouble 16 จุด แก้ไขแล้วเหลือ 9 จุด"
+- ตัวอย่าง issues: { location: "Tower 2", problem: "ระบบเสียง Bell ใช้งานไม่ได้ สายถูกลอก", part: "Bell", qty: "", status: "need_quote" } · { location: "Tower 1", problem: "Trouble คงเหลือ", part: "", qty: "3 จุด", status: "pending" }
+- อุปกรณ์ที่ต้องเปลี่ยนแยกแถวละรุ่น · จุดค้างแยกแถวตามตำแหน่ง
 - ไม่ใช่ Service Report หรืออ่านไม่ได้ ให้ found = false`;
 
 const scannableFiles = (files) => (files || []).filter((f) => f?.fileUrl && (isPdfFile(f) || isImageFile(f))).slice(0, MAX_FILES);
@@ -141,6 +160,9 @@ function normalize(d) {
   const pick = (v, list, def) => (list.includes(v) ? v : def);
   return {
     found: d.found !== false,
+    fileChecks: arr(d.fileChecks).map((x) => ({
+      no: Math.max(0, Math.round(Number(x?.no) || 0)), status: pick(x?.status, ["ok", "partial", "unreadable"], "ok"), note: s(x?.note, 200),
+    })).filter((x) => x.no).slice(0, 12),
     summary: s(d.summary, 2000),
     workDone: sArr(d.workDone, 800).slice(0, 60),
     issueSummary: s(d.issueSummary, 1500),
@@ -153,4 +175,10 @@ function normalize(d) {
   };
 }
 
-module.exports = { scanServiceReport, normalize, scannableFiles, MODEL };
+/**
+ * ไฟล์ที่ AI อ่านไม่ได้/อ่านได้ไม่ครบ (ถ่ายไม่ชัด) — มี = ห้ามยืนยัน/ออกเอกสาร
+ * ✅ (25 ต.ค. 2569 ผู้ใช้: "ไฟล์ไหนที่ AI อ่านไม่ได้ ... ให้บอกมาตรงๆ ว่าไม่สามารถอ่านได้ ไม่เดา · และไม่สามารถออกเอกสารให้ได้")
+ */
+const unreadableFiles = (d) => (d?.fileChecks || []).filter((x) => x.status === "unreadable" || x.status === "partial");
+
+module.exports = { scanServiceReport, normalize, scannableFiles, unreadableFiles, MODEL };
