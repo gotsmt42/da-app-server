@@ -339,6 +339,12 @@ const eventSchema = new mongoose.Schema(
         uploadedBy: String,
       },
     ],
+    // ✅ (25 ต.ค. 2569) ป้ายสถานะ "สรุป Service Report ด้วย AI" — ตัวข้อมูลสรุปอยู่ใน ServiceReportSummary (แยกคอลเลกชัน ไม่ให้ /event-op หนัก)
+    serviceReportAi: {
+      status: { type: String, default: "" }, // "" | draft | confirmed
+      at: { type: Date, default: null },
+      by: { type: String, default: "" },
+    },
     reportFiles: [
       {
         fileName: String,

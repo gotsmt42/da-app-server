@@ -154,6 +154,117 @@ module.exports = (router) => {
     }
   });
 
+  // ─── สรุป Service Report ด้วย AI ────────────────────────────────────────────
+  /**
+   * ✅ (25 ต.ค. 2569 ผู้ใช้: "ทำระบบให้อ่าน Service Report ของช่าง แล้วกดสร้างสรุปออกมาเป็น PDF ให้สมบูรณ์ที่สุด")
+   *    GET  /:id/service-report-summary        — สรุปที่บันทึกไว้ (ถ้ามี) + ไฟล์ Service Report ทั้งงาน
+   *    POST /:id/service-report-summary/scan   — ให้ AI อ่านทุกไฟล์แล้วบันทึกเป็น "ร่าง" (ทับร่างที่คนแก้/ยืนยันแล้ว ต้องส่ง force)
+   *    PUT  /:id/service-report-summary        — บันทึกที่คนแก้ · confirm = ยืนยันสรุป (ใช้ออก PDF ฉบับจริง)
+   *    งานหลายวัน = สรุปเดียวทั้งงาน (jobGroupId) อ่านไฟล์จากทุกวันรวมกัน
+   *    สิทธิ์: ดู/สั่งอ่าน = ผู้เกี่ยวข้องกับงาน · viewAllJobs · editAnyJob  ·  แก้/ยืนยัน = ผู้เกี่ยวข้อง · editAnyJob
+   */
+  const SR_SELECT = "_id jobGroupId reportFiles userId team resPerson responsiblePerson responsiblePersonId teamMembers";
+  const srContext = async (req) => {
+    const ev = await CalendarEvent.findById(req.params.id).select(SR_SELECT).lean();
+    if (!ev) return { error: [404, "ไม่พบงานนี้"] };
+    const sessions = ev.jobGroupId
+      ? await CalendarEvent.find({ jobGroupId: ev.jobGroupId }).select(SR_SELECT).sort({ start: 1 }).lean()
+      : [ev];
+    const participant = sessions.some((x) => isJobParticipant(x, req.userId, req.user.fname));
+    const canView = participant || can(req.user, "viewAllJobs") || can(req.user, "editAnyJob");
+    const canEdit = participant || can(req.user, "editAnyJob");
+    if (!canView) return { error: [403, "ดูสรุป Service Report ได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น"] };
+    const seen = new Set();
+    const files = sessions.flatMap((x) => x.reportFiles || [])
+      .filter((f) => f?.fileUrl && !seen.has(f.fileUrl) && seen.add(f.fileUrl))
+      .sort((a, b) => new Date(a.uploadedAt || 0) - new Date(b.uploadedAt || 0))
+      .map((f) => ({ fileName: f.fileName || "", fileUrl: f.fileUrl, fileType: f.fileType || "" }));
+    return { ev, sessions, files, canEdit, jobKey: String(ev.jobGroupId || ev._id), eventIds: sessions.map((x) => String(x._id)) };
+  };
+  const srActor = (req) => [req.user.fname, req.user.lname].filter(Boolean).join(" ") || req.user.username || "";
+  const srMark = (ids, status, by) => CalendarEvent.updateMany({ _id: { $in: ids } }, { $set: { serviceReportAi: { status, at: new Date(), by } } });
+
+  router.get("/:id/service-report-summary", verifyToken, async (req, res) => {
+    try {
+      const ctx = await srContext(req);
+      if (ctx.error) return res.status(ctx.error[0]).json({ message: ctx.error[1] });
+      const ServiceReportSummary = require("../../models/ServiceReportSummary");
+      const summary = await ServiceReportSummary.findOne({ jobKey: ctx.jobKey }).lean();
+      res.json({ enabled: require("../../services/InvoiceScan").isEnabled(), canEdit: ctx.canEdit, files: ctx.files, summary });
+    } catch (err) {
+      console.error("❌ โหลดสรุป Service Report ไม่สำเร็จ:", err?.message);
+      res.status(500).json({ message: "โหลดสรุปไม่สำเร็จ" });
+    }
+  });
+
+  router.post("/:id/service-report-summary/scan", verifyToken, async (req, res) => {
+    try {
+      if (!require("../../services/InvoiceScan").isEnabled()) {
+        return res.status(503).json({ message: "ยังไม่ได้เปิดใช้งานการอ่านเอกสารด้วย AI (ไม่พบ ANTHROPIC_API_KEY ที่เซิร์ฟเวอร์)" });
+      }
+      const ctx = await srContext(req);
+      if (ctx.error) return res.status(ctx.error[0]).json({ message: ctx.error[1] });
+      const ServiceReportScan = require("../../services/ServiceReportScan");
+      const files = ServiceReportScan.scannableFiles(ctx.files);
+      if (!files.length) return res.status(400).json({ message: "ยังไม่มีไฟล์ Service Report (รูปหรือ PDF) ในงานนี้" });
+      const ServiceReportSummary = require("../../models/ServiceReportSummary");
+      const prev = await ServiceReportSummary.findOne({ jobKey: ctx.jobKey }).select("status editedAt").lean();
+      // กันกดพลาดทับงานที่คนตรวจแล้ว — หน้าจอถามยืนยันก่อน แล้วส่ง force มา
+      if (prev && (prev.status === "confirmed" || prev.editedAt) && !req.body?.force) {
+        return res.status(409).json({
+          message: prev.status === "confirmed" ? "สรุปนี้ยืนยันแล้ว อ่านใหม่จะทับข้อมูลเดิม" : "สรุปนี้มีการแก้ไขแล้ว อ่านใหม่จะทับข้อมูลที่แก้",
+          needForce: true,
+        });
+      }
+      const result = await ServiceReportScan.scanServiceReport(files);
+      const by = srActor(req);
+      const summary = await ServiceReportSummary.findOneAndUpdate(
+        { jobKey: ctx.jobKey },
+        {
+          $set: {
+            eventIds: ctx.eventIds, status: "draft", aiData: result, data: result,
+            files: files.map((f) => ({ fileName: f.fileName, fileUrl: f.fileUrl })),
+            model: ServiceReportScan.MODEL, scannedAt: new Date(), scannedBy: by,
+            editedAt: null, editedBy: "", confirmedAt: null, confirmedBy: "",
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      ).lean();
+      await srMark(ctx.eventIds, "draft", by);
+      res.json({ summary });
+    } catch (err) {
+      console.error("❌ สรุป Service Report ด้วย AI ไม่สำเร็จ:", err?.status, err?.message);
+      res.status(502).json({ message: require("../../services/aiFileSource").safeAiError(err) });
+    }
+  });
+
+  router.put("/:id/service-report-summary", verifyToken, async (req, res) => {
+    try {
+      const ctx = await srContext(req);
+      if (ctx.error) return res.status(ctx.error[0]).json({ message: ctx.error[1] });
+      if (!ctx.canEdit) return res.status(403).json({ message: "แก้ไขสรุปได้เฉพาะผู้เกี่ยวข้องกับงาน" });
+      const ServiceReportSummary = require("../../models/ServiceReportSummary");
+      const prev = await ServiceReportSummary.findOne({ jobKey: ctx.jobKey }).lean();
+      if (!prev) return res.status(404).json({ message: "ยังไม่มีสรุป — กด “สรุปด้วย AI” ก่อน" });
+      const { normalize } = require("../../services/ServiceReportScan");
+      const by = srActor(req);
+      const now = new Date();
+      const confirm = Boolean(req.body?.confirm);
+      const $set = { status: confirm ? "confirmed" : "draft", eventIds: ctx.eventIds };
+      if (req.body?.data) {
+        Object.assign($set, { data: { ...normalize(req.body.data), fileCount: prev.data?.fileCount || prev.files?.length || 0 }, editedAt: now, editedBy: by });
+      }
+      if (confirm) Object.assign($set, { confirmedAt: now, confirmedBy: by });
+      else Object.assign($set, { confirmedAt: null, confirmedBy: "" });
+      const summary = await ServiceReportSummary.findOneAndUpdate({ jobKey: ctx.jobKey }, { $set }, { new: true }).lean();
+      await srMark(ctx.eventIds, $set.status, by);
+      res.json({ summary });
+    } catch (err) {
+      console.error("❌ บันทึกสรุป Service Report ไม่สำเร็จ:", err?.message);
+      res.status(500).json({ message: "บันทึกสรุปไม่สำเร็จ" });
+    }
+  });
+
   router.put("/:id/quotation", verifyToken, async (req, res) => {
     try {
       const anchor = await CalendarEvent.findById(req.params.id);
