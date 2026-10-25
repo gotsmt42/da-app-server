@@ -163,7 +163,7 @@ module.exports = (router) => {
    *    งานหลายวัน = สรุปเดียวทั้งงาน (jobGroupId) อ่านไฟล์จากทุกวันรวมกัน
    *    สิทธิ์: ดู/สั่งอ่าน = ผู้เกี่ยวข้องกับงาน · viewAllJobs · editAnyJob  ·  แก้/ยืนยัน = ผู้เกี่ยวข้อง · editAnyJob
    */
-  const SR_SELECT = "_id jobGroupId reportFiles userId team resPerson responsiblePerson responsiblePersonId teamMembers";
+  const SR_SELECT = "_id jobGroupId reportFiles userId team resPerson responsiblePerson responsiblePersonId teamMembers start end allDay startTime endTime";
   const srContext = async (req) => {
     const ev = await CalendarEvent.findById(req.params.id).select(SR_SELECT).lean();
     if (!ev) return { error: [404, "ไม่พบงานนี้"] };
@@ -184,13 +184,40 @@ module.exports = (router) => {
   const srActor = (req) => [req.user.fname, req.user.lname].filter(Boolean).join(" ") || req.user.username || "";
   const srMark = (ids, status, by) => CalendarEvent.updateMany({ _id: { $in: ids } }, { $set: { serviceReportAi: { status, at: new Date(), by } } });
 
+  /**
+   * POST /service-report-summaries  { jobKeys: [] } — สรุปหลายงานพร้อมกัน สำหรับส่งออก Excel หน้าการดำเนินงาน
+   * ✅ (25 ต.ค. 2569 ผู้ใช้: "สามารถเอาไปลงรายงานสรุปใน excel ได้จริง")
+   * ⚠️ ส่งเฉพาะ data ที่ใช้ทำรายงาน (ไม่ส่ง aiData/ไฟล์) · คนที่ไม่มีสิทธิ์ดูทุกงาน ได้เฉพาะงานที่ตัวเองเกี่ยวข้อง
+   */
+  router.post("/service-report-summaries", verifyToken, async (req, res) => {
+    try {
+      const keys = [...new Set((Array.isArray(req.body?.jobKeys) ? req.body.jobKeys : []).map(String))].slice(0, 3000);
+      if (!keys.length) return res.json({ summaries: [] });
+      const ServiceReportSummary = require("../../models/ServiceReportSummary");
+      let list = await ServiceReportSummary.find({ jobKey: { $in: keys } })
+        .select("jobKey eventIds status data scannedAt confirmedAt confirmedBy editedAt").lean();
+      if (!can(req.user, "viewAllJobs") && !can(req.user, "editAnyJob")) {
+        const ids = [...new Set(list.flatMap((x) => x.eventIds || []))];
+        const evs = await CalendarEvent.find({ _id: { $in: ids } }).select(SR_SELECT).lean();
+        const mine = new Set(evs.filter((e) => isJobParticipant(e, req.userId, req.user.fname)).map((e) => String(e._id)));
+        list = list.filter((x) => (x.eventIds || []).some((id) => mine.has(String(id))));
+      }
+      res.json({ summaries: list.map(({ eventIds, ...x }) => x) });
+    } catch (err) {
+      console.error("❌ โหลดสรุป Service Report หลายงานไม่สำเร็จ:", err?.message);
+      res.status(500).json({ message: "โหลดสรุป Service Report ไม่สำเร็จ" });
+    }
+  });
+
   router.get("/:id/service-report-summary", verifyToken, async (req, res) => {
     try {
       const ctx = await srContext(req);
       if (ctx.error) return res.status(ctx.error[0]).json({ message: ctx.error[1] });
       const ServiceReportSummary = require("../../models/ServiceReportSummary");
       const summary = await ServiceReportSummary.findOne({ jobKey: ctx.jobKey }).lean();
-      res.json({ enabled: require("../../services/InvoiceScan").isEnabled(), canEdit: ctx.canEdit, files: ctx.files, summary });
+      // ✅ วันเข้างาน/ทีมของทุกวันในงาน — หัวรายงาน PDF ใช้ข้อมูลจากระบบ (ไม่อ่านหัวกระดาษ Service Report)
+      const sessions = ctx.sessions.map((x) => ({ start: x.start, end: x.end, allDay: x.allDay, startTime: x.startTime || "", endTime: x.endTime || "", team: x.team || "", teamMembers: (x.teamMembers || []).map((m) => ({ name: m?.name || "" })) }));
+      res.json({ enabled: require("../../services/InvoiceScan").isEnabled(), canEdit: ctx.canEdit, files: ctx.files, sessions, summary });
     } catch (err) {
       console.error("❌ โหลดสรุป Service Report ไม่สำเร็จ:", err?.message);
       res.status(500).json({ message: "โหลดสรุปไม่สำเร็จ" });
