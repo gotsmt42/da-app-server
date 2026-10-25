@@ -19,6 +19,13 @@ const ServiceReportSummarySchema = new mongoose.Schema(
     data: { type: mongoose.Schema.Types.Mixed, default: null },
     files: { type: [{ fileName: String, fileUrl: String }], default: [] },
     model: { type: String, default: "" },
+    // 💰 token/ค่าใช้จ่ายของการอ่านครั้งล่าสุด { input, output, cacheWrite, cacheRead, costUsd } + ยอดสะสมทุกครั้งที่อ่าน
+    usage: { type: mongoose.Schema.Types.Mixed, default: null },
+    scanCount: { type: Number, default: 0 },
+    totalCostUsd: { type: Number, default: 0 },
+    // จำกัด "อ่านใหม่" ต่อวัน (วันไทย YYYY-MM-DD) — routes/calendarEvent/workflow.js
+    rescanDay: { type: String, default: "" },
+    rescansToday: { type: Number, default: 0 },
     scannedAt: Date,
     scannedBy: { type: String, default: "" },
     editedAt: Date,

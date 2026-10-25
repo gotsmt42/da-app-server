@@ -182,6 +182,14 @@ module.exports = (router) => {
     return { ev, sessions, files, canEdit, jobKey: String(ev.jobGroupId || ev._id), eventIds: sessions.map((x) => String(x._id)) };
   };
   const srActor = (req) => [req.user.fname, req.user.lname].filter(Boolean).join(" ") || req.user.username || "";
+  /**
+   * 💰 (25 ต.ค. 2569 ผู้ใช้: "บังคับไม่ให้อ่านใหม่ได้เกิน 3 รอบต่อวัน") — นับต่องาน ตามวันเวลาไทย
+   *    ครั้งแรก (ยังไม่มีสรุป) ไม่นับ · "อ่านใหม่" ได้ 3 ครั้งต่อวัน ขึ้นวันใหม่นับใหม่
+   */
+  const SR_RESCAN_PER_DAY = 3;
+  const srToday = () => new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+  const srRescanLeft = (s) => (!s ? SR_RESCAN_PER_DAY
+    : s.rescanDay === srToday() ? Math.max(0, SR_RESCAN_PER_DAY - (s.rescansToday || 0)) : SR_RESCAN_PER_DAY);
   const srMark = (ids, status, by) => CalendarEvent.updateMany({ _id: { $in: ids } }, { $set: { serviceReportAi: { status, at: new Date(), by } } });
 
   /**
@@ -217,7 +225,7 @@ module.exports = (router) => {
       const summary = await ServiceReportSummary.findOne({ jobKey: ctx.jobKey }).lean();
       // ✅ วันเข้างาน/ทีมของทุกวันในงาน — หัวรายงาน PDF ใช้ข้อมูลจากระบบ (ไม่อ่านหัวกระดาษ Service Report)
       const sessions = ctx.sessions.map((x) => ({ start: x.start, end: x.end, allDay: x.allDay, startTime: x.startTime || "", endTime: x.endTime || "", team: x.team || "", teamMembers: (x.teamMembers || []).map((m) => ({ name: m?.name || "" })) }));
-      res.json({ enabled: require("../../services/InvoiceScan").isEnabled(), canEdit: ctx.canEdit, files: ctx.files, sessions, summary });
+      res.json({ enabled: require("../../services/InvoiceScan").isEnabled(), canEdit: ctx.canEdit, files: ctx.files, sessions, summary, rescanLeft: srRescanLeft(summary), rescanPerDay: SR_RESCAN_PER_DAY });
     } catch (err) {
       console.error("❌ โหลดสรุป Service Report ไม่สำเร็จ:", err?.message);
       res.status(500).json({ message: "โหลดสรุปไม่สำเร็จ" });
@@ -243,7 +251,27 @@ module.exports = (router) => {
           needForce: true,
         });
       }
-      const result = await ServiceReportScan.scanServiceReport(files);
+      // 💰 จองสิทธิ์อ่านใหม่แบบ atomic ก่อนเรียก AI (กดรัว/หลายเครื่องพร้อมกันก็ไม่เกินโควตา) · AI พลาด = คืนสิทธิ์
+      const today = srToday();
+      let reserved = false;
+      if (prev) {
+        const r = await ServiceReportSummary.updateOne(
+          { jobKey: ctx.jobKey, $or: [{ rescanDay: { $ne: today } }, { rescansToday: { $lt: SR_RESCAN_PER_DAY } }] },
+          [{ $set: { rescansToday: { $cond: [{ $eq: ["$rescanDay", today] }, { $add: [{ $ifNull: ["$rescansToday", 0] }, 1] }, 1] }, rescanDay: today } }],
+        );
+        if (!r.matchedCount) {
+          return res.status(429).json({ message: `อ่านใหม่ครบ ${SR_RESCAN_PER_DAY} ครั้งของวันนี้แล้ว (จำกัดเพื่อประหยัดค่า AI) — แก้ไขสรุปเองได้ หรืออ่านใหม่ได้พรุ่งนี้`, rescanLeft: 0 });
+        }
+        reserved = true;
+      }
+      let scanned;
+      try {
+        scanned = await ServiceReportScan.scanServiceReport(files);
+      } catch (err) {
+        if (reserved) await ServiceReportSummary.updateOne({ jobKey: ctx.jobKey, rescanDay: today }, { $inc: { rescansToday: -1 } }).catch(() => {});
+        throw err;
+      }
+      const { usage, ...result } = scanned;
       const by = srActor(req);
       const summary = await ServiceReportSummary.findOneAndUpdate(
         { jobKey: ctx.jobKey },
@@ -253,12 +281,15 @@ module.exports = (router) => {
             files: files.map((f) => ({ fileName: f.fileName, fileUrl: f.fileUrl })),
             model: ServiceReportScan.MODEL, scannedAt: new Date(), scannedBy: by,
             editedAt: null, editedBy: "", confirmedAt: null, confirmedBy: "",
+            usage: usage || null,
           },
+          // 💰 ค่าใช้จ่ายสะสมของงานนี้ (อ่านใหม่ = จ่ายเพิ่ม) — แสดงในหน้าต่างสรุป
+          $inc: { scanCount: 1, totalCostUsd: usage?.costUsd || 0 },
         },
         { upsert: true, new: true, setDefaultsOnInsert: true },
       ).lean();
       await srMark(ctx.eventIds, "draft", by);
-      res.json({ summary });
+      res.json({ summary, rescanLeft: srRescanLeft(summary) });
     } catch (err) {
       console.error("❌ สรุป Service Report ด้วย AI ไม่สำเร็จ:", err?.status, err?.message);
       res.status(502).json({ message: require("../../services/aiFileSource").safeAiError(err) });
