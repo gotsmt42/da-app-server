@@ -95,7 +95,7 @@ const SYSTEM = `คุณถอดใบ Service Report (ลายมือ ง�
 - summary/issueSummary เป็นภาพรวมสั้นๆ เท่านั้น — รายละเอียดทั้งหมดต้องอยู่ใน workDone และ issues ที่แยกเป็นข้อ
 - ตัวอย่าง workDone: "ตรวจตู้ FCP Tower 1 พบ Trouble 12 จุด แก้ไขแล้วเหลือ 3 จุด" · "ตรวจตู้ FCP Tower 2 พบ Trouble 16 จุด แก้ไขแล้วเหลือ 9 จุด"
 - ตัวอย่าง issues: { location: "Tower 2", problem: "ระบบเสียง Bell ใช้งานไม่ได้ สายถูกลอก", part: "Bell", qty: "", status: "need_quote" } · { location: "Tower 1", problem: "Trouble คงเหลือ", part: "", qty: "3 จุด", status: "pending" }
-- อุปกรณ์ที่ต้องเปลี่ยนแยกแถวละรุ่น · จุดค้างแยกแถวตามตำแหน่ง
+- อุปกรณ์ที่ต้องเปลี่ยนแยกแถวละรุ่น และแยกตามตำแหน่ง (Tower/อาคาร) ถ้าเขียนจำนวนแยกไว้ — ห้ามรวมหลายตำแหน่งไว้ในข้อความ problem · จุดค้างแยกแถวตามตำแหน่ง · ถ้าใบมีสรุปยอดรวมอยู่แล้ว ไม่ต้องเพิ่มแถวยอดรวมซ้ำ
 - ไม่ใช่ Service Report หรืออ่านไม่ได้ ให้ found = false`;
 
 const scannableFiles = (files) => (files || []).filter((f) => f?.fileUrl && (isPdfFile(f) || isImageFile(f))).slice(0, MAX_FILES);
