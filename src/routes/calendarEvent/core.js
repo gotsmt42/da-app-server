@@ -827,11 +827,13 @@ module.exports = (router) => {
       /**
        * ⛔ (26 ต.ค. 2569 ผู้ใช้: "ตรวจสอบเอกสารที่อัพมาผิดประเภท บังคับเลยว่าไม่ให้ปิดงาน ... แต่ยังมีช่องทางขอปิดกับแอดมินได้"
        *    · "ถ้าตรวจพบอุปกรณ์เสียหรือต้องเสนอราคา ต้องบังคับให้อัพใบเสนอราคาก่อนเท่านั้นถึงจะปิดงานได้")
-       *    ขอปิดงาน (ไม่ใช่แอดมิน) ต้องผ่านการตรวจเอกสารด้วย AI ของชุดไฟล์ปัจจุบัน (POST /:id/close-check)
+       *    ขอปิดงาน ต้องผ่านการตรวจเอกสารด้วย AI ของชุดไฟล์ปัจจุบัน (POST /:id/close-check)
        *    ไม่ผ่าน = ขอปิดไม่ได้ เว้นแต่ใส่เหตุผลขอให้แอดมินพิจารณาปิดเอง (closeOverrideReason) — แอดมินเห็นปัญหาตอนอนุมัติ
        *    ไม่มีคีย์ AI ที่เซิร์ฟเวอร์ = ข้ามการตรวจ (ระบบอื่นทำงานตามเดิม)
        */
-      if (req.body.closeRequested === true && !existingEvent.closeRequested && !isAdminOrManager
+      // 🔁 (26 ต.ค. 2569 ผู้ใช้: "อัพใบมั่วๆ ยังขอปิดมาได้") — ทุกคนที่ "ขอปิดงาน" ต้องผ่านการตรวจ (รวมผู้จัดการ/แอดมิน)
+      //    แอดมินยังอนุมัติ/ปิดงานเองได้ตามเดิม (คนละเส้นทางกับการขอปิด)
+      if (req.body.closeRequested === true && !existingEvent.closeRequested
         && require("../../services/InvoiceScan").isEnabled()) {
         const CloseCheck = require("../../services/CloseCheck");
         const groupSessions = existingEvent.jobGroupId

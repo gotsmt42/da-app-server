@@ -283,6 +283,13 @@ module.exports = (router) => {
         srCost = scanned.usage?.costUsd || 0;
         summary = await srSaveScan(ctx, srFiles, scanned, `${srActor(req)} (ตรวจอัตโนมัติตอนขอปิดงาน)`);
       }
+      // AI อ่านแล้วบอกว่าไม่ใช่ใบ Service Report (เช่น แนบภาพร่าง/รูปหน้างานมาแทน) — ไม่ผ่าน
+      if (summary && summary.aiData && summary.aiData.found === false && !problems.some((p) => p.slot === "reportFiles")) {
+        problems.push({
+          code: "sr_not_found", slot: "reportFiles", slotLabel: "Service Report",
+          text: "ไฟล์ในช่อง Service Report ไม่ใช่ใบ Service Report (AI อ่านแล้วไม่พบรายงานการเข้าปฏิบัติงาน) — แนบใบ Service Report ที่ช่างเขียนจริง",
+        });
+      }
       if (summary) {
         ServiceReportScan.unreadableFiles(summary.aiData).forEach((x) => problems.push({
           code: "sr_unreadable", slot: "reportFiles", slotLabel: "Service Report",
