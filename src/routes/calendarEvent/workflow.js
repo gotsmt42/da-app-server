@@ -12,6 +12,8 @@ const {
   cloudinary,
   streamifier,
   sendPushToUsers,
+  sendPushToRoles,
+  SUPERVISOR_ROLES,
   isJobParticipant,
 } = require("./shared");
 
@@ -328,6 +330,17 @@ module.exports = (router) => {
     }
   });
 
+  // ✅ ผลใบเสนอราคา (ได้งาน/ไม่ได้งาน) — ใช้ทั้งแอดมินบันทึกเอง และอนุมัติตามคำขอ
+  const applyDecision = (d, decidedBy, approvedBy, now) => ({
+    quotationStatus: d.action === "approve" ? "approved" : "rejected",
+    quotationDecisionAt: d.decidedAt || now, quotationDecisionBy: decidedBy,
+    quotationDecisionNote: d.note || "", quotationPoNo: d.action === "approve" ? d.poNo || "" : "",
+    quotationNextFollowUpAt: null, quotationDecisionRequest: null,
+    quotationDecisionApprovedBy: approvedBy, quotationDecisionApprovedAt: now,
+  });
+  // ผู้อนุมัติผล = ระดับที่มีสิทธิ์ editFinance (ตั้งในตารางสิทธิ์) · ไม่มีการตั้ง = หัวหน้า/ผู้จัดการ
+  const financeRanks = () => require("../../config/roles").effectiveCapabilities().editFinance || SUPERVISOR_ROLES;
+
   router.put("/:id/quotation", verifyToken, async (req, res) => {
     try {
       const anchor = await CalendarEvent.findById(req.params.id);
@@ -381,6 +394,7 @@ module.exports = (router) => {
         if (touched.length) $set["quotationAiFilled.fields"] = anchor.quotationAiFilled.fields.filter((f) => !touched.includes(f));
       }
       let log = changes.length ? ["quotation_updated", `แก้ข้อมูลใบเสนอราคา (${changes.join(" · ")})`] : null;
+      let pushAfter = null;
       const action = String(body.action || "");
       if (action) {
         const hasFiles = (anchor.quotationFiles || []).length > 0;
@@ -389,26 +403,79 @@ module.exports = (router) => {
           Object.assign($set, {
             quotationStatus: "sent", quotationSentAt: parseDay(body.sentAt, true) || now,
             quotationDecisionAt: null, quotationDecisionBy: null, quotationDecisionNote: "", quotationPoNo: "",
+            quotationDecisionRequest: null, quotationDecisionApprovedBy: "", quotationDecisionApprovedAt: null,
           });
           log = ["quotation_sent", anchor.quotationStatus ? "ส่งใบเสนอราคา (ฉบับแก้ไข) ให้ลูกค้าอีกครั้ง" : "ส่งใบเสนอราคาให้ลูกค้า"];
         } else if (action === "approve" || action === "reject") {
           if (!anchor.quotationStatus) return res.status(409).json({ message: "ยังไม่ได้บันทึกว่าส่งใบเสนอราคาให้ลูกค้า" });
+          if (["approved", "rejected"].includes(anchor.quotationStatus)) return res.status(409).json({ message: "ใบนี้บันทึกผลแล้ว" });
           const note = str(body.decisionNote, 500);
           if (action === "reject" && !note) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ลูกค้าปฏิเสธ" });
-          Object.assign($set, {
-            quotationStatus: action === "approve" ? "approved" : "rejected",
-            quotationDecisionAt: parseDay(body.decidedAt, true) || now, quotationDecisionBy: actorName,
-            quotationDecisionNote: note, quotationPoNo: action === "approve" ? str(body.poNo, 60) : "",
-            quotationNextFollowUpAt: null,
-          });
-          log = action === "approve"
-            ? ["quotation_approved", `ลูกค้าอนุมัติใบเสนอราคา${$set.quotationPoNo ? ` (PO ${$set.quotationPoNo})` : ""}`]
-            : ["quotation_rejected", `ลูกค้าปฏิเสธใบเสนอราคา — ${note}`];
+          const decision = { action, decidedAt: parseDay(body.decidedAt, true) || now, poNo: action === "approve" ? str(body.poNo, 60) : "", note };
+          const label = action === "approve" ? "ได้งาน" : "ไม่ได้งาน";
+          if (!isFinance) {
+            // ✅ ไม่ใช่แอดมิน = ส่งคำขอ รออนุมัติ — สถานะใบยังไม่เปลี่ยน (ยังนับติดตามต่อ)
+            if (anchor.quotationDecisionRequest?.action) return res.status(409).json({ message: "มีคำขอบันทึกผลรออนุมัติอยู่แล้ว — ยกเลิกคำขอเดิมก่อน" });
+            $set.quotationDecisionRequest = { ...decision, by: actorName, byId: String(req.userId), at: now };
+            log = ["quotation_decision_requested", `ขอบันทึกผล "${label}" — รอแอดมินอนุมัติ${decision.poNo ? ` (PO ${decision.poNo})` : ""}${note ? ` · ${note}` : ""}`];
+            pushAfter = () => sendPushToRoles(financeRanks(), {
+              title: `🧾 ${actorName} ขออนุมัติผลใบเสนอราคา: ${label}`,
+              body: `${[anchor.company, anchor.site].filter(Boolean).join(" · ") || anchor.title || "ใบเสนอราคา"}${anchor.quotationNo ? ` · ${anchor.quotationNo}` : ""}${note ? ` · ${note}` : ""}`,
+              url: `/finance?tab=quotations&jobId=${anchor._id}`,
+              tag: `quotation-decision-${anchor._id}`,
+              renotify: true,
+            }, [String(req.userId)]);
+          } else {
+            Object.assign($set, applyDecision(decision, actorName, actorName, now));
+            log = action === "approve"
+              ? ["quotation_approved", `ลูกค้าอนุมัติใบเสนอราคา${decision.poNo ? ` (PO ${decision.poNo})` : ""}`]
+              : ["quotation_rejected", `ลูกค้าปฏิเสธใบเสนอราคา — ${note}`];
+          }
+        } else if (action === "approveRequest" || action === "rejectRequest") {
+          // ✅ แอดมินพิจารณาคำขอบันทึกผล
+          if (!isFinance) return res.status(403).json({ message: "อนุมัติผลใบเสนอราคาได้เฉพาะฝ่ายบริหาร/การเงิน" });
+          const r = anchor.quotationDecisionRequest;
+          if (!r?.action) return res.status(409).json({ message: "ไม่มีคำขอบันทึกผลที่รออนุมัติ (อาจถูกยกเลิกหรืออนุมัติไปแล้ว)" });
+          const label = r.action === "approve" ? "ได้งาน" : "ไม่ได้งาน";
+          if (action === "approveRequest") {
+            // แอดมินแก้ PO/หมายเหตุ/วันที่ตอนอนุมัติได้ (ไม่ส่ง = ตามคำขอ)
+            const decision = {
+              action: r.action,
+              decidedAt: parseDay(body.decidedAt, true) || (r.decidedAt ? new Date(r.decidedAt) : now),
+              poNo: r.action === "approve" ? (body.poNo !== undefined ? str(body.poNo, 60) : str(r.poNo, 60)) : "",
+              note: body.decisionNote !== undefined ? str(body.decisionNote, 500) : str(r.note, 500),
+            };
+            if (decision.action === "reject" && !decision.note) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ไม่ได้งาน" });
+            Object.assign($set, applyDecision(decision, r.by || actorName, actorName, now));
+            log = [r.action === "approve" ? "quotation_approved" : "quotation_rejected", `อนุมัติผล "${label}" ตามคำขอของ ${r.by || "-"}${decision.poNo ? ` (PO ${decision.poNo})` : ""}${decision.note ? ` · ${decision.note}` : ""}`];
+            pushAfter = () => r.byId && sendPushToUsers([r.byId], {
+              title: `✅ อนุมัติผลใบเสนอราคาแล้ว: ${label}`,
+              body: `${[anchor.company, anchor.site].filter(Boolean).join(" · ")}${anchor.quotationNo ? ` · ${anchor.quotationNo}` : ""} · โดย ${actorName}`,
+              url: `/finance?tab=quotations&jobId=${anchor._id}`, tag: `quotation-decision-${anchor._id}`,
+            });
+          } else {
+            const reason = str(body.reason, 300);
+            if (!reason) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ไม่อนุมัติ" });
+            $set.quotationDecisionRequest = null;
+            log = ["quotation_decision_request_rejected", `ไม่อนุมัติคำขอบันทึกผล "${label}" ของ ${r.by || "-"} — ${reason}`];
+            pushAfter = () => r.byId && sendPushToUsers([r.byId], {
+              title: `↩️ ไม่อนุมัติผลใบเสนอราคา "${label}"`,
+              body: `${[anchor.company, anchor.site].filter(Boolean).join(" · ")} · ${reason} · โดย ${actorName}`,
+              url: `/finance?tab=quotations&jobId=${anchor._id}`, tag: `quotation-decision-${anchor._id}`,
+            });
+          }
+        } else if (action === "cancelRequest") {
+          const r = anchor.quotationDecisionRequest;
+          if (!r?.action) return res.status(409).json({ message: "ไม่มีคำขอที่รออนุมัติ" });
+          if (!isFinance && String(r.byId) !== String(req.userId)) return res.status(403).json({ message: "ยกเลิกได้เฉพาะคนที่ส่งคำขอ" });
+          $set.quotationDecisionRequest = null;
+          log = ["quotation_decision_request_cancelled", `ยกเลิกคำขอบันทึกผล "${r.action === "approve" ? "ได้งาน" : "ไม่ได้งาน"}"`];
         } else if (action === "reset") {
           if (!isFinance) return res.status(403).json({ message: "ย้อนสถานะใบเสนอราคาได้เฉพาะฝ่ายบริหาร/การเงิน" });
           Object.assign($set, {
             quotationStatus: null, quotationSentAt: null, quotationDecisionAt: null, quotationDecisionBy: null,
             quotationDecisionNote: "", quotationPoNo: "", quotationNextFollowUpAt: null,
+            quotationDecisionRequest: null, quotationDecisionApprovedBy: "", quotationDecisionApprovedAt: null,
           });
           log = ["quotation_reset", "ย้อนสถานะใบเสนอราคากลับเป็น \"ยังไม่ส่งลูกค้า\""];
         } else {
@@ -427,6 +494,7 @@ module.exports = (router) => {
       }
       // แก้ผล (reset) แล้วใบที่มีไฟล์อยู่ → เริ่มนับติดตามต่อทันที (กลับไป "รอลูกค้าตอบ") ไม่ค้างที่ "กำลังเริ่มนับ"
       if (action === "reset") await require("../../services/quotationAutoStart").syncQuotationStartSafe({ ids: [anchor._id] });
+      if (pushAfter) Promise.resolve().then(pushAfter).catch((e) => console.error("❌ Push (quotation decision):", e?.message));
       const event = await CalendarEvent.findById(anchor._id).lean();
       res.json({ event });
     } catch (err) {

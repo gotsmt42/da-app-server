@@ -298,6 +298,15 @@ const eventSchema = new mongoose.Schema(
     },
     quotationDecisionNote: { type: String, default: "" }, // เหตุผลที่ปฏิเสธ / หมายเหตุตอนอนุมัติ
     quotationPoNo: { type: String, default: "" },         // เลขที่ PO ของลูกค้าเมื่ออนุมัติ
+    /**
+     * ✅ (26 ต.ค. 2569 ผู้ใช้: "การอัพเดตว่าได้งาน และ ไม่ได้งาน ให้ช่างส่งคำขอมา และต้องให้แอดมินอนุมัติก่อนเท่านั้น")
+     *    คนที่ไม่มีสิทธิ์ editFinance กด ได้งาน/ไม่ได้งาน = ส่ง "คำขอ" ไว้ที่นี่ (สถานะใบยังไม่เปลี่ยน)
+     *    ผู้มีสิทธิ์ editFinance อนุมัติ → ใช้ผลตามคำขอ · ไม่อนุมัติ → ล้างคำขอพร้อมเหตุผล
+     *    { action: "approve"|"reject", decidedAt, poNo, note, by, byId, at } · null = ไม่มีคำขอค้าง
+     */
+    quotationDecisionRequest: { type: mongoose.Schema.Types.Mixed, default: null },
+    quotationDecisionApprovedBy: { type: String, default: "" }, // แอดมินที่อนุมัติผล (คนบันทึกผลเองถ้าเป็นแอดมิน)
+    quotationDecisionApprovedAt: Date,
     quotationNextFollowUpAt: Date,    // นัดติดตามครั้งถัดไป (ว่าง = ครบ 7 วันหลังติดต่อล่าสุด)
 
     // ✅ ประวัติการติดตามลูกค้าเรื่องใบเสนอราคาแบบเป็นครั้งๆ (ครั้งที่ 1, 2, 3...) — ช่างหรือแอดมิน/

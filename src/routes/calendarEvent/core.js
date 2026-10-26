@@ -546,6 +546,14 @@ module.exports = (router) => {
         return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไข Event นี้" });
       }
 
+      // ⛔ (26 ต.ค. 2569 ผู้ใช้: "ได้งาน/ไม่ได้งาน ให้ช่างส่งคำขอมา และต้องให้แอดมินอนุมัติก่อนเท่านั้น")
+      //    ผลใบเสนอราคาเปลี่ยนได้ทาง PUT /:id/quotation ที่เดียว (มีขั้นคำขอ → อนุมัติ) — กันส่งตรงมาทางนี้ข้ามขั้นอนุมัติ
+      //    ไม่ใช่ฝ่ายบริหาร/การเงิน = ทิ้งช่องผลใบเสนอราคาที่ส่งมา (ค่าเดิมคงอยู่ ไม่ error — ฟอร์มที่ส่งทั้งก้อนยังบันทึกได้)
+      if (!can(req.user, "editFinance") && req.body && typeof req.body === "object") {
+        ["quotationStatus", "quotationDecisionAt", "quotationDecisionBy", "quotationDecisionNote", "quotationPoNo",
+          "quotationDecisionRequest", "quotationDecisionApprovedBy", "quotationDecisionApprovedAt"].forEach((k) => { delete req.body[k]; });
+      }
+
       // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างแก้ไขอีก มีแค่ admin/manager เท่านั้นที่ทำได้
       // ยกเว้น: comment (คุยโต้ตอบกัน), activityLog (แค่ log ไม่กระทบข้อมูลงานจริง), และฟิลด์ระบบ
       // ติดตามใบเสนอราคาทั้งชุด — เพราะการติดตามใบเสนอราคามักเกิด "หลัง" งานถูกปิดแล้ว (ช่างปิดงาน
