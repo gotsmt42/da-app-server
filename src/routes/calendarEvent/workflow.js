@@ -294,8 +294,8 @@ module.exports = (router) => {
       const hasQuoteFile = sessions.some((s) => (s.quotationFiles || []).length > 0);
       if (quoteItems.length && !hasQuoteFile) {
         problems.push({
-          code: "need_quote", slot: "quotationFiles", slotLabel: "ใบเสนอราคา", items: quoteItems.slice(0, 12),
-          text: `AI อ่าน Service Report แล้วพบรายการที่ต้องเปลี่ยนอุปกรณ์/เสนอราคา ${quoteItems.length} รายการ — ต้องแนบใบเสนอราคาก่อนจึงจะขอปิดงานได้`,
+          code: "need_quote", slot: "quotationFiles", slotLabel: "ใบเสนอราคาเพิ่มเติม", items: quoteItems.slice(0, 12),
+          text: `AI อ่าน Service Report แล้วพบรายการที่ต้องเปลี่ยนอุปกรณ์/เสนอราคา ${quoteItems.length} รายการ — ต้องแนบใบเสนอราคาเพิ่มเติมก่อนจึงจะขอปิดงานได้`,
         });
       }
       const check = {

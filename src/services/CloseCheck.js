@@ -28,7 +28,7 @@ const getClient = () => {
 /** ช่องเอกสารประจำงาน — ตรงกับ DOCUMENT_TYPES ฝั่งหน้าจอ */
 const SLOTS = [
   { key: "reportFiles", label: "Service Report", expect: "ใบ Service Report / รายงานบริการ / ใบรายงานการเข้าปฏิบัติงานของช่าง (มักเขียนด้วยลายมือ)" },
-  { key: "quotationFiles", label: "ใบเสนอราคา", expect: "ใบเสนอราคา (Quotation) — มีรายการสินค้า/ค่าแรง ราคา ยอดรวม", applicable: "quotationApplicable" },
+  { key: "quotationFiles", label: "ใบเสนอราคาเพิ่มเติม", expect: "ใบเสนอราคา (Quotation) — มีรายการสินค้า/ค่าแรง ราคา ยอดรวม", applicable: "quotationApplicable" },
   { key: "invoiceFiles", label: "ใบวางบิล", expect: "ใบวางบิล / ใบแจ้งหนี้ / ใบกำกับภาษี / ใบเสร็จ (เอกสารเรียกเก็บเงิน)", applicable: "invoiceApplicable" },
   { key: "completionFiles", label: "ใบส่งมอบงาน", expect: "ใบส่งมอบงาน / ใบรับมอบงาน ที่ลูกค้าเซ็นรับ", applicable: "completionApplicable" },
 ];
