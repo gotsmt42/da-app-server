@@ -116,7 +116,7 @@ async function classify(files) {
     if (block) content.push(block);
   }
   content.push({ type: "text", text: "ตอบผ่านเครื่องมือ record_doc_types ครบทุกไฟล์" });
-  const res = await createMessage(getClient(), {
+  const params = {
     model: HAIKU,
     max_tokens: 1500,
     thinking: { type: "disabled" },
@@ -128,12 +128,23 @@ async function classify(files) {
     tools: [CLASSIFY_TOOL],
     tool_choice: { type: "auto" },
     messages: [{ role: "user", content }],
-  });
+  };
+  let res;
+  try {
+    res = await createMessage(getClient(), params);
+  } catch (err) {
+    // รุ่นที่ไม่รับการปิดการคิด/ตั้งระดับ — ส่งใหม่แบบค่าเริ่มต้น (ไม่ปล่อยให้การตรวจล้มทั้งชุด)
+    if (err?.status !== 400 || !/thinking|effort|output_config/i.test(String(err?.error?.error?.message || err?.message || ""))) throw err;
+    const { thinking, output_config: oc, ...rest } = params;
+    res = await createMessage(getClient(), rest);
+  }
   const call = res.content.find((b) => b.type === "tool_use" && b.name === CLASSIFY_TOOL.name);
-  const out = (call?.input?.files || []).map((x) => {
-    const f = list[(Number(x.no) || 0) - 1];
-    return f ? { ...f, matches: ["yes", "no", "unsure"].includes(x.matches) ? x.matches : "unsure", detected: String(x.detected || "").slice(0, 80) } : null;
-  }).filter(Boolean);
+  // ⚠️ ทุกไฟล์ต้องมีผล — ไฟล์ที่ AI ไม่ได้ตอบ = ยืนยันไม่ได้ (ไม่ปล่อยผ่านเงียบๆ)
+  const answers = call?.input?.files || [];
+  const out = list.map((f, i) => {
+    const x = answers.find((a) => Number(a?.no) === i + 1);
+    return { ...f, matches: x && ["yes", "no", "unsure"].includes(x.matches) ? x.matches : "unsure", detected: String(x?.detected || (x ? "" : "AI ไม่ได้ตอบไฟล์นี้")).slice(0, 80) };
+  });
   const u = res.usage || {};
   // 💰 Haiku 5.5: เข้า $0.10 · ออก $0.50 ต่อล้าน token
   return { results: out, usage: { input: u.input_tokens || 0, output: u.output_tokens || 0, costUsd: Math.round(((u.input_tokens || 0) * 0.1 + (u.output_tokens || 0) * 0.5) / 100) / 10000 } };
