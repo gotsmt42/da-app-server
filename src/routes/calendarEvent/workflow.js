@@ -219,6 +219,98 @@ module.exports = (router) => {
     }
   });
 
+  /** บันทึกผล AI อ่าน Service Report เป็น "ร่าง" (ใช้ทั้งกดอ่านเอง และตรวจอัตโนมัติตอนขอปิดงาน) */
+  const srSaveScan = async (ctx, files, scanned, by) => {
+    const ServiceReportScan = require("../../services/ServiceReportScan");
+    const ServiceReportSummary = require("../../models/ServiceReportSummary");
+    const { usage, ...result } = scanned;
+    const summary = await ServiceReportSummary.findOneAndUpdate(
+      { jobKey: ctx.jobKey },
+      {
+        $set: {
+          eventIds: ctx.eventIds, status: "draft", aiData: result, data: result,
+          files: files.map((f) => ({ fileName: f.fileName, fileUrl: f.fileUrl })),
+          model: ServiceReportScan.MODEL, scannedAt: new Date(), scannedBy: by,
+          editedAt: null, editedBy: "", confirmedAt: null, confirmedBy: "",
+          usage: usage || null,
+        },
+        // 💰 ค่าใช้จ่ายสะสมของงานนี้ (อ่านใหม่ = จ่ายเพิ่ม) — แสดงในหน้าต่างสรุป
+        $inc: { scanCount: 1, totalCostUsd: usage?.costUsd || 0 },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    ).lean();
+    await srMark(ctx.eventIds, "draft", by);
+    return summary;
+  };
+
+  /**
+   * POST /:id/close-check — ตรวจเอกสารประจำงานด้วย AI ก่อนขอปิดงาน (ดู services/CloseCheck.js)
+   * ✅ (26 ต.ค. 2569 ผู้ใช้) ประเภทเอกสารผิดช่อง · Service Report อ่านไม่ได้ · พบรายการต้องเสนอราคาแต่ยังไม่มีใบเสนอราคา = ไม่ผ่าน
+   *    💰 ไฟล์ไม่เปลี่ยนจากครั้งก่อน = ส่งผลเดิมกลับ (ไม่เรียก AI) · Service Report ใช้สรุปเดิมถ้าไฟล์ชุดเดียวกัน
+   *    ผลเก็บที่ทุกวันของงาน (closeCheck) — PUT /:id ใช้ผลนี้ตัดสินว่าขอปิดงานได้ไหม
+   */
+  router.post("/:id/close-check", verifyToken, async (req, res) => {
+    try {
+      const ctx = await srContext(req);
+      if (ctx.error) return res.status(ctx.error[0]).json({ message: ctx.error[1] });
+      if (!ctx.canEdit) return res.status(403).json({ message: "ตรวจเอกสารได้เฉพาะผู้เกี่ยวข้องกับงาน" });
+      if (!require("../../services/InvoiceScan").isEnabled()) return res.json({ check: { ok: true, skipped: true, problems: [] } });
+      const CloseCheck = require("../../services/CloseCheck");
+      const ids = ctx.eventIds;
+      const sessions = await CalendarEvent.find({ _id: { $in: ids } })
+        .select("reportFiles quotationFiles invoiceFiles completionFiles quotationApplicable invoiceApplicable completionApplicable closeCheck").lean();
+      const key = CloseCheck.filesKey(sessions);
+      const prev = sessions.find((s) => s.closeCheck?.key)?.closeCheck;
+      if (prev?.key === key && !req.body?.force) return res.json({ check: prev, cached: true });
+
+      // 1) ประเภทเอกสารทุกช่อง (Haiku รูปย่อ)
+      const { results, usage: clsUsage } = await CloseCheck.classify(CloseCheck.collectFiles(sessions));
+      const problems = results.filter((r) => r.matches === "no").map((r) => ({
+        code: "wrong_type", slot: r.slot, slotLabel: r.slotLabel, fileName: r.fileName, fileUrl: r.fileUrl,
+        text: `ช่อง “${r.slotLabel}” มีไฟล์ “${r.fileName || "ไม่มีชื่อ"}” ที่ดูเป็น ${r.detected || "เอกสารอื่น"} — ไม่ใช่${r.slotLabel} ให้ลบแล้วแนบไฟล์ที่ถูกต้อง`,
+      }));
+
+      // 2) เนื้อหา Service Report (อ่านอัตโนมัติ ถ้ายังไม่เคยอ่านหรือไฟล์เปลี่ยน)
+      const ServiceReportScan = require("../../services/ServiceReportScan");
+      const ServiceReportSummary = require("../../models/ServiceReportSummary");
+      const srFiles = ServiceReportScan.scannableFiles(ctx.files);
+      let summary = await ServiceReportSummary.findOne({ jobKey: ctx.jobKey }).lean();
+      const same = summary && srFiles.length === (summary.files || []).length
+        && srFiles.every((f) => (summary.files || []).some((x) => x.fileUrl === f.fileUrl));
+      let srCost = 0;
+      if (srFiles.length && !same) {
+        const scanned = await ServiceReportScan.scanServiceReport(srFiles);
+        srCost = scanned.usage?.costUsd || 0;
+        summary = await srSaveScan(ctx, srFiles, scanned, `${srActor(req)} (ตรวจอัตโนมัติตอนขอปิดงาน)`);
+      }
+      if (summary) {
+        ServiceReportScan.unreadableFiles(summary.aiData).forEach((x) => problems.push({
+          code: "sr_unreadable", slot: "reportFiles", slotLabel: "Service Report",
+          text: `Service Report ไฟล์ที่ ${x.no} ${x.status === "unreadable" ? "อ่านไม่ได้" : "อ่านได้ไม่ครบ"} (${x.note || "ภาพไม่ชัด"}) — ถ่ายใหม่ให้ชัดแล้วแนบแทน`,
+        }));
+      }
+      const quoteItems = (summary?.data?.issues || []).filter((x) => x.status === "need_quote")
+        .map((x) => [x.part, x.problem].filter(Boolean).join(" — ") + (x.qty ? ` จำนวน ${x.qty}` : "") + (x.location ? ` (${x.location})` : ""));
+      const hasQuoteFile = sessions.some((s) => (s.quotationFiles || []).length > 0);
+      if (quoteItems.length && !hasQuoteFile) {
+        problems.push({
+          code: "need_quote", slot: "quotationFiles", slotLabel: "ใบเสนอราคา", items: quoteItems.slice(0, 12),
+          text: `AI อ่าน Service Report แล้วพบรายการที่ต้องเปลี่ยนอุปกรณ์/เสนอราคา ${quoteItems.length} รายการ — ต้องแนบใบเสนอราคาก่อนจึงจะขอปิดงานได้`,
+        });
+      }
+      const check = {
+        key, at: new Date(), by: srActor(req), ok: problems.length === 0, problems,
+        needQuote: quoteItems.length > 0, quoteItems: quoteItems.slice(0, 12),
+        costUsd: Math.round(((clsUsage?.costUsd || 0) + srCost) * 10000) / 10000,
+      };
+      await CalendarEvent.updateMany({ _id: { $in: ids } }, { $set: { closeCheck: check } });
+      res.json({ check });
+    } catch (err) {
+      console.error("❌ ตรวจเอกสารก่อนปิดงานไม่สำเร็จ:", err?.status, err?.message);
+      res.status(502).json({ message: require("../../services/aiFileSource").safeAiError(err) });
+    }
+  });
+
   router.get("/:id/service-report-summary", verifyToken, async (req, res) => {
     try {
       const ctx = await srContext(req);
@@ -273,24 +365,7 @@ module.exports = (router) => {
         if (reserved) await ServiceReportSummary.updateOne({ jobKey: ctx.jobKey, rescanDay: today }, { $inc: { rescansToday: -1 } }).catch(() => {});
         throw err;
       }
-      const { usage, ...result } = scanned;
-      const by = srActor(req);
-      const summary = await ServiceReportSummary.findOneAndUpdate(
-        { jobKey: ctx.jobKey },
-        {
-          $set: {
-            eventIds: ctx.eventIds, status: "draft", aiData: result, data: result,
-            files: files.map((f) => ({ fileName: f.fileName, fileUrl: f.fileUrl })),
-            model: ServiceReportScan.MODEL, scannedAt: new Date(), scannedBy: by,
-            editedAt: null, editedBy: "", confirmedAt: null, confirmedBy: "",
-            usage: usage || null,
-          },
-          // 💰 ค่าใช้จ่ายสะสมของงานนี้ (อ่านใหม่ = จ่ายเพิ่ม) — แสดงในหน้าต่างสรุป
-          $inc: { scanCount: 1, totalCostUsd: usage?.costUsd || 0 },
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      ).lean();
-      await srMark(ctx.eventIds, "draft", by);
+      const summary = await srSaveScan(ctx, files, scanned, srActor(req));
       res.json({ summary, rescanLeft: srRescanLeft(summary) });
     } catch (err) {
       console.error("❌ สรุป Service Report ด้วย AI ไม่สำเร็จ:", err?.status, err?.message);

@@ -305,6 +305,14 @@ const eventSchema = new mongoose.Schema(
      *    { action: "approve"|"reject", decidedAt, poNo, note, by, byId, at } · null = ไม่มีคำขอค้าง
      */
     quotationDecisionRequest: { type: mongoose.Schema.Types.Mixed, default: null },
+    /**
+     * ✅ (26 ต.ค. 2569) ผลตรวจเอกสารด้วย AI ก่อนขอปิดงาน (routes/calendarEvent/workflow.js POST /:id/close-check)
+     *    { key, at, by, ok, problems[{code, slot, slotLabel, fileName, text, items?}], needQuote, quoteItems[], costUsd }
+     *    key = ลายนิ้วมือชุดไฟล์ — ไฟล์เปลี่ยน = ต้องตรวจใหม่
+     */
+    closeCheck: { type: mongoose.Schema.Types.Mixed, default: null },
+    /** ขอให้แอดมินปิดงานแม้เอกสารไม่ผ่าน (เช่น ไม่มีเอกสารจริง) { reason, by, at, problems } */
+    closeOverride: { type: mongoose.Schema.Types.Mixed, default: null },
     quotationDecisionApprovedBy: { type: String, default: "" }, // แอดมินที่อนุมัติผล (คนบันทึกผลเองถ้าเป็นแอดมิน)
     quotationDecisionApprovedAt: Date,
     quotationNextFollowUpAt: Date,    // นัดติดตามครั้งถัดไป (ว่าง = ครบ 7 วันหลังติดต่อล่าสุด)

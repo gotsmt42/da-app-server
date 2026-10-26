@@ -824,6 +824,34 @@ module.exports = (router) => {
         // lastModifiedBy: req.userId, // ✅ บันทึกคนที่แก้ไขล่าสุด
       };
 
+      /**
+       * ⛔ (26 ต.ค. 2569 ผู้ใช้: "ตรวจสอบเอกสารที่อัพมาผิดประเภท บังคับเลยว่าไม่ให้ปิดงาน ... แต่ยังมีช่องทางขอปิดกับแอดมินได้"
+       *    · "ถ้าตรวจพบอุปกรณ์เสียหรือต้องเสนอราคา ต้องบังคับให้อัพใบเสนอราคาก่อนเท่านั้นถึงจะปิดงานได้")
+       *    ขอปิดงาน (ไม่ใช่แอดมิน) ต้องผ่านการตรวจเอกสารด้วย AI ของชุดไฟล์ปัจจุบัน (POST /:id/close-check)
+       *    ไม่ผ่าน = ขอปิดไม่ได้ เว้นแต่ใส่เหตุผลขอให้แอดมินพิจารณาปิดเอง (closeOverrideReason) — แอดมินเห็นปัญหาตอนอนุมัติ
+       *    ไม่มีคีย์ AI ที่เซิร์ฟเวอร์ = ข้ามการตรวจ (ระบบอื่นทำงานตามเดิม)
+       */
+      if (req.body.closeRequested === true && !existingEvent.closeRequested && !isAdminOrManager
+        && require("../../services/InvoiceScan").isEnabled()) {
+        const CloseCheck = require("../../services/CloseCheck");
+        const groupSessions = existingEvent.jobGroupId
+          ? await CalendarEvent.find({ jobGroupId: existingEvent.jobGroupId })
+            .select("reportFiles quotationFiles invoiceFiles completionFiles quotationApplicable invoiceApplicable completionApplicable").lean()
+          : [existingEvent.toObject ? existingEvent.toObject() : existingEvent];
+        const key = CloseCheck.filesKey(groupSessions);
+        const chk = existingEvent.closeCheck;
+        const overrideReason = String(req.body.closeOverrideReason || "").trim().slice(0, 500);
+        if (!chk || chk.key !== key) {
+          return res.status(409).json({ message: "ต้องให้ระบบตรวจเอกสารก่อนขอปิดงาน (เอกสารมีการเปลี่ยนแปลง) — กดขอปิดงานอีกครั้ง", needCheck: true });
+        }
+        if (!chk.ok) {
+          if (!overrideReason) return res.status(409).json({ message: "เอกสารยังไม่ผ่านการตรวจ — แก้ไขเอกสาร หรือขอให้แอดมินพิจารณาปิดงาน (ระบุเหตุผล)", problems: chk.problems || [] });
+          newEvent.closeOverride = { reason: overrideReason, by: resubmitterName, at: new Date(), problems: chk.problems || [] };
+        } else {
+          newEvent.closeOverride = null;
+        }
+      }
+
       // ✅ สิทธิ์ตรวจสอบไปแล้วด้านบน (isOwner / isAssigned / admin) จึงใช้แค่ _id พอ
       let updatedEvent = await CalendarEvent.findOneAndUpdate({ _id: id }, newEvent, {
         new: true,
