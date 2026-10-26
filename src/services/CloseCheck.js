@@ -52,6 +52,7 @@ function filesKey(sessions) {
   const a = sessions[0] || {};
   const parts = collectFiles(sessions).map((f) => `${f.slot}|${f.fileUrl}`).sort();
   SLOTS.forEach((s) => s.applicable && parts.push(`${s.applicable}=${a[s.applicable]}`));
+  parts.push("rules-v2"); // เปลี่ยนเกณฑ์ตรวจ = ผลเดิมใช้ไม่ได้ ต้องตรวจใหม่
   return crypto.createHash("sha1").update(parts.join("\n")).digest("hex").slice(0, 20);
 }
 

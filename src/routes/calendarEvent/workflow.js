@@ -265,9 +265,13 @@ module.exports = (router) => {
 
       // 1) ประเภทเอกสารทุกช่อง (Haiku รูปย่อ)
       const { results, usage: clsUsage } = await CloseCheck.classify(CloseCheck.collectFiles(sessions));
-      const problems = results.filter((r) => r.matches === "no").map((r) => ({
-        code: "wrong_type", slot: r.slot, slotLabel: r.slotLabel, fileName: r.fileName, fileUrl: r.fileUrl,
-        text: `ช่อง “${r.slotLabel}” มีไฟล์ “${r.fileName || "ไม่มีชื่อ"}” ที่ดูเป็น ${r.detected || "เอกสารอื่น"} — ไม่ใช่${r.slotLabel} ให้ลบแล้วแนบไฟล์ที่ถูกต้อง`,
+      // 🔁 (26 ต.ค. 2569 ผู้ใช้: "กดขอปิดงานแล้วไม่มีการตรวจเลย ... ต้องตรวจทั้งหมด") เข้มขึ้น:
+      //    ไม่ตรงชัดเจน = ผิดประเภท · AI ยืนยันไม่ได้ (ภาพไม่ชัด/ดูไม่ออก) ก็ไม่ผ่าน — มีทางขอแอดมินพิจารณาอยู่แล้ว
+      const problems = results.filter((r) => r.matches !== "yes").map((r) => ({
+        code: r.matches === "no" ? "wrong_type" : "unsure_type", slot: r.slot, slotLabel: r.slotLabel, fileName: r.fileName, fileUrl: r.fileUrl,
+        text: r.matches === "no"
+          ? `ไฟล์ “${r.fileName || "ไม่มีชื่อ"}” ดูเป็น ${r.detected || "เอกสารอื่น"} — ไม่ใช่${r.slotLabel} ให้ลบแล้วแนบไฟล์ที่ถูกต้อง`
+          : `AI ยืนยันไม่ได้ว่าไฟล์ “${r.fileName || "ไม่มีชื่อ"}” เป็น${r.slotLabel} (ดูเหมือน: ${r.detected || "ไม่ชัด"}) — ตรวจว่าแนบถูกช่องและถ่ายให้ชัด`,
       }));
 
       // 2) เนื้อหา Service Report (อ่านอัตโนมัติ ถ้ายังไม่เคยอ่านหรือไฟล์เปลี่ยน)
@@ -307,6 +311,9 @@ module.exports = (router) => {
       }
       const check = {
         key, at: new Date(), by: srActor(req), ok: problems.length === 0, problems,
+        // ผลรายไฟล์ (ให้หน้าจอแสดงว่า AI เห็นอะไร — ผ่านก็เห็นว่าตรวจจริง)
+        files: results.map((r) => ({ slotLabel: r.slotLabel, fileName: r.fileName, matches: r.matches, detected: r.detected })),
+        srFound: summary ? summary.aiData?.found !== false : null,
         needQuote: quoteItems.length > 0, quoteItems: quoteItems.slice(0, 12),
         costUsd: Math.round(((clsUsage?.costUsd || 0) + srCost) * 10000) / 10000,
       };
