@@ -28,6 +28,9 @@ const parseDay = (v, withTime = false) => {
   return Number.isNaN(d.getTime()) ? null : d;
 };
 
+// ผู้อนุมัติผล = ระดับที่มีสิทธิ์ editFinance (ตั้งในตารางสิทธิ์) · ไม่มีการตั้ง = หัวหน้า/ผู้จัดการ
+const financeRanks = () => require("../../config/roles").effectiveCapabilities().editFinance || SUPERVISOR_ROLES;
+
 module.exports = (router) => {
   // ✅ บันทึกการติดตามลูกค้าเรื่องใบเสนอราคาแบบเป็นครั้งๆ (ครั้งที่ 1, 2, 3...) พร้อมหลักฐานแนบได้ถ้ามี
   // (หน้า /quotations) — ผู้ใช้ต้องการให้เป็นสิทธิ์ของ "ผู้รับผิดชอบ" (responsiblePerson) โดยเฉพาะ ไม่ใช่
@@ -61,8 +64,10 @@ module.exports = (router) => {
       const channel = FOLLOWUP_CHANNELS.includes(req.body.channel) ? req.body.channel : "";
       const nextAt = parseDay(req.body.nextFollowUpAt);
 
+      const rev = Number(existingEvent.quotationRevision) || 0;
       const followUp = {
-        attemptNumber: (existingEvent.quotationFollowUps?.length || 0) + 1,
+        attemptNumber: (existingEvent.quotationFollowUps || []).filter((f) => (Number(f.revision) || 0) === rev).length + 1,
+        revision: rev,
         note: note.trim(),
         channel,
         contactedAt: new Date(),
@@ -97,7 +102,7 @@ module.exports = (router) => {
 
       const logEntry = {
         action: "quotation_followup",
-        detail: `บันทึกการติดตามครั้งที่ ${followUp.attemptNumber}`,
+        detail: `บันทึกการติดตามครั้งที่ ${followUp.attemptNumber}${rev ? ` (ฉบับแก้ไข Rev.${rev})` : ""}`,
         userId,
         userName: followUp.userName,
         timestamp: followUp.contactedAt,
@@ -110,7 +115,21 @@ module.exports = (router) => {
         { new: true },
       );
 
-      res.status(200).json({ event: updatedEvent });
+      // ✅ (26 ต.ค. 2569 ผู้ใช้: "มีแจ้งเตือนตอนกดบันทึกติดตาม") แจ้งผู้รับผิดชอบ/เจ้าของงาน + ฝ่ายบริหาร/การเงิน (ไม่แจ้งคนบันทึกเอง)
+      const where = [existingEvent.company, existingEvent.site].filter(Boolean).join(" · ") || existingEvent.title || "ใบเสนอราคา";
+      const payload = {
+        title: `📞 ติดตามใบเสนอราคาครั้งที่ ${followUp.attemptNumber}${rev ? ` · Rev.${rev}` : ""} — ${followUp.userName}`,
+        body: `${where}${existingEvent.quotationNo ? ` · ${existingEvent.quotationNo}` : ""}\n${followUp.note.slice(0, 120)}${nextAt ? `\nนัดติดตามครั้งถัดไป ${nextAt.toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok", day: "numeric", month: "short" })}` : ""}`,
+        url: `/finance?tab=quotations&jobId=${existingEvent._id}`,
+        tag: `quotation-followup-${existingEvent._id}`,
+      };
+      const notify = [existingEvent.responsiblePersonId, existingEvent.userId].filter((u) => u && String(u) !== String(userId)).map(String);
+      Promise.all([
+        notify.length ? sendPushToUsers(notify, payload) : null,
+        isAdminOrManager ? null : sendPushToRoles(financeRanks(), payload, [String(userId), ...notify]),
+      ]).catch((e) => console.error("❌ Push (quotation follow-up):", e?.message));
+
+      res.status(200).json({ event: updatedEvent, attemptNumber: followUp.attemptNumber, revision: rev });
     } catch (err) {
       console.error("❌ Error adding quotation follow-up:", err);
       res.status(500).json({ message: "บันทึกการติดตามไม่สำเร็จ" });
@@ -148,7 +167,7 @@ module.exports = (router) => {
         const out = await QuotationScan.autoFillQuotation(ev._id);
         return res.json({ result: out?.result || null, filled: out?.filled || [] });
       }
-      const result = await QuotationScan.scanQuotationFiles(ev.quotationFiles);
+      const result = await QuotationScan.scanQuotationFiles((ev.quotationFiles || []).filter((f) => !f.supersededAt));
       res.json({ result });
     } catch (err) {
       console.error("❌ อ่านใบเสนอราคาด้วย AI ไม่สำเร็จ:", err?.status, err?.message);
@@ -427,8 +446,6 @@ module.exports = (router) => {
     quotationNextFollowUpAt: null, quotationDecisionRequest: null,
     quotationDecisionApprovedBy: approvedBy, quotationDecisionApprovedAt: now,
   });
-  // ผู้อนุมัติผล = ระดับที่มีสิทธิ์ editFinance (ตั้งในตารางสิทธิ์) · ไม่มีการตั้ง = หัวหน้า/ผู้จัดการ
-  const financeRanks = () => require("../../config/roles").effectiveCapabilities().editFinance || SUPERVISOR_ROLES;
 
   router.put("/:id/quotation", verifyToken, async (req, res) => {
     try {
@@ -484,6 +501,7 @@ module.exports = (router) => {
       }
       let log = changes.length ? ["quotation_updated", `แก้ข้อมูลใบเสนอราคา (${changes.join(" · ")})`] : null;
       let pushAfter = null;
+      let pushHistory = null;
       const action = String(body.action || "");
       if (action) {
         const hasFiles = (anchor.quotationFiles || []).length > 0;
@@ -516,6 +534,14 @@ module.exports = (router) => {
             }, [String(req.userId)]);
           } else {
             Object.assign($set, applyDecision(decision, actorName, actorName, now));
+            const others = [anchor.responsiblePersonId, anchor.userId].filter((u) => u && String(u) !== String(req.userId)).map(String);
+            if (others.length) {
+              pushAfter = () => sendPushToUsers(others, {
+                title: `${action === "approve" ? "🎉" : "📕"} ใบเสนอราคา: ${label}`,
+                body: `${[anchor.company, anchor.site].filter(Boolean).join(" · ")}${anchor.quotationNo ? ` · ${anchor.quotationNo}` : ""}${decision.poNo ? ` · PO ${decision.poNo}` : ""}${note ? ` · ${note}` : ""} · บันทึกโดย ${actorName}`,
+                url: `/finance?tab=quotations&jobId=${anchor._id}`, tag: `quotation-decision-${anchor._id}`,
+              });
+            }
             log = action === "approve"
               ? ["quotation_approved", `ลูกค้าอนุมัติใบเสนอราคา${decision.poNo ? ` (PO ${decision.poNo})` : ""}`]
               : ["quotation_rejected", `ลูกค้าปฏิเสธใบเสนอราคา — ${note}`];
@@ -559,6 +585,52 @@ module.exports = (router) => {
           if (!isFinance && String(r.byId) !== String(req.userId)) return res.status(403).json({ message: "ยกเลิกได้เฉพาะคนที่ส่งคำขอ" });
           $set.quotationDecisionRequest = null;
           log = ["quotation_decision_request_cancelled", `ยกเลิกคำขอบันทึกผล "${r.action === "approve" ? "ได้งาน" : "ไม่ได้งาน"}"`];
+        } else if (action === "revise") {
+          // ✅ (26 ต.ค. 2569) ลูกค้าให้แก้ไข → ออกใบเสนอราคาฉบับใหม่ · ฉบับเดิมเก็บเป็นประวัติ (ล็อก) · แนบฉบับใหม่แล้วเริ่มนับติดตามใหม่
+          const st = anchor.quotationStatus;
+          if (!["sent", "rejected", "approved"].includes(st)) {
+            return res.status(409).json({ message: st === "revising" ? "กำลังออกฉบับแก้ไขอยู่แล้ว — แนบไฟล์ฉบับใหม่ได้เลย" : "ใบนี้ยังไม่ได้ส่งลูกค้า — แก้/เปลี่ยนไฟล์ได้เลย ไม่ต้องออกฉบับใหม่" });
+          }
+          if (st === "approved" && !isFinance) return res.status(403).json({ message: "ใบที่ได้งานแล้ว ออกฉบับแก้ไขได้เฉพาะฝ่ายบริหาร/การเงิน" });
+          if (anchor.quotationDecisionRequest?.action) return res.status(409).json({ message: "มีคำขอบันทึกผลรออนุมัติอยู่ — ยกเลิกคำขอก่อนออกฉบับแก้ไข" });
+          const reason = str(body.reason, 300);
+          if (!reason) return res.status(400).json({ message: "กรุณาระบุสิ่งที่ลูกค้าขอแก้ไข" });
+          const rev = Number(anchor.quotationRevision) || 0;
+          const groupFilter = anchor.jobGroupId ? { jobGroupId: anchor.jobGroupId } : { _id: anchor._id };
+          const sessions = await CalendarEvent.find(groupFilter).select("quotationFiles").lean();
+          const oldFiles = sessions.flatMap((s) => s.quotationFiles || []).filter((f) => !f.supersededAt);
+          if (!oldFiles.length) return res.status(409).json({ message: "ไม่พบไฟล์ใบเสนอราคาฉบับปัจจุบัน" });
+          pushHistory = {
+            rev, quotationNo: anchor.quotationNo || "", amount: anchor.quotationAmount ?? null,
+            quotationDate: anchor.quotationDate || null, sentAt: anchor.quotationSentAt || null, status: st,
+            decisionNote: anchor.quotationDecisionNote || "", poNo: anchor.quotationPoNo || "",
+            followUps: (anchor.quotationFollowUps || []).filter((f) => (Number(f.revision) || 0) === rev).length,
+            files: oldFiles.map((f) => ({ _id: String(f._id), fileName: f.fileName, fileUrl: f.fileUrl, fileType: f.fileType })),
+            reason, by: actorName, byId: String(req.userId), at: now,
+          };
+          // ไฟล์ฉบับเดิมทุกวันของงาน → ประทับว่าถูกแทนแล้ว (ยังดู/ดาวน์โหลดได้ ลบไม่ได้)
+          await CalendarEvent.updateMany(
+            { ...groupFilter, "quotationFiles.0": { $exists: true } },
+            { $set: { "quotationFiles.$[f].supersededAt": now } },
+            { arrayFilters: [{ "f.supersededAt": null }] },
+          );
+          Object.assign($set, {
+            quotationRevision: rev + 1, quotationStatus: "revising", quotationSentAt: null,
+            quotationDecisionAt: null, quotationDecisionBy: null, quotationDecisionNote: "", quotationPoNo: "",
+            quotationNextFollowUpAt: null, quotationDecisionRequest: null, quotationDecisionApprovedBy: "", quotationDecisionApprovedAt: null,
+            // ให้ AI อ่านเลขที่/วันที่/มูลค่า/ผู้ติดต่อจากฉบับใหม่ทับค่าฉบับเดิม (แก้เองทีหลังได้)
+            quotationAiFilled: { ...(anchor.toObject().quotationAiFilled || {}), fields: ["quotationNo", "quotationDate", "quotationValidUntil", "quotationAmount", "quotationContact"] },
+          });
+          log = ["quotation_revising", `ออกใบเสนอราคาฉบับแก้ไข Rev.${rev + 1} — ลูกค้าขอแก้: ${reason} (ฉบับเดิม Rev.${rev}${anchor.quotationNo ? ` ${anchor.quotationNo}` : ""} เก็บเป็นประวัติ)`];
+          pushAfter = () => {
+            const payload = {
+              title: `✏️ ${actorName} ออกใบเสนอราคาฉบับแก้ไข Rev.${rev + 1}`,
+              body: `${[anchor.company, anchor.site].filter(Boolean).join(" · ") || anchor.title || "ใบเสนอราคา"}${anchor.quotationNo ? ` · เดิม ${anchor.quotationNo}` : ""}\nลูกค้าขอแก้: ${reason}`,
+              url: `/finance?tab=quotations&jobId=${anchor._id}`, tag: `quotation-revise-${anchor._id}`,
+            };
+            const others = [anchor.responsiblePersonId, anchor.userId].filter((u) => u && String(u) !== String(req.userId)).map(String);
+            return Promise.all([others.length ? sendPushToUsers(others, payload) : null, sendPushToRoles(financeRanks(), payload, [String(req.userId), ...others])]);
+          };
         } else if (action === "reset") {
           if (!isFinance) return res.status(403).json({ message: "ย้อนสถานะใบเสนอราคาได้เฉพาะฝ่ายบริหาร/การเงิน" });
           Object.assign($set, {
@@ -575,7 +647,7 @@ module.exports = (router) => {
 
       // ✅ งานหลายวัน (jobGroupId เดียวกัน) = ใบเสนอราคาใบเดียว — บันทึกทุกวันของงานพร้อมกัน
       const filter = anchor.jobGroupId ? { jobGroupId: anchor.jobGroupId } : { _id: anchor._id };
-      await CalendarEvent.updateMany(filter, { $set });
+      await CalendarEvent.updateMany(filter, pushHistory ? { $set, $push: { quotationRevisions: pushHistory } } : { $set });
       if (log) {
         await CalendarEvent.updateOne({ _id: anchor._id }, {
           $push: { activityLog: { action: log[0], detail: log[1], userId: String(req.userId), userName: actorName, timestamp: now } },

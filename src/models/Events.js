@@ -332,6 +332,7 @@ const eventSchema = new mongoose.Schema(
         evidenceFileName: String,
         evidenceFileUrl: String,
         evidenceFileType: String,
+        revision: Number, // ✅ (26 ต.ค. 2569) ติดตามฉบับไหน — ออกฉบับแก้ไข = นับครั้งที่ใหม่
       },
     ],
 
@@ -343,8 +344,20 @@ const eventSchema = new mongoose.Schema(
         fileUrl: String,
         fileType: String,
         uploadedAt: { type: Date, default: Date.now },
+        // ✅ (26 ต.ค. 2569) ฉบับของใบเสนอราคา (0 = ฉบับแรก) · supersededAt = ถูกแทนด้วยฉบับแก้ไขแล้ว (ล็อก ลบไม่ได้ เก็บเป็นประวัติ)
+        revision: Number,
+        supersededAt: Date,
       },
     ],
+    /**
+     * ✅ (26 ต.ค. 2569 ผู้ใช้: "เสนอราคาไปแล้วลูกค้าให้แก้ไขรายละเอียด จำเป็นต้องออกใบเสนอราคาใบใหม่ ... เอกสารเดิมที่ส่งไปแล้วแก้ไขไม่ได้")
+     *    quotationRevision = ฉบับปัจจุบัน (0 = ฉบับแรก) · ออกฉบับแก้ไข = PUT /:id/quotation action "revise"
+     *    quotationRevisions = ประวัติฉบับเดิม [{ rev, quotationNo, amount, sentAt, status, followUps, files[], reason, by, at }]
+     */
+    quotationRevision: { type: Number, default: 0 },
+    quotationRevisions: { type: [mongoose.Schema.Types.Mixed], default: undefined },
+    /** ✅ (26 ต.ค. 2569) งานรับเข้าที่อิงเข้ากับงานในตารางนี้ (POST /:id/link-intake) [{ jobNo, title, at, by }] */
+    intakeLinks: { type: [mongoose.Schema.Types.Mixed], default: undefined },
     // ✅ (19 ต.ค. 2569 ผู้ใช้: "อยากให้แนบหรือกรอกเอกสารภายหลังกดได้งาน หรือไม่ได้งานด้วย")
     //    เอกสารผลลัพธ์ของใบเสนอราคา — PO/หนังสือตอบรับ (ได้งาน) · อีเมล/หนังสือปฏิเสธ (ไม่ได้งาน)
     quotationResultFiles: [

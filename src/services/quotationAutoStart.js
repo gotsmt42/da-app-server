@@ -74,8 +74,31 @@ async function syncQuotationStart(scope = {}) {
   return started;
 }
 
+/**
+ * ✅ (26 ต.ค. 2569) ใบที่กำลังออกฉบับแก้ไข (revising) + แนบไฟล์ฉบับใหม่แล้ว → เริ่มนับติดตามใหม่ทันที (ไม่ต้องกดเอง)
+ * @param {string} eventId วันใดก็ได้ของงาน
+ */
+async function restartRevisedQuotation(eventId) {
+  const ev = await CalendarEvent.findById(eventId).select("_id jobGroupId quotationStatus quotationRevision").lean();
+  if (!ev || ev.quotationStatus !== "revising") return false;
+  const filter = ev.jobGroupId ? { jobGroupId: ev.jobGroupId } : { _id: ev._id };
+  const rows = await CalendarEvent.find(filter).select("quotationFiles").lean();
+  const fresh = rows.flatMap((r) => r.quotationFiles || []).filter((f) => !f.supersededAt);
+  if (!fresh.length) return false;
+  const sentAt = earliestDate(...fresh.map((f) => f.uploadedAt)) || new Date();
+  const res = await CalendarEvent.updateMany({ ...filter, quotationStatus: "revising" }, { $set: { quotationStatus: "sent", quotationSentAt: sentAt } });
+  if (res.modifiedCount) {
+    await CalendarEvent.updateOne({ _id: ev._id }, {
+      $push: { activityLog: { action: "quotation_sent", detail: `แนบใบเสนอราคาฉบับแก้ไข Rev.${ev.quotationRevision || 0} แล้ว — เริ่มนับติดตามใหม่`, userId: "", userName: "ระบบ", timestamp: new Date() } },
+    });
+  }
+  return res.modifiedCount > 0;
+}
+const restartRevisedQuotationSafe = (id) =>
+  restartRevisedQuotation(id).catch((err) => { console.error("❌ เริ่มนับฉบับแก้ไขไม่สำเร็จ:", err.message); return false; });
+
 /** ล้มเหลวต้องไม่ทำให้คำขอหลัก (อัปไฟล์/แก้งาน) พัง — คืน 0 แทนการโยน error */
 const syncQuotationStartSafe = (scope) =>
   syncQuotationStart(scope).catch((err) => { console.error("❌ เริ่มนับติดตามใบเสนอราคาไม่สำเร็จ:", err.message); return 0; });
 
-module.exports = { syncQuotationStart, syncQuotationStartSafe };
+module.exports = { syncQuotationStart, syncQuotationStartSafe, restartRevisedQuotation, restartRevisedQuotationSafe };

@@ -168,8 +168,10 @@ async function autoFillQuotation(eventId) {
   if (!isEnabled()) return null;
   const CalendarEvent = require("../models/Events");
   const ev = await CalendarEvent.findById(eventId).lean();
-  if (!ev || !scannableFiles(ev.quotationFiles).length) return null;
-  const r = await scanQuotationFiles(ev.quotationFiles);
+  // ✅ (26 ต.ค. 2569) อ่านเฉพาะฉบับปัจจุบัน — ฉบับเดิมที่ถูกแทนแล้ว (supersededAt) ไม่นับ
+  const files = (ev?.quotationFiles || []).filter((f) => !f.supersededAt);
+  if (!ev || !scannableFiles(files).length) return null;
+  const r = await scanQuotationFiles(files);
 
   const aiOwned = new Set(ev.quotationAiFilled?.fields || []);
   const day = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? new Date(`${v}T00:00:00+07:00`) : null);

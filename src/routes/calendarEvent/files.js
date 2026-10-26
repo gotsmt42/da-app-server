@@ -4,7 +4,7 @@
  * แยกออกมาจาก routes/calendarEvent.js เดิมที่ยาว 2,708 บรรทัดในไฟล์เดียว (29 route)
  * ⚠️ ลำดับการประกาศ route ภายในไฟล์นี้ = ลำดับเดิม ห้ามสลับ (ดูเหตุผลที่ index.js)
  */
-const { syncQuotationStartSafe } = require("../../services/quotationAutoStart");
+const { syncQuotationStartSafe, restartRevisedQuotationSafe } = require("../../services/quotationAutoStart");
 const {
   CalendarEvent,
   verifyToken,
@@ -111,6 +111,8 @@ module.exports = (router) => {
         fileType: fileType,
         uploadedAt: new Date(),
         ...(type === "sitePhoto" || isIntakeDoc || type === "quotationResult" ? { uploadedBy: [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") } : {}),
+        // ✅ (26 ต.ค. 2569) ใบเสนอราคา = ประทับฉบับปัจจุบัน (Rev.N) ของงาน
+        ...(type === "quotation" ? { revision: Number(eventForLock.quotationRevision) || 0 } : {}),
         ...(isIntakeDoc ? { source: "intake", sourceLabel: `เอกสารรับงาน · ${INTAKE_DOC_LABEL[eventForLock.intakeDocType] || "เอกสาร"}${eventForLock.intakeDocNo ? ` ${eventForLock.intakeDocNo}` : ""}` } : {}),
       };
 
@@ -130,7 +132,10 @@ module.exports = (router) => {
       );
 
       // ✅ แนบใบเสนอราคาของงานที่ส่งงานแล้ว = เริ่มนับติดตามทันที (services/quotationAutoStart.js)
-      if (type === "quotation") await syncQuotationStartSafe({ ids: [eventId] });
+      if (type === "quotation") {
+        await syncQuotationStartSafe({ ids: [eventId] });
+        await restartRevisedQuotationSafe(eventId); // กำลังออกฉบับแก้ไข + แนบฉบับใหม่ = เริ่มนับติดตามใหม่
+      }
 
       const savedFilesForAi = updatedEvent[arrField] || [];
       // ✅ (19 ต.ค. 2569) แนบใบเสนอราคา → AI อ่านแล้วเติมช่องที่ยังว่างให้เอง (ทำเบื้องหลัง ไม่ให้การอัปโหลดช้า)
@@ -175,6 +180,11 @@ module.exports = (router) => {
       // 🔒 (10 ต.ค. 2569) ไฟล์ที่ผูกมาจากคำขอลงงาน ลบจากฝั่งงานไม่ได้ — ต้นฉบับเป็นของใบคำขอ (services/dispatchFiles.js)
       if (type === "sitePhoto" && (eventForLock.sitePhotoFiles || []).some((f) => String(f._id) === String(fileId) && f.source === "dispatch")) {
         return res.status(400).json({ message: "ไฟล์นี้มาจากคำขอลงงาน — ลบได้ที่ใบคำขอเท่านั้น" });
+      }
+
+      // 🔒 (26 ต.ค. 2569) ใบเสนอราคาฉบับเดิมที่ส่งลูกค้าไปแล้ว (ถูกแทนด้วยฉบับแก้ไข) = เอกสารประวัติ ลบไม่ได้
+      if (type === "quotation" && (eventForLock.quotationFiles || []).some((f) => String(f._id) === String(fileId) && f.supersededAt)) {
+        return res.status(400).json({ message: "ไฟล์นี้เป็นใบเสนอราคาฉบับเดิมที่ส่งลูกค้าไปแล้ว — เก็บไว้เป็นประวัติ ลบไม่ได้" });
       }
 
       // ✅ ลบไฟล์เดียวออกจาก array ตาม _id ของไฟล์นั้น ไม่กระทบไฟล์อื่นในชนิดเดียวกัน

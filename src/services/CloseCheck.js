@@ -39,7 +39,7 @@ function collectFiles(sessions) {
   const out = [];
   SLOTS.forEach((slot) => {
     sessions.flatMap((s) => s[slot.key] || []).forEach((f) => {
-      if (!f?.fileUrl || seen.has(f.fileUrl)) return;
+      if (!f?.fileUrl || f.supersededAt || seen.has(f.fileUrl)) return; // ใบเสนอราคาฉบับเดิม (ถูกแทนแล้ว) ไม่ตรวจซ้ำ
       seen.add(f.fileUrl);
       out.push({ slot: slot.key, slotLabel: slot.label, fileName: f.fileName || "", fileUrl: f.fileUrl, fileType: f.fileType || "" });
     });

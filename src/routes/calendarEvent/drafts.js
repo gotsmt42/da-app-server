@@ -12,6 +12,7 @@ const {
   SUPERVISOR_ROLES,
   crypto,
   sendPushToRoles,
+  sendPushToUsers,
   findMutualOverlaps,
   findDuplicateContractRound,
   findDuplicateContractNo,
@@ -647,6 +648,112 @@ module.exports = (router) => {
   // ✅ ย้ายงานที่ลงตารางไปแล้วกลับไปเป็น "วางแผนล่วงหน้า" (unscheduled) — ใช้ตอนอยากเอาวันที่ออก
   // กลับไปอยู่ในแผงงานล่วงหน้าเหมือนเดิม โดยไม่ต้องลบทิ้งทั้งงาน (ปุ่ม "ย้ายไปแผนล่วงหน้า" ใน
   // EditEvent.js และตอนลากงานจากปฏิทินไปวางบนแผงงานล่วงหน้า)
+  /**
+   * ✅ (26 ต.ค. 2569 ผู้ใช้: "ลงงานในหน้างานเข้า รับงาน แต่ช่างขอลงงานมาใหม่ โดยที่เนื้องานมาซ้ำกับที่บันทึกไว้
+   *    ... มีปุ่มลงตารางเสร็จสิ้น แล้วเลือกอิงงานในตาราง ... เชื่อมต่อข้อมูลกันได้สมบูรณ์")
+   *    งานรับเข้า (รอลงตาราง) ที่มีงานเดียวกันอยู่ในตารางแล้ว → "อิงงานในตาราง":
+   *    ข้อมูลรับงาน (ที่มา · เอกสาร · ผู้ติดต่อ · รายละเอียด · ผู้รับผิดชอบ · ใบเสนอราคา) + ไฟล์ + คอมเมนต์ + ประวัติ
+   *    ย้ายไปไว้ที่งานในตาราง (เติมเฉพาะช่องที่ยังว่าง ไม่ทับของเดิม) · ใบแจ้งงานที่ผูกใบรับงานย้ายตาม · ลบใบรับงานซ้ำทิ้ง
+   *    → หน้ารับงานติดตามงานในตารางแทน (ขั้นตอนจริงต่อจนปิดงาน) ไม่มีงานซ้ำสองใบ
+   * body: { targetId } — วันใดก็ได้ของงานในตาราง (งานหลายวัน = เติมข้อมูลระดับงานให้ทุกวัน)
+   */
+  router.post("/:id/link-intake", verifyToken, async (req, res) => {
+    try {
+      if (!can(req.user, "editAnyJob")) return res.status(403).json({ message: "อิงงานในตารางได้เฉพาะแอดมิน/ผู้จัดการ" });
+      const draft = await CalendarEvent.findById(req.params.id);
+      if (!draft) return res.status(404).json({ message: "ไม่พบงานรับเข้านี้" });
+      if (!draft.unscheduled || !draft.intakeAt || draft.intakeNote || draft.noVisit) {
+        return res.status(400).json({ message: "อิงได้เฉพาะงานรับเข้าที่ยังรอลงตาราง" });
+      }
+      if (draft.cancelledAt) return res.status(400).json({ message: "งานนี้ถูกยกเลิกแล้ว — นำกลับมาก่อน" });
+      const target = req.body?.targetId ? await CalendarEvent.findById(req.body.targetId) : null;
+      if (!target || target.unscheduled) return res.status(400).json({ message: "เลือกงานที่อยู่ในตารางแล้ว" });
+      if (target.cancelledAt) return res.status(400).json({ message: "งานที่เลือกถูกยกเลิกแล้ว" });
+      if (String(target._id) === String(draft._id)) return res.status(400).json({ message: "เลือกงานอื่น" });
+
+      const now = new Date();
+      const by = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ผู้ใช้";
+      const groupIds = target.jobGroupId
+        ? (await CalendarEvent.find({ jobGroupId: target.jobGroupId }).select("_id").lean()).map((g) => g._id)
+        : [target._id];
+      const blank = (v) => v === undefined || v === null || v === "" || v === "-";
+      const job = {};
+      if (!target.intakeAt) Object.assign(job, { intakeAt: draft.intakeAt, intakeBy: draft.intakeBy || "" });
+      // ที่มาของงาน: งานที่ช่างลงตรง/ลงจากคำขอ (calendar/dispatch) → ใช้แผนกต้นทางจริงจากใบรับงาน
+      const AUTO_SRC = ["", "calendar", "dispatch"];
+      if (AUTO_SRC.includes(target.intakeSource || "") && !AUTO_SRC.includes(draft.intakeSource || "")) job.intakeSource = draft.intakeSource;
+      ["intakeDocType", "intakeDocNo", "dispatchNo", "contactName", "contactTel", "description", "equipment", "infoPendingNote",
+        "responsiblePerson", "responsiblePersonId", "customerId"].forEach((k) => {
+        if (blank(target[k]) && !blank(draft[k])) job[k] = draft[k];
+      });
+      if (draft.priority === "urgent" && target.priority !== "urgent") job.priority = "urgent";
+      if (!target.dueDate && draft.dueDate) job.dueDate = draft.dueDate;
+      if (target.jobValue == null && draft.jobValue != null) job.jobValue = draft.jobValue;
+      // ใบเสนอราคาที่ติดตามอยู่บนใบรับงาน → ย้ายทั้งชุด (งานในตารางยังไม่มีการติดตาม)
+      if (draft.quotationStatus && !target.quotationStatus) {
+        ["quotationStatus", "quotationSentAt", "quotationAmount", "quotationNo", "quotationDate", "quotationValidUntil", "quotationVatIncluded",
+          "quotationContact", "quotationNextFollowUpAt", "quotationApplicable", "quotationRevision", "quotationRevisions", "quotationAiFilled",
+          "quotationDecisionAt", "quotationDecisionBy", "quotationDecisionNote", "quotationPoNo", "quotationDecisionRequest"].forEach((k) => {
+          if (draft[k] !== undefined) job[k] = draft[k];
+        });
+      }
+      const link = { draftId: String(draft._id), jobNo: draft.jobNo || "", title: draft.title || "", intakeBy: draft.intakeBy || "", at: now, by };
+      await CalendarEvent.updateMany({ _id: { $in: groupIds } }, { ...(Object.keys(job).length ? { $set: job } : {}), $push: { intakeLinks: link } });
+
+      // ไฟล์ · คอมเมนต์ · ประวัติ ของใบรับงาน → ไปอยู่ที่งานในตาราง (วันที่เลือก) · ไฟล์ซ้ำ (URL เดียวกัน) ไม่เพิ่มซ้ำ
+      const plain = (x) => (x?.toObject ? x.toObject() : x);
+      const $push = {};
+      ["sitePhotoFiles", "quotationFiles", "reportFiles", "invoiceFiles", "completionFiles", "quotationResultFiles"].forEach((k) => {
+        const have = new Set((target[k] || []).map((f) => f.fileUrl));
+        const add = (draft[k] || []).map(plain).filter((f) => f?.fileUrl && !have.has(f.fileUrl));
+        if (add.length) $push[k] = { $each: add };
+      });
+      if ((draft.comments || []).length) $push.comments = { $each: draft.comments.map(plain) };
+      if (draft.quotationStatus && !target.quotationStatus && (draft.quotationFollowUps || []).length) {
+        $push.quotationFollowUps = { $each: draft.quotationFollowUps.map(plain) };
+      }
+      const tag = draft.jobNo ? `ใบรับงาน ${draft.jobNo}` : "ใบรับงาน";
+      $push.activityLog = {
+        $each: [
+          ...(draft.activityLog || []).map(plain).map((l) => ({ ...l, _id: undefined, detail: `[${tag}] ${l.detail || l.action || ""}` })),
+          {
+            userId: String(req.userId), userName: by, action: "intake_linked", timestamp: now,
+            detail: `อิงงานรับเข้า${draft.jobNo ? ` ${draft.jobNo}` : ""}${draft.intakeBy ? ` (รับงานโดย ${draft.intakeBy})` : ""} เข้ากับงานนี้ — รวมข้อมูลรับงาน/ไฟล์ไว้ที่งานนี้ · ลบใบรับงานซ้ำแล้ว`,
+          },
+        ],
+      };
+      await CalendarEvent.updateOne({ _id: target._id }, { $push });
+
+      // ใบแจ้งงานที่เคยผูกใบรับงาน → ผูกงานในตารางแทน แล้วลบใบรับงานซ้ำ
+      await require("../../models/Dispatch").updateMany({ eventId: draft._id }, { $set: { eventId: target._id } });
+      await CalendarEvent.deleteOne({ _id: draft._id });
+
+      // แจ้งคนที่เกี่ยวข้อง (ไม่แจ้งตัวเอง): คนที่ลงตาราง/หัวหน้าทีม · คนที่รับงานไว้
+      const day = target.start ? thaiDate(target.start) : "-";
+      const where = [target.title, target.site && target.site !== "-" ? target.site : target.company].filter(Boolean).join(" — ");
+      const me = String(req.userId);
+      const techIds = [target.userId, target.resPerson].filter((u) => u && String(u) !== me).map(String);
+      const intakeIds = [draft.userId].filter((u) => u && String(u) !== me && !techIds.includes(String(u))).map(String);
+      Promise.all([
+        techIds.length ? sendPushToUsers(techIds, {
+          title: `🔗 งานของคุณถูกอิงกับงานรับเข้า${draft.jobNo ? ` ${draft.jobNo}` : ""}`,
+          body: `${where} · เข้างาน ${day}\nข้อมูลรับงาน/เอกสารจากออฟฟิศรวมไว้ที่งานนี้แล้ว · โดย ${by}`,
+          url: `/operation/${target._id}`, tag: `intake-link-${target._id}`,
+        }) : null,
+        intakeIds.length ? sendPushToUsers(intakeIds, {
+          title: `🔗 งานที่คุณรับไว้ลงตารางแล้ว${draft.jobNo ? ` · ${draft.jobNo}` : ""}`,
+          body: `${where} · เข้างาน ${day}${target.jobNo ? ` · ${target.jobNo}` : ""}\nอิงกับงานที่ช่างลงตารางไว้ · โดย ${by}`,
+          url: "/jobs/intake", tag: `intake-link-${target._id}`,
+        }) : null,
+      ]).catch((err) => console.error("❌ Push notify error (intake-link):", err?.message));
+
+      res.json({ event: await CalendarEvent.findById(target._id).lean() });
+    } catch (error) {
+      console.error("❌ Error linking intake to event:", error);
+      res.status(500).json({ message: "อิงงานไม่สำเร็จ" });
+    }
+  });
+
   router.put("/:id/unschedule", verifyToken, async (req, res) => {
     try {
       const { id } = req.params;
