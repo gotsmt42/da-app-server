@@ -253,7 +253,7 @@ module.exports = (router) => {
     try {
       const ctx = await srContext(req);
       if (ctx.error) return res.status(ctx.error[0]).json({ message: ctx.error[1] });
-      if (!ctx.canEdit) return res.status(403).json({ message: "ตรวจเอกสารได้เฉพาะผู้เกี่ยวข้องกับงาน" });
+      if (!ctx.canEdit && !can(req.user, "approveJobs")) return res.status(403).json({ message: "ตรวจเอกสารได้เฉพาะผู้เกี่ยวข้องกับงาน หรือผู้อนุมัติปิดงาน" });
       if (!require("../../services/InvoiceScan").isEnabled()) return res.json({ check: { ok: true, skipped: true, problems: [] } });
       const CloseCheck = require("../../services/CloseCheck");
       const ids = ctx.eventIds;
