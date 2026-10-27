@@ -13,6 +13,10 @@
  */
 const express = require("express");
 const moment = require("moment");
+const multer = require("multer");
+const streamifier = require("streamifier");
+const { cloudinary } = require("../config/cloudinary");
+const { fileFilter, limits } = require("../config/upload");
 
 const OtRequest = require("../models/OtRequest");
 const OtWage = require("../models/OtWage");
@@ -120,7 +124,8 @@ const buildLines = async (raw, cfg) => {
     if (!date) return { error: `${no}: กรุณาระบุวันที่ทำ OT` };
     if (date > new Date(Date.now() + 31 * 86400000)) return { error: `${no}: วันที่ทำ OT ล่วงหน้าเกิน 1 เดือน` };
     // ไม่ระบุประเภท = เดาจากวันที่ (วันหยุดนักขัตฤกษ์/วันหยุดประจำสัปดาห์ → ทำงานวันหยุด หรือ OT วันหยุดถ้าเริ่มตั้งแต่ 17:30 เวลาเลิกงาน)
-    const isHoliday = Boolean(HOLIDAYS[dayKey(date)]) || cfg.restDays.includes(moment(date).utcOffset(7).day());
+    // ✅ (27 ต.ค. 2569 ผู้ใช้: "เสาร์ อาทิตย์ คือทำงานวันหยุด") เสาร์/อาทิตย์เป็นวันหยุดเสมอ + วันที่ตั้งเพิ่มในองค์กร
+    const isHoliday = Boolean(HOLIDAYS[dayKey(date)]) || [0, 6, ...cfg.restDays].includes(moment(date).utcOffset(7).day());
     const guessed = !isHoliday ? "workdayOT" : (toMin(l?.start) ?? 0) >= 17 * 60 + 30 ? "holidayOT" : "holidayWork";
     const type = OtRequest.OT_TYPES.includes(l?.type) ? l.type : guessed;
     const h = hoursOf(l?.start, l?.end, l?.breakMin);
@@ -514,6 +519,64 @@ router.get("/:id", verifyToken, async (req, res) => {
   } catch (err) {
     console.error("❌ ดึงใบ OT ไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงใบ OT ไม่สำเร็จ" });
+  }
+});
+
+// ══ หลักฐานการทำ OT (ไม่บังคับ) ═══════════════════════════════════════════════
+// ✅ (27 ต.ค. 2569 ผู้ใช้: "ให้แนบหลักฐานการทำ OT ด้วย แต่ไม่บังคับ") — รูป/เอกสาร PDF·Word·Excel
+//    แนบเพิ่มได้ตลอดจนกว่าใบจะยกเลิก/ปิดรอบ · ลบได้เฉพาะผู้ยื่นตอนใบยังแก้ได้ (รอตรวจสอบ/ถูกตีกลับ)
+const upload = multer({ storage: multer.memoryStorage(), fileFilter, limits });
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
+const MAX_FILES = 10;
+const uploadFile = (file, folder) => new Promise((resolve, reject) => {
+  const isImage = IMAGE_TYPES.includes(file.mimetype);
+  const name = Buffer.from(file.originalname || "file", "latin1").toString("utf8");
+  const stream = cloudinary.uploader.upload_stream(
+    { resource_type: isImage ? "image" : "raw", folder, public_id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}${isImage ? "" : `_${name.replace(/[^\w\-.]/g, "_")}`}` },
+    (err, r) => (err ? reject(err) : resolve({ url: r.secure_url, publicId: r.public_id, name, type: file.mimetype })),
+  );
+  streamifier.createReadStream(file.buffer).pipe(stream);
+});
+
+router.post("/:id/files", verifyToken, upload.array("files", MAX_FILES), async (req, res) => {
+  try {
+    const doc = await loadVisible(req, res);
+    if (!doc) return;
+    if (!(isOwner(req, doc) || can(req.user, "viewAllExpenses"))) return res.status(403).json({ message: "แนบหลักฐานได้เฉพาะผู้ยื่น" });
+    if (["cancelled", "paid"].includes(doc.status)) return res.status(409).json({ message: "ใบนี้ปิดแล้ว แนบหลักฐานเพิ่มไม่ได้" });
+    const files = req.files || [];
+    if (!files.length) return res.status(400).json({ message: "ไม่มีไฟล์" });
+    if ((doc.attachments || []).length + files.length > MAX_FILES) return res.status(400).json({ message: `แนบได้ไม่เกิน ${MAX_FILES} ไฟล์ต่อใบ` });
+    const me = actor(req);
+    const out = await Promise.all(files.map((f) => uploadFile(f, `ot/${doc._id}`)));
+    out.forEach((a) => doc.attachments.push({ ...a, uploadedAt: new Date(), uploadedBy: me.name }));
+    log(doc, "files", `แนบหลักฐาน ${out.length} ไฟล์`, me);
+    await doc.save();
+    res.json({ request: redact(req, doc) });
+  } catch (err) {
+    console.error("❌ แนบหลักฐาน OT ไม่สำเร็จ:", err);
+    res.status(500).json({ message: "อัปโหลดไม่สำเร็จ" });
+  }
+});
+
+router.delete("/:id/files/:fileId", verifyToken, async (req, res) => {
+  try {
+    const doc = await loadVisible(req, res);
+    if (!doc) return;
+    if (!["pending", "rejected"].includes(doc.status) || !(isOwner(req, doc) || can(req.user, "viewAllExpenses"))) {
+      return res.status(409).json({ message: "ลบหลักฐานได้เฉพาะใบที่รอตรวจสอบ/ถูกตีกลับ โดยผู้ยื่น" });
+    }
+    const f = doc.attachments.id(req.params.fileId);
+    if (!f) return res.status(404).json({ message: "ไม่พบไฟล์" });
+    const pid = f.publicId;
+    const raw = f.type && !IMAGE_TYPES.includes(f.type);
+    f.deleteOne();
+    log(doc, "files", `ลบหลักฐาน ${f.name || ""}`, actor(req));
+    await doc.save();
+    if (pid) cloudinary.uploader.destroy(pid, { resource_type: raw ? "raw" : "image" }).catch(() => {});
+    res.json({ request: redact(req, doc) });
+  } catch (err) {
+    res.status(500).json({ message: "ลบไม่สำเร็จ" });
   }
 });
 

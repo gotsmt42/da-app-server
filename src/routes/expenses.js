@@ -923,11 +923,22 @@ router.get("/jobs", verifyToken, async (req, res) => {
       const rx = new RegExp(escapeRegex(q), "i");
       and.push({ $or: [{ title: rx }, { company: rx }, { site: rx }, { docNo: rx }, { system: rx }] });
     }
+    /**
+     * ✅ (27 ต.ค. 2569 ผู้ใช้: "ให้เลือกงานได้เป็นวัน ไม่ใช่ผูกงานรวม เพราะเบิกโอทีบางวัน")
+     * ?on=YYYY-MM-DD → เฉพาะงานที่ "มีในวันนั้น" (ช่วงงานคร่อมวัน · end ของงานทั้งวันเป็นแบบไม่รวมวันสุดท้าย)
+     * เรียงตามเวลาเริ่ม — หน้าฟอร์ม OT แสดงเป็นกลุ่ม "งานในวันที่เลือก" ก่อนงานอื่น
+     */
+    const on = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.on || "")) ? String(req.query.on) : "";
+    if (on) {
+      const dayStart = new Date(`${on}T00:00:00+07:00`);
+      const next = new Date(dayStart.getTime() + 24 * 3600 * 1000);
+      and.push({ start: { $lt: next } }, { $or: [{ end: { $gt: dayStart } }, { end: null, start: { $gte: dayStart } }] });
+    }
     const query = and.length ? { ...base, $and: and } : base;
     const jobs = await CalendarEvent.find(query)
       .select("title company site docNo system start end status jobGroupId time visitCount team teamMembers contractNo contractStart contractEnd contractYears intervalMonths")
-      .sort({ start: -1 })
-      .limit(40)
+      .sort(on ? { start: 1 } : { start: -1 })
+      .limit(on ? 60 : 40)
       .lean();
 
     /**

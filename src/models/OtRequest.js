@@ -82,6 +82,8 @@ const otRequestSchema = new mongoose.Schema(
     cancelledBy: personSchema,
     cancelledAt: { type: Date, default: null },
     cancelReason: { type: String, default: "" },
+    /** หลักฐานการทำ OT (รูป/เอกสาร) — ✅ (27 ต.ค. 2569 ผู้ใช้: "ให้แนบหลักฐานการทำ OT ด้วย แต่ไม่บังคับ") */
+    attachments: [{ url: String, publicId: String, name: String, type: String, uploadedAt: { type: Date, default: Date.now }, uploadedBy: String }],
     activityLog: [{ action: String, detail: String, userId: String, userName: String, timestamp: { type: Date, default: Date.now } }],
   },
   { timestamps: true }
