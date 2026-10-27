@@ -195,6 +195,12 @@ const CAPABILITIES = {
    * ⚠️ สิทธิ์ "ยื่น" อย่างเดียว — ตรวจสอบ/อนุมัติยังต้องมี reviewExpense/approveExpense และอนุมัติใบตัวเองไม่ได้
    */
   requestPurchase: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD, ROLES.SALE],
+  /**
+   * ✅ (27 ต.ค. 2569 ผู้ใช้: "ทำระบบสต๊อกสินค้าแผนก ต้องให้กรอกใบเบิกเพื่อขอเบิก") — routes/stock.js
+   * requestStock = ยื่นใบเบิก/ยืมของจากคลังแผนกตัวเอง · manageStock = จัดการคลังทุกแผนก + อนุมัติจ่าย/รับคืน
+   */
+  requestStock: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER, ROLES.TECHNICIAN, ROLES.TECH_LEAD, ROLES.SALE],
+  manageStock: [ROLES.ADMIN, ROLES.DIRECTOR, ROLES.MANAGER],
 
   /**
    * ── ลำดับการเบิกค่าใช้จ่าย 3 ส่วน (ใช้เหมือนกันทั้งใบ Advance / ใบเคลม / ใบสำรองจ่าย) ──
@@ -394,6 +400,8 @@ const EDITABLE_CAPABILITIES = [
   "manageMasterData",
   "requestExpense",
   "requestPurchase",
+  "requestStock",
+  "manageStock",
   "reviewExpense",
   "approveExpense",
   "disburseExpense",

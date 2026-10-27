@@ -127,6 +127,8 @@ const TOPICS_BY_BASE = {
   expenses: ["expenses"],
   ot: ["ot"],
   purchase: ["purchase"],
+  // สต๊อก · ทรัพย์สินแผนก — ยอดคงเหลือ/ใบเบิก ขยับทุกหน้าจอทันที
+  stock: ["stock"],
   settings: ["settings"],
   // เนื้อหาเว็บไซต์ + คำขอจากเว็บ (ป้ายตัวเลข "คำขอใหม่" บนเมนูขยับทันทีที่ลูกค้ากดส่ง)
   web: ["website", "leads"],

@@ -22,6 +22,7 @@ const dispatchRouter = require("./dispatch");
 const expensesRouter = require("./expenses");
 const otRouter = require("./ot");
 const purchaseRouter = require("./purchase");
+const stockRouter = require("./stock");
 // ✅ ลายเซ็นอิเล็กทรอนิกส์ของพนักงาน (ตั้งค่าเอง แล้วระบบผนึกลงเอกสาร PDF ที่คนนั้นออก/อนุมัติ)
 const signaturesRouter = require("./signatures");
 // ✅ อัปเดตหน้าจอแบบเรียลไทม์ — ช่องสัญญาณ + ตัวประกาศหลังข้อมูลเปลี่ยน (services/realtime.js)
@@ -71,6 +72,8 @@ router.use("/expenses", expensesRouter);
 router.use("/ot", otRouter);
 // ✅ ใบขอซื้อสินค้า PR (ผู้ใช้สั่ง 2 ต.ค. 2569) — ดู routes/purchase.js
 router.use("/purchase", purchaseRouter);
+// ✅ สต๊อก · ทรัพย์สินแผนก (ผู้ใช้สั่ง 27 ต.ค. 2569) — ดู routes/stock.js
+router.use("/stock", stockRouter);
 router.use("/mail", mailRouter);
 router.use("/attendance", attendanceRouter);
 // ✅ เช็คอินเทอร์เน็ตเฉพาะเส้นทางนี้เส้นเดียว (ตัวเดียวที่ต้องยิงออกไปข้างนอก) ไม่ใช่ทั้งแอป

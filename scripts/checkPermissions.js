@@ -48,6 +48,8 @@ const EXPECTED = {
   // ✅ ระบบเบิก Advance / Claim — ช่างเบิกของตัวเอง หัวหน้าเบิกแทน/อนุมัติ/ดูรายงานทั้งบริษัท
   requestExpense: ["techadmin", "manager", "director", "technician", "techlead"],
   requestPurchase: ["techadmin", "manager", "director", "technician", "techlead", "sale"],
+  requestStock: ["techadmin", "manager", "director", "technician", "techlead", "sale"],
+  manageStock: ["techadmin", "manager", "director"],
   // ✅ 3 ส่วน: ส่งขอเบิก → ตรวจสอบ/อนุมัติ (แอดมินตรวจ → ผู้จัดการอนุมัติ) → อนุมัติเบิกจ่าย (ผู้จัดการ/กรรมการ)
   reviewExpense: ["techadmin", "manager"],
   approveExpense: ["manager"],

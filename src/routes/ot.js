@@ -30,7 +30,6 @@ const router = express.Router();
 // ══ ตัวช่วย ══════════════════════════════════════════════════════════════════
 
 const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
-const fullBaht = (n) => `${money(n).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท`;
 const personName = (u) => String(u?.fname || "").trim() || u?.username || "ไม่ทราบชื่อ";
 const fullNameOf = (u) => [u?.fname, u?.lname].map((x) => String(x || "").trim()).filter(Boolean).join(" ") || personName(u);
 const actor = (req) => ({ userId: String(req.user?._id || req.userId || ""), name: personName(req.user) });
@@ -120,9 +119,9 @@ const buildLines = async (raw, cfg) => {
     const date = parseDay(l?.date);
     if (!date) return { error: `${no}: กรุณาระบุวันที่ทำ OT` };
     if (date > new Date(Date.now() + 31 * 86400000)) return { error: `${no}: วันที่ทำ OT ล่วงหน้าเกิน 1 เดือน` };
-    // ไม่ระบุประเภท = เดาจากวันที่ (วันหยุดนักขัตฤกษ์/วันหยุดประจำสัปดาห์ → ทำงานวันหยุด หรือ OT วันหยุดถ้าเริ่มหลัง 17:00)
+    // ไม่ระบุประเภท = เดาจากวันที่ (วันหยุดนักขัตฤกษ์/วันหยุดประจำสัปดาห์ → ทำงานวันหยุด หรือ OT วันหยุดถ้าเริ่มตั้งแต่ 17:30 เวลาเลิกงาน)
     const isHoliday = Boolean(HOLIDAYS[dayKey(date)]) || cfg.restDays.includes(moment(date).utcOffset(7).day());
-    const guessed = !isHoliday ? "workdayOT" : (toMin(l?.start) ?? 0) >= 17 * 60 ? "holidayOT" : "holidayWork";
+    const guessed = !isHoliday ? "workdayOT" : (toMin(l?.start) ?? 0) >= 17 * 60 + 30 ? "holidayOT" : "holidayWork";
     const type = OtRequest.OT_TYPES.includes(l?.type) ? l.type : guessed;
     const h = hoursOf(l?.start, l?.end, l?.breakMin);
     if (h.error) return { error: `${no}: ${h.error}` };
@@ -424,11 +423,11 @@ router.post("/payroll/close", verifyToken, async (req, res) => {
     for (const d of docs) {
       d.status = "paid";
       d.payroll = { period, at, by: me, note };
-      log(d, "paid", `จ่ายพร้อมเงินเดือนรอบ ${period}${note ? ` · ${note}` : ""}`, me);
+      log(d, "paid", `ปิดรอบ ${period} (ส่งชั่วโมงให้ฝ่ายบุคคล/บัญชี)${note ? ` · ${note}` : ""}`, me);
       // eslint-disable-next-line no-await-in-loop -- จำนวนใบต่อเดือนไม่มาก และต้องบันทึกประวัติรายใบ
       await d.save();
       notifyUsers([...d.memberIds, d.requester.userId], me, {
-        title: "💰 OT จ่ายพร้อมเงินเดือนแล้ว",
+        title: "📋 ปิดรอบ OT แล้ว",
         body: `${summaryLine(d)} · รอบ ${period}`,
         url: urlOf(d), tag: `ot-${d._id}`,
       });
@@ -576,11 +575,8 @@ router.post("/:id/review", verifyToken, async (req, res) => {
       l.amount = money(l.hours * l.multiplier * rate);
     });
     doc.totalAmount = money(doc.lines.reduce((s, l) => s + l.amount, 0));
-    const missing = [...new Set(doc.lines.filter((l) => !l.hourlyRate).map((l) => l.person.name))];
-    if (missing.length && !can(req.user, "viewAllExpenses")) {
-      return res.status(409).json({ message: `ยังไม่ได้ตั้งค่าจ้างต่อชั่วโมงของ ${missing.join(", ")} — แจ้งผู้ดูแลค่าจ้างก่อนตรวจสอบ` });
-    }
-    if (missing.length) return res.status(409).json({ message: `ยังไม่ได้ตั้งค่าจ้างต่อชั่วโมงของ ${missing.join(", ")} — ตั้งที่เมนู "ค่าจ้างต่อชั่วโมง" ก่อน` });
+    // 🔁 (27 ต.ค. 2569 ผู้ใช้: "OT กดอนุมัติไม่ได้ ไม่ต้องใส่ค่าจ้าง ให้ทำแค่ชั่วโมงโอที อิงกับงานก่อน")
+    //    เลิกบังคับตั้งค่าจ้างก่อนตรวจสอบ — ยอดเงินคำนวณเงียบๆ (ไม่มีค่าจ้าง = 0) ไม่แสดงที่ไหน
     const note = String(req.body?.note || "").trim().slice(0, 500);
     doc.status = "reviewed";
     doc.reviewedBy = me;
@@ -611,11 +607,11 @@ router.post("/:id/approve", verifyToken, async (req, res) => {
     doc.status = "approved";
     doc.approvedBy = me;
     doc.approvedAt = new Date();
-    log(doc, "approved", `อนุมัติ ${doc.totalHours} ชม. · ${fullBaht(doc.totalAmount)} รวมจ่ายกับเงินเดือนรอบ ${doc.period}${note ? ` · ${note}` : ""}`, me);
+    log(doc, "approved", `อนุมัติ ${doc.totalHours} ชม. · รอบ ${doc.period}${note ? ` · ${note}` : ""}`, me);
     await doc.save();
     notifyUsers([...doc.memberIds, doc.requester.userId], me, {
       title: "✅ OT ได้รับอนุมัติแล้ว",
-      body: `${summaryLine(doc)}\nจ่ายพร้อมเงินเดือนรอบ ${doc.period}`,
+      body: `${summaryLine(doc)}\nนับเข้ารายงานชั่วโมง OT รอบ ${doc.period}`,
       url: urlOf(doc), tag: `ot-${doc._id}`, renotify: true,
     });
     res.json({ request: redact(req, doc) });
@@ -658,7 +654,7 @@ router.post("/:id/cancel", verifyToken, async (req, res) => {
     const ownerCan = isOwner(req, doc) && ["pending", "rejected"].includes(doc.status);
     const approverCan = ["pending", "rejected", "reviewed", "approved"].includes(doc.status)
       && (can(req.user, "approveExpense") || can(req.user, "disburseExpense"));
-    if (!ownerCan && !approverCan) return res.status(409).json({ message: doc.status === "paid" ? "ใบที่จ่ายพร้อมเงินเดือนแล้วยกเลิกไม่ได้" : "ใบนี้ยกเลิกไม่ได้แล้ว" });
+    if (!ownerCan && !approverCan) return res.status(409).json({ message: doc.status === "paid" ? "ใบที่ปิดรอบแล้วยกเลิกไม่ได้" : "ใบนี้ยกเลิกไม่ได้แล้ว" });
     const me = actor(req);
     const reason = String(req.body?.reason || "").trim().slice(0, 500);
     doc.status = "cancelled";
