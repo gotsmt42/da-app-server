@@ -7,6 +7,10 @@ const mongoose = require("../db");
  *   loan    ยืมทรัพย์สินออกตามใบเบิก (−)
  *   return  รับคืนทรัพย์สิน (+)
  *   adjust  ตรวจนับ/ปรับยอด (± ตามผลต่าง)
+ *   damage  รับคืนสภาพชำรุด → ยอดรอซ่อม (qty = จำนวน · ยอดในคลังไม่เปลี่ยน)
+ *   lost    ทรัพย์สินสูญหาย → ตัดจำหน่าย (qty = จำนวน)
+ *   repair  ซ่อมเสร็จ → กลับเข้าคลัง (+)
+ *   writeoff ตัดจำหน่ายของชำรุด (qty = จำนวน)
  * balance = ยอดในคลัง (qty) หลังรายการนี้
  */
 const stockMoveSchema = new mongoose.Schema(
@@ -15,7 +19,7 @@ const stockMoveSchema = new mongoose.Schema(
     itemName: { type: String, default: "" },
     unit: { type: String, default: "" },
     dept: { type: String, index: true },
-    type: { type: String, enum: ["in", "out", "loan", "return", "adjust"], required: true },
+    type: { type: String, enum: ["in", "out", "loan", "return", "adjust", "damage", "lost", "repair", "writeoff"], required: true },
     qty: { type: Number, required: true },
     balance: { type: Number, default: 0 },
     requestId: { type: String, default: "" },

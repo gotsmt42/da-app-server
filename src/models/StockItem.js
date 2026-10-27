@@ -25,6 +25,8 @@ const stockItemSchema = new mongoose.Schema(
     qty: { type: Number, default: 0, min: 0 },
     reserved: { type: Number, default: 0, min: 0 },
     onLoan: { type: Number, default: 0, min: 0 },
+    /** ชำรุด · รอซ่อม (รับคืนสภาพชำรุดจากใบคืนของ) — ไม่นับในยอดเบิกได้ จนกว่าจะซ่อมเสร็จ/ตัดจำหน่าย */
+    damaged: { type: Number, default: 0, min: 0 },
     /** จุดสั่งซื้อ — คงเหลือ (เบิกได้) ต่ำกว่านี้ = ขึ้นป้าย "ใกล้หมด" */
     minQty: { type: Number, default: 0, min: 0 },
     location: { type: String, default: "", trim: true },

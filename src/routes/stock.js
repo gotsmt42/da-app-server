@@ -19,6 +19,7 @@ const streamifier = require("streamifier");
 const StockItem = require("../models/StockItem");
 const StockMove = require("../models/StockMove");
 const StockRequest = require("../models/StockRequest");
+const StockReturn = require("../models/StockReturn");
 const CalendarEvent = require("../models/Events");
 const DocCounter = require("../models/DocCounter");
 const { cloudinary } = require("../config/cloudinary");
@@ -31,8 +32,15 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), fileFilter, limits });
 const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 
-const DEPTS = Object.values(DEPARTMENT);
-const DEPT_PREFIX = { service: "SV", sales: "SL" };
+/**
+ * คลัง = แผนกในองค์กร + คลังออฟฟิศ (ส่วนกลาง)
+ * ✅ (27 ต.ค. 2569 ผู้ใช้: "เพิ่มคลังของออฟฟิศด้วย") — "office" เป็นคลังของระบบสต๊อกเท่านั้น ไม่ใช่แผนกของพนักงาน
+ *    ทุกคนที่มีสิทธิ์เบิกเห็น/เบิกคลังออฟฟิศได้ (นอกจากคลังแผนกตัวเอง) · ผู้ดูแลคลังจัดการได้ทุกคลัง
+ */
+const OFFICE = "office";
+const DEPTS = [...Object.values(DEPARTMENT), OFFICE];
+const DEPT_LABEL = { ...DEPARTMENT_LABEL, [OFFICE]: "ออฟฟิศ" };
+const DEPT_PREFIX = { service: "SV", sales: "SL", [OFFICE]: "OF" };
 const personName = (u) => [u?.fname, u?.lname].map((x) => String(x || "").trim()).filter(Boolean).join(" ") || u?.username || "ผู้ใช้";
 const actor = (req) => ({ userId: String(req.user?._id || req.userId || ""), name: personName(req.user) });
 const isId = (v) => /^[a-f0-9]{24}$/i.test(String(v || ""));
@@ -45,7 +53,7 @@ const myDept = (req) => departmentOf(req.user) || DEPARTMENT.SERVICE;
 const deptFor = (req, raw) => {
   const d = String(raw || "");
   if (canManage(req)) return DEPTS.includes(d) ? d : myDept(req);
-  return myDept(req);
+  return d === OFFICE ? OFFICE : myDept(req);
 };
 const managerRanks = () => effectiveCapabilities().manageStock || [];
 const log = (doc, action, detail, who) => doc.activityLog.push({ action, detail, userId: who.userId, userName: who.name, timestamp: new Date() });
@@ -69,23 +77,24 @@ const sumLine = (doc) => doc.lines.map((l) => `${l.name} ×${l.qty}`).join(", ")
 
 router.get("/config", verifyToken, (req, res) => {
   if (!canRequest(req)) return res.status(403).json({ message: "ไม่มีสิทธิ์ใช้งานระบบสต๊อก" });
-  const depts = canManage(req) ? DEPTS : [myDept(req)];
-  res.json({ depts: depts.map((d) => ({ value: d, label: DEPARTMENT_LABEL[d] || d })), myDept: myDept(req), canManage: canManage(req) });
+  const depts = canManage(req) ? DEPTS : [myDept(req), OFFICE];
+  res.json({ depts: depts.map((d) => ({ value: d, label: DEPT_LABEL[d] || d })), myDept: myDept(req), canManage: canManage(req) });
 });
 
 /** ป้ายตัวเลข: ผู้จัดการ = ใบรออนุมัติ + ของใกล้หมด · ผู้ยื่น = ใบที่ยังยืมของค้าง */
 router.get("/summary", verifyToken, async (req, res) => {
   try {
-    if (!canRequest(req)) return res.json({ pending: 0, low: 0, myLoans: 0, badge: 0 });
+    if (!canRequest(req)) return res.json({ pending: 0, pendingReturns: 0, low: 0, myLoans: 0, badge: 0 });
     const me = String(req.userId);
-    const scope = canManage(req) ? {} : { dept: myDept(req) };
-    const [pending, lowItems, myLoans, myPending] = await Promise.all([
+    const scope = canManage(req) ? {} : { dept: { $in: [myDept(req), OFFICE] } };
+    const [pending, pendingReturns, lowItems, myLoans, myPending] = await Promise.all([
       canManage(req) ? StockRequest.countDocuments({ ...scope, status: "pending" }) : 0,
+      canManage(req) ? StockReturn.countDocuments({ ...scope, status: "pending" }) : 0,
       StockItem.countDocuments({ ...scope, active: true, minQty: { $gt: 0 }, $expr: { $lt: [{ $subtract: ["$qty", "$reserved"] }, "$minQty"] } }),
       StockRequest.countDocuments({ "requester.userId": me, status: "issued", "lines.kind": "asset" }),
       StockRequest.countDocuments({ "requester.userId": me, status: "pending" }),
     ]);
-    res.json({ pending, low: lowItems, myLoans, myPending, badge: canManage(req) ? pending : 0 });
+    res.json({ pending, pendingReturns, low: lowItems, myLoans, myPending, badge: canManage(req) ? pending + pendingReturns : 0 });
   } catch (err) {
     console.error("❌ stock summary:", err.message);
     res.status(500).json({ message: "โหลดสรุปสต๊อกไม่สำเร็จ" });
@@ -185,6 +194,37 @@ router.delete("/items/:id/photo", verifyToken, async (req, res) => {
     res.json({ item });
   } catch (err) {
     res.status(500).json({ message: "ลบรูปไม่สำเร็จ" });
+  }
+});
+
+/**
+ * ลบสินค้า — ✅ (27 ต.ค. 2569 ผู้ใช้: "ให้แอดมินลบข้อมูลสินค้าได้ด้วย")
+ * ⚠️ ลบได้เฉพาะรายการที่ "ไม่เคยถูกใช้ในเอกสาร" (ไม่มีใบเบิก/ใบคืนอ้างถึง) และไม่มียอดจอง/ยืม/รอซ่อมค้าง
+ *    รายการที่มีประวัติเอกสารแล้วให้ "ปิดใช้งาน" แทน — ไม่งั้นใบเบิกเก่า/รายงานจะอ้างสินค้าที่หายไป
+ */
+router.delete("/items/:id", verifyToken, async (req, res) => {
+  try {
+    if (!canManage(req)) return res.status(403).json({ message: "ลบสินค้าได้เฉพาะผู้ดูแลคลัง" });
+    if (!isId(req.params.id)) return res.status(404).json({ message: "ไม่พบสินค้า" });
+    const item = await StockItem.findById(req.params.id);
+    if (!item) return res.status(404).json({ message: "ไม่พบสินค้า" });
+    if (item.reserved > 0 || item.onLoan > 0 || item.damaged > 0) {
+      return res.status(409).json({ message: "ยังมียอดจอง/ยืมออก/รอซ่อมค้างอยู่ — จัดการให้เรียบร้อยก่อน หรือปิดใช้งานแทน" });
+    }
+    const [usedReq, usedRt] = await Promise.all([
+      StockRequest.exists({ "lines.item": item._id }),
+      StockReturn.exists({ "lines.item": item._id }),
+    ]);
+    if (usedReq || usedRt) {
+      return res.status(409).json({ message: "รายการนี้มีใบเบิก/ใบคืนอ้างถึงแล้ว ลบไม่ได้ — ใช้ “ปิดใช้งาน” แทนเพื่อเก็บประวัติไว้", usedInDocs: true });
+    }
+    await StockMove.deleteMany({ item: item._id });
+    if (item.photo?.publicId) cloudinary.uploader.destroy(item.photo.publicId).catch(() => {});
+    await item.deleteOne();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("❌ stock delete item:", err.message);
+    res.status(500).json({ message: "ลบไม่สำเร็จ" });
   }
 });
 
@@ -409,44 +449,230 @@ router.post("/requests/:id/cancel", verifyToken, async (req, res) => {
   }
 });
 
-/** รับคืนทรัพย์สิน — body.lines: [{ lineId, qty }] (ไม่ส่ง = คืนครบทุกรายการที่ค้าง) */
-router.post("/requests/:id/return", verifyToken, async (req, res) => {
-  try {
-    if (!canManage(req)) return res.status(403).json({ message: "รับคืนได้เฉพาะผู้ดูแลคลัง" });
-    const doc = isId(req.params.id) && await StockRequest.findById(req.params.id);
-    if (!doc || doc.status !== "issued") return res.status(409).json({ message: "ใบนี้ไม่มีทรัพย์สินที่ค้างคืน" });
-    const ask = Array.isArray(req.body?.lines) && req.body.lines.length
-      ? new Map(req.body.lines.map((x) => [String(x.lineId), Math.floor(num(x.qty))]))
-      : null;
-    const who = actor(req);
-    const done = [];
-    for (const l of doc.lines) {
-      if (l.kind !== "asset") continue;
-      const left = l.qty - l.returnedQty;
-      const n = ask ? Math.min(ask.get(String(l._id)) || 0, left) : left;
-      if (!(n > 0)) continue;
+// ══ ใบคืนของ (RT) ════════════════════════════════════════════════════════════
+// ✅ (27 ต.ค. 2569 ผู้ใช้: "ไม่ให้ผิดพลาดในการจัดการของ ของหาย ต้องมีใบคืนสินค้าด้วย" → "ใบคืนของ + สภาพของ")
+//    แทน POST /requests/:id/return เดิม (ผู้ดูแลกดรับคืนเองโดยไม่มีเอกสาร/สภาพของ)
+const CONDITION_LABEL = { good: "ปกติ", damaged: "ชำรุด", lost: "สูญหาย" };
+const rtLink = (doc) => `/stock?tab=returns&rt=${doc._id}`;
+const nextReturnNo = async () => {
+  const year = new Date().getFullYear() + 543;
+  const c = await DocCounter.findOneAndUpdate({ key: `stockrt:${year}` }, { $inc: { seq: 1 } }, { new: true, upsert: true, setDefaultsOnInsert: true });
+  return `RT-${String(c.seq).padStart(5, "0")}/${year}`;
+};
+/** ไฟล์แนบใบคืน — รูป (image) หรือเอกสาร PDF/Word/Excel (raw) · ✅ ผู้ใช้: "ให้เพิ่มรูปแบบไฟล์ได้ด้วย" */
+const uploadPhoto = (file, folder) => new Promise((resolve, reject) => {
+  const isImage = IMAGE_TYPES.includes(file.mimetype);
+  const name = Buffer.from(file.originalname || "file", "latin1").toString("utf8");
+  const stream = cloudinary.uploader.upload_stream(
+    { resource_type: isImage ? "image" : "raw", folder, public_id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}${isImage ? "" : `_${name.replace(/[^\w\-.]/g, "_")}`}` },
+    (err, r) => (err ? reject(err) : resolve({ url: r.secure_url, publicId: r.public_id, name, type: file.mimetype })),
+  );
+  streamifier.createReadStream(file.buffer).pipe(stream);
+});
+/** จำนวนที่ยังคืนได้ต่อรายการในใบเบิก = เบิกไป − คืน/ปิดแล้ว − อยู่ในใบคืนที่รอตรวจรับ */
+const returnableOf = async (sr, excludeId = null) => {
+  const pend = await StockReturn.find({ requestId: String(sr._id), status: "pending", ...(excludeId ? { _id: { $ne: excludeId } } : {}) }).select("lines").lean();
+  const held = new Map();
+  pend.forEach((d) => d.lines.forEach((l) => held.set(l.lineId, (held.get(l.lineId) || 0) + l.qty)));
+  return new Map(sr.lines.map((l) => [String(l._id), Math.max(0, l.qty - (l.returnedQty || 0) - (held.get(String(l._id)) || 0))]));
+};
+const canSeeReturn = (req, doc) => canManage(req) || doc.requester?.userId === String(req.userId) || doc.createdBy?.userId === String(req.userId);
+
+/** ตรวจรับคืน — เปลี่ยนยอดตามสภาพ (เรียกหลังพลิกสถานะ pending → received แบบอะตอมมิกแล้วเท่านั้น) */
+const applyReturn = async (doc, req) => {
+  const who = actor(req);
+  const extra = { requestId: doc.requestId, docNo: doc.docNo, eventId: doc.eventId, jobTitle: doc.jobTitle };
+  for (const l of doc.lines) {
+    const n = l.qty;
+    const asset = l.kind === "asset";
+    const inc = {};
+    if (asset) inc.onLoan = -n;
+    if (l.condition === "good") inc.qty = n;
+    if (l.condition === "damaged") inc.damaged = n;
+    // ทรัพย์สิน: ลดยอดยืมเฉพาะเมื่อยอดยืมพอ (กันติดลบกรณียอดถูกตรวจนับทับไปแล้ว)
+    // eslint-disable-next-line no-await-in-loop -- ทีละรายการ + บันทึกประวัติ
+    let item = await StockItem.findOneAndUpdate(asset ? { _id: l.item, onLoan: { $gte: n } } : { _id: l.item }, { $inc: inc }, { new: true });
+    if (!item && asset) {
+      delete inc.onLoan;
       // eslint-disable-next-line no-await-in-loop
-      const item = await StockItem.findOneAndUpdate({ _id: l.item, onLoan: { $gte: n } }, { $inc: { qty: n, onLoan: -n } }, { new: true })
-        // ทรัพย์สินที่ยอดยืมถูกตรวจนับทับไปแล้ว — คืนเข้าคลังอย่างเดียว
-        // eslint-disable-next-line no-await-in-loop
-        || await StockItem.findByIdAndUpdate(l.item, { $inc: { qty: n } }, { new: true });
-      l.returnedQty += n;
-      done.push(`${l.name} ×${n}`);
-      // eslint-disable-next-line no-await-in-loop
-      if (item) await move(item, "return", n, req, { requestId: String(doc._id), docNo: doc.docNo, eventId: doc.eventId, jobTitle: doc.jobTitle });
+      item = Object.keys(inc).length ? await StockItem.findByIdAndUpdate(l.item, { $inc: inc }, { new: true }) : await StockItem.findById(l.item);
     }
-    if (!done.length) return res.status(400).json({ message: "ไม่มีจำนวนที่จะรับคืน" });
-    const allBack = doc.lines.every((l) => l.kind !== "asset" || l.returnedQty >= l.qty);
-    if (allBack) doc.status = "returned";
-    log(doc, "returned", `รับคืน ${done.join(", ")}${allBack ? " · คืนครบแล้ว" : ""}`, who);
-    await doc.save();
-    Promise.resolve(sendPushToUsers([doc.requester.userId], {
-      title: `📥 รับคืนทรัพย์สินแล้ว ${doc.docNo}`, body: done.join(", "), url: reqLink(doc), tag: `stock-${doc._id}`,
-    })).catch(() => {});
-    res.json({ request: doc });
+    // eslint-disable-next-line no-await-in-loop
+    await StockRequest.updateOne({ _id: doc.requestId, "lines._id": l.lineId }, { $inc: { "lines.$.returnedQty": n } });
+    if (item) {
+      const note = `${CONDITION_LABEL[l.condition]}${l.note ? ` · ${l.note}` : ""}`;
+      const type = l.condition === "good" ? "return" : l.condition === "damaged" ? "damage" : "lost";
+      // eslint-disable-next-line no-await-in-loop
+      await move(item, type, n, req, { ...extra, note: l.condition === "lost" ? `${note} · ผู้รับผิดชอบ ${doc.requester?.name || "-"}` : note });
+    }
+  }
+  // ใบเบิก: ทรัพย์สินคืน/ปิดครบทุกชิ้น → "คืนครบแล้ว"
+  const sr = await StockRequest.findById(doc.requestId);
+  if (sr) {
+    const assets = sr.lines.filter((x) => x.kind === "asset");
+    if (assets.length && assets.every((x) => (x.returnedQty || 0) >= x.qty) && sr.status === "issued") sr.status = "returned";
+    log(sr, "returned", `รับคืนตามใบ ${doc.docNo}: ${doc.lines.map((x) => `${x.name} ×${x.qty} (${CONDITION_LABEL[x.condition]})`).join(", ")}`, who);
+    await sr.save();
+  }
+  doc.status = "received";
+  doc.receivedBy = who; doc.receivedAt = new Date();
+  log(doc, "received", `ตรวจรับคืนแล้ว · ${doc.lines.map((x) => `${x.name} ×${x.qty} ${CONDITION_LABEL[x.condition]}`).join(", ")}`, who);
+  await doc.save();
+};
+
+router.get("/returns", verifyToken, async (req, res) => {
+  try {
+    if (!canRequest(req)) return res.status(403).json({ message: "ไม่มีสิทธิ์" });
+    const q = {};
+    if (canManage(req) && req.query.scope !== "mine") {
+      if (DEPTS.includes(String(req.query.dept || ""))) q.dept = req.query.dept;
+    } else {
+      q.$or = [{ "requester.userId": String(req.userId) }, { "createdBy.userId": String(req.userId) }];
+    }
+    if (isId(req.query.requestId)) q.requestId = req.query.requestId;
+    if (req.query.status) q.status = { $in: String(req.query.status).split(",") };
+    const returns = await StockReturn.find(q).sort({ createdAt: -1 }).limit(300).lean();
+    res.json({ returns });
   } catch (err) {
-    console.error("❌ stock return:", err.message);
-    res.status(500).json({ message: "รับคืนไม่สำเร็จ" });
+    res.status(500).json({ message: "โหลดใบคืนไม่สำเร็จ" });
+  }
+});
+
+router.get("/returns/:id", verifyToken, async (req, res) => {
+  try {
+    const doc = isId(req.params.id) && await StockReturn.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ message: "ไม่พบใบคืน" });
+    if (!canSeeReturn(req, doc)) return res.status(403).json({ message: "ดูได้เฉพาะใบของตัวเอง" });
+    res.json({ return: doc });
+  } catch (err) {
+    res.status(500).json({ message: "โหลดใบคืนไม่สำเร็จ" });
+  }
+});
+
+/** ยื่นใบคืน — multipart: requestId · lines (JSON [{lineId, qty, condition, note}]) · note · receiveNow · photos[] */
+router.post("/returns", verifyToken, upload.array("photos", 6), async (req, res) => {
+  try {
+    if (!canRequest(req)) return res.status(403).json({ message: "ไม่มีสิทธิ์" });
+    const b = req.body || {};
+    const sr = isId(b.requestId) && await StockRequest.findById(b.requestId);
+    if (!sr) return res.status(404).json({ message: "ไม่พบใบเบิกที่อ้างถึง" });
+    if (!["issued", "returned"].includes(sr.status)) return res.status(409).json({ message: "คืนได้เฉพาะใบเบิกที่จ่ายของแล้ว" });
+    if (sr.requester.userId !== String(req.userId) && !canManage(req)) return res.status(403).json({ message: "คืนได้เฉพาะของที่ตัวเองเบิก" });
+    let raw = b.lines;
+    if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { raw = []; } }
+    const left = await returnableOf(sr);
+    const lines = [];
+    for (const x of Array.isArray(raw) ? raw : []) {
+      const l = sr.lines.find((y) => String(y._id) === String(x?.lineId));
+      const n = Math.floor(num(x?.qty));
+      if (!l || !(n > 0)) continue;
+      const cond = ["good", "damaged", "lost"].includes(x.condition) ? x.condition : "good";
+      if (cond === "lost" && l.kind !== "asset") return res.status(400).json({ message: `“${l.name}” เป็นวัสดุ — เลือกสูญหายได้เฉพาะทรัพย์สิน` });
+      const can = (left.get(String(l._id)) || 0) - lines.filter((z) => z.lineId === String(l._id)).reduce((t, z) => t + z.qty, 0);
+      if (n > can) return res.status(409).json({ message: `“${l.name}” คืนได้อีกไม่เกิน ${Math.max(0, can)} ${l.unit}` });
+      lines.push({ lineId: String(l._id), item: l.item, code: l.code, name: l.name, unit: l.unit, kind: l.kind, qty: n, condition: cond, note: str(x.note, 200) });
+    }
+    if (!lines.length) return res.status(400).json({ message: "เลือกรายการที่จะคืนอย่างน้อย 1 รายการ" });
+    // fileFilter กลาง (config/upload) กันชนิดอันตรายไว้แล้ว — รับทั้งรูปและเอกสาร
+    const photos = await Promise.all((req.files || []).map((f) => uploadPhoto(f, `stock/returns/${sr.dept}`)));
+    const who = actor(req);
+    const doc = new StockReturn({
+      docNo: await nextReturnNo(), dept: sr.dept, status: "pending", requestId: String(sr._id), requestDocNo: sr.docNo,
+      requester: sr.requester, createdBy: who, eventId: sr.eventId, jobTitle: sr.jobTitle, jobType: sr.jobType, jobColor: sr.jobColor,
+      lines, photos, note: str(b.note, 1000),
+    });
+    log(doc, "created", `ยื่นใบคืน ${lines.length} รายการ (อ้างใบเบิก ${sr.docNo})`, who);
+    await doc.save();
+    // ผู้ดูแลคลังยื่นแทน + ติ๊ก "รับคืนทันที" = ตรวจรับในขั้นเดียว
+    if (String(b.receiveNow) === "true" && canManage(req)) {
+      const flipped = await StockReturn.findOneAndUpdate({ _id: doc._id, status: "pending" }, { $set: { status: "received" } }, { new: true });
+      if (flipped) await applyReturn(flipped, req);
+      return res.json({ return: await StockReturn.findById(doc._id).lean() });
+    }
+    Promise.resolve(sendPushToRoles(managerRanks(), {
+      title: `📥 ใบคืนของใหม่ ${doc.docNo} — ${who.name}`, body: `${sumLine(doc)}\nรอตรวจรับคืน`, url: rtLink(doc), tag: `stockrt-${doc._id}`, renotify: true,
+    }, [who.userId])).catch(() => {});
+    res.json({ return: doc });
+  } catch (err) {
+    console.error("❌ stock create return:", err.message);
+    res.status(500).json({ message: "ยื่นใบคืนไม่สำเร็จ" });
+  }
+});
+
+router.post("/returns/:id/receive", verifyToken, async (req, res) => {
+  try {
+    if (!canManage(req)) return res.status(403).json({ message: "ตรวจรับได้เฉพาะผู้ดูแลคลัง" });
+    const doc = isId(req.params.id) && await StockReturn.findOneAndUpdate({ _id: req.params.id, status: "pending" }, { $set: { status: "received" } }, { new: true });
+    if (!doc) return res.status(409).json({ message: "ใบนี้ไม่ได้รอตรวจรับแล้ว" });
+    await applyReturn(doc, req);
+    Promise.resolve(sendPushToUsers([doc.requester.userId, doc.createdBy?.userId].filter(Boolean), {
+      title: `✅ ตรวจรับคืนแล้ว ${doc.docNo}`, body: sumLine(doc), url: rtLink(doc), tag: `stockrt-${doc._id}`,
+    })).catch(() => {});
+    res.json({ return: doc });
+  } catch (err) {
+    console.error("❌ stock receive return:", err.message);
+    res.status(500).json({ message: "ตรวจรับไม่สำเร็จ" });
+  }
+});
+
+router.post("/returns/:id/reject", verifyToken, async (req, res) => {
+  try {
+    if (!canManage(req)) return res.status(403).json({ message: "ไม่รับคืนได้เฉพาะผู้ดูแลคลัง" });
+    const reason = str(req.body?.reason, 300);
+    if (!reason) return res.status(400).json({ message: "กรุณาระบุเหตุผล" });
+    const doc = isId(req.params.id) && await StockReturn.findOneAndUpdate({ _id: req.params.id, status: "pending" }, { $set: { status: "rejected" } }, { new: true });
+    if (!doc) return res.status(409).json({ message: "ใบนี้ไม่ได้รอตรวจรับแล้ว" });
+    const who = actor(req);
+    doc.rejectedBy = who; doc.rejectedAt = new Date(); doc.rejectReason = reason;
+    log(doc, "rejected", `ไม่รับคืน: ${reason}`, who);
+    await doc.save();
+    Promise.resolve(sendPushToUsers([doc.requester.userId, doc.createdBy?.userId].filter(Boolean), {
+      title: `↩️ ไม่รับคืน ${doc.docNo}`, body: `${reason} · โดย ${who.name}`, url: rtLink(doc), tag: `stockrt-${doc._id}`,
+    })).catch(() => {});
+    res.json({ return: doc });
+  } catch (err) {
+    res.status(500).json({ message: "บันทึกไม่สำเร็จ" });
+  }
+});
+
+router.post("/returns/:id/cancel", verifyToken, async (req, res) => {
+  try {
+    const cur = isId(req.params.id) && await StockReturn.findById(req.params.id).select("requester createdBy").lean();
+    if (!cur) return res.status(404).json({ message: "ไม่พบใบคืน" });
+    if (!canSeeReturn(req, cur)) return res.status(403).json({ message: "ยกเลิกได้เฉพาะใบของตัวเอง" });
+    const doc = await StockReturn.findOneAndUpdate({ _id: req.params.id, status: "pending" }, { $set: { status: "cancelled" } }, { new: true });
+    if (!doc) return res.status(409).json({ message: "ยกเลิกได้เฉพาะใบที่รอตรวจรับ" });
+    const who = actor(req);
+    doc.cancelledBy = who; doc.cancelledAt = new Date();
+    log(doc, "cancelled", "ยกเลิกใบคืน", who);
+    await doc.save();
+    res.json({ return: doc });
+  } catch (err) {
+    res.status(500).json({ message: "ยกเลิกไม่สำเร็จ" });
+  }
+});
+
+/** ของชำรุด (รอซ่อม): action=repair → กลับเข้าคลัง · action=writeoff → ตัดจำหน่าย */
+router.post("/items/:id/damaged", verifyToken, async (req, res) => {
+  try {
+    if (!canManage(req)) return res.status(403).json({ message: "จัดการของชำรุดได้เฉพาะผู้ดูแลคลัง" });
+    if (!isId(req.params.id)) return res.status(404).json({ message: "ไม่พบสินค้า" });
+    const action = req.body?.action === "writeoff" ? "writeoff" : "repair";
+    const n = Math.floor(num(req.body?.qty));
+    const note = str(req.body?.note, 300);
+    if (!(n > 0)) return res.status(400).json({ message: "จำนวนต้องมากกว่า 0" });
+    if (action === "writeoff" && !note) return res.status(400).json({ message: "กรุณาระบุเหตุผลการตัดจำหน่าย" });
+    const item = await StockItem.findOneAndUpdate(
+      { _id: req.params.id, damaged: { $gte: n } },
+      { $inc: action === "repair" ? { damaged: -n, qty: n } : { damaged: -n } },
+      { new: true },
+    );
+    if (!item) return res.status(409).json({ message: "ยอดชำรุดไม่พอ — ข้อมูลอาจเพิ่งเปลี่ยน ลองใหม่อีกครั้ง" });
+    await move(item, action, n, req, { note: note || (action === "repair" ? "ซ่อมเสร็จ กลับเข้าคลัง" : "ตัดจำหน่าย") });
+    res.json({ item });
+  } catch (err) {
+    console.error("❌ stock damaged:", err.message);
+    res.status(500).json({ message: "บันทึกไม่สำเร็จ" });
   }
 });
 
