@@ -27,6 +27,7 @@ const { fileFilter, limits } = require("../config/upload");
 const verifyToken = require("../middleware/auth");
 const { can, titleOf, departmentOf, DEPARTMENT, DEPARTMENT_LABEL, effectiveCapabilities } = require("../config/roles");
 const { sendPushToUsers, sendPushToRoles } = require("../services/PushNotify");
+const { sealFor, imagesFor } = require("../services/signatureSeal");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), fileFilter, limits });
@@ -70,6 +71,29 @@ const nextItemCode = async (dept) => {
 const move = (item, type, qty, req, extra = {}) => StockMove.create({
   item: item._id, itemName: item.name, unit: item.unit, dept: item.dept, type, qty, balance: item.qty, by: actor(req), at: new Date(), ...extra,
 });
+/**
+ * ลายเซ็นอิเล็กทรอนิกส์ — ✅ (2 พ.ย. 2569 ผู้ใช้: "เพิ่มให้ใส่ลายเซ็นอิเล็กทรอนิกส์") แบบเดียวกับใบขอซื้อ
+ * ผนึกของ "ผู้กดเอง" เท่านั้น · useSignature=false = ไม่ลง · ยังไม่ตั้งลายเซ็น = ข้ามเงียบๆ (ลงนามด้วยมือบนกระดาษได้)
+ */
+const wantsSignature = (req) => {
+  const v = req.body?.useSignature;
+  return !(v === false || v === "false" || v === "0" || v === 0);
+};
+const sealSlot = async (req, doc, slot) => {
+  if (!wantsSignature(req)) return;
+  const seal = await sealFor(req.userId, { name: personName(req.user), position: titleOf(req.user) || "" });
+  if (seal) doc.set(`signatures.${slot}`, seal);
+};
+const signaturesOut = async (seals) => {
+  const images = await imagesFor(Object.values(seals));
+  const out = {};
+  Object.entries(seals).forEach(([role, seal]) => {
+    const img = seal?.hash ? images.get(seal.hash) : null;
+    if (img) out[role] = { image: img.image, width: img.width, height: img.height, name: seal.name, position: seal.position, signedAt: seal.signedAt };
+  });
+  return out;
+};
+
 const reqLink = (doc) => `/stock?tab=requests&id=${doc._id}`;
 const sumLine = (doc) => doc.lines.map((l) => `${l.name} ×${l.qty}`).join(", ").slice(0, 140);
 
@@ -315,9 +339,15 @@ router.post("/requests", verifyToken, async (req, res) => {
     if (!canRequest(req)) return res.status(403).json({ message: "ไม่มีสิทธิ์ยื่นใบเบิก" });
     const b = req.body || {};
     const dept = deptFor(req, b.dept);
-    if (!isId(b.eventId)) return res.status(400).json({ message: "กรุณาเลือกงานที่จะใช้ของ (ทุกใบต้องอิงงาน)" });
-    const ev = await CalendarEvent.findById(b.eventId).select("title system site company backgroundColor jobNo").lean();
-    if (!ev) return res.status(400).json({ message: "ไม่พบงานที่เลือก" });
+    // ✅ อิงงานในตาราง หรือพิมพ์ชื่อโครงการเอง อย่างใดอย่างหนึ่ง
+    const projectName = str(b.projectName, 200);
+    let ev = null;
+    if (isId(b.eventId)) {
+      ev = await CalendarEvent.findById(b.eventId).select("title system site company backgroundColor jobNo").lean();
+      if (!ev) return res.status(400).json({ message: "ไม่พบงานที่เลือก" });
+    } else if (!projectName) {
+      return res.status(400).json({ message: "กรุณาเลือกงาน หรือพิมพ์ชื่อโครงการที่จะใช้ของ" });
+    }
     const raw = Array.isArray(b.lines) ? b.lines : [];
     const want = new Map();
     raw.forEach((l) => {
@@ -348,13 +378,14 @@ router.post("/requests", verifyToken, async (req, res) => {
     const doc = new StockRequest({
       docNo: await nextDocNo(), dept, status: "pending",
       requester: { ...who, position: titleOf(req.user) || "" },
-      eventId: String(ev._id), jobType: ev.title || "", jobColor: ev.backgroundColor || "",
-      jobTitle: [ev.title, ev.system, ev.site || ev.company ? `โครงการ ${ev.site || ev.company}` : "", ev.jobNo].filter(Boolean).join(" · "),
+      eventId: ev ? String(ev._id) : "", jobType: ev?.title || "", jobColor: ev?.backgroundColor || "", projectName: ev ? "" : projectName,
+      jobTitle: ev ? [ev.title, ev.system, ev.site || ev.company ? `โครงการ ${ev.site || ev.company}` : "", ev.jobNo].filter(Boolean).join(" · ") : `โครงการ ${projectName}`,
       lines: items.map((it) => ({ item: it._id, code: it.code, name: it.name, unit: it.unit, kind: it.kind, qty: want.get(String(it._id)) })),
       note: str(b.note, 1000),
       dueReturnAt: b.dueReturnAt && /^\d{4}-\d{2}-\d{2}$/.test(String(b.dueReturnAt)) ? new Date(`${b.dueReturnAt}T12:00:00Z`) : null,
     });
     log(doc, "created", `ยื่นใบเบิก ${doc.lines.length} รายการ`, who);
+    await sealSlot(req, doc, "requester");
     await doc.save();
     Promise.resolve(sendPushToRoles(managerRanks(), {
       title: `📦 ใบเบิกของใหม่ ${doc.docNo} — ${who.name}`,
@@ -394,6 +425,7 @@ router.post("/requests/:id/issue", verifyToken, async (req, res) => {
       await move(item, loan ? "loan" : "out", -l.qty, req, { requestId: String(doc._id), docNo: doc.docNo, eventId: doc.eventId, jobTitle: doc.jobTitle });
     }
     doc.issuedBy = who; doc.issuedAt = new Date();
+    await sealSlot(req, doc, "issuer");
     log(doc, "issued", `อนุมัติและจ่ายของแล้ว${req.body?.note ? ` · ${str(req.body.note, 300)}` : ""}`, who);
     await doc.save();
     const hasLoan = doc.lines.some((l) => l.kind === "asset");
@@ -516,6 +548,7 @@ const applyReturn = async (doc, req) => {
   }
   doc.status = "received";
   doc.receivedBy = who; doc.receivedAt = new Date();
+  await sealSlot(req, doc, "receiver");
   log(doc, "received", `ตรวจรับคืนแล้ว · ${doc.lines.map((x) => `${x.name} ×${x.qty} ${CONDITION_LABEL[x.condition]}`).join(", ")}`, who);
   await doc.save();
 };
@@ -582,6 +615,7 @@ router.post("/returns", verifyToken, upload.array("photos", 6), async (req, res)
       lines, photos, note: str(b.note, 1000),
     });
     log(doc, "created", `ยื่นใบคืน ${lines.length} รายการ (อ้างใบเบิก ${sr.docNo})`, who);
+    await sealSlot(req, doc, "returner");
     await doc.save();
     // ผู้ดูแลคลังยื่นแทน + ติ๊ก "รับคืนทันที" = ตรวจรับในขั้นเดียว
     if (String(b.receiveNow) === "true" && canManage(req)) {
@@ -673,6 +707,28 @@ router.post("/items/:id/damaged", verifyToken, async (req, res) => {
   } catch (err) {
     console.error("❌ stock damaged:", err.message);
     res.status(500).json({ message: "บันทึกไม่สำเร็จ" });
+  }
+});
+
+/** 🔒 ลายเซ็นที่ผนึกในใบจริง — เฉพาะผู้ที่เห็นใบได้ (ใช้พิมพ์ PDF) */
+router.get("/requests/:id/signatures", verifyToken, async (req, res) => {
+  try {
+    const doc = isId(req.params.id) && await StockRequest.findById(req.params.id).select("requester signatures").lean();
+    if (!doc) return res.status(404).json({ message: "ไม่พบใบเบิก" });
+    if (!canManage(req) && doc.requester?.userId !== String(req.userId)) return res.status(403).json({ message: "ดูได้เฉพาะใบของตัวเอง" });
+    res.json({ signatures: await signaturesOut({ requester: doc.signatures?.requester, issuer: doc.signatures?.issuer }) });
+  } catch (err) {
+    res.status(500).json({ message: "ดึงลายเซ็นไม่สำเร็จ" });
+  }
+});
+router.get("/returns/:id/signatures", verifyToken, async (req, res) => {
+  try {
+    const doc = isId(req.params.id) && await StockReturn.findById(req.params.id).select("requester createdBy signatures").lean();
+    if (!doc) return res.status(404).json({ message: "ไม่พบใบคืน" });
+    if (!canSeeReturn(req, doc)) return res.status(403).json({ message: "ดูได้เฉพาะใบของตัวเอง" });
+    res.json({ signatures: await signaturesOut({ returner: doc.signatures?.returner, receiver: doc.signatures?.receiver }) });
+  } catch (err) {
+    res.status(500).json({ message: "ดึงลายเซ็นไม่สำเร็จ" });
   }
 });
 

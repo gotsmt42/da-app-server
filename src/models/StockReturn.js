@@ -13,6 +13,11 @@ const mongoose = require("../db");
  *   วงจร: pending (รอตรวจรับ) → received (ผู้ดูแลคลังตรวจรับ · ยอดเปลี่ยนตอนนี้) · pending → rejected / cancelled
  */
 const personSchema = { userId: { type: String, default: "" }, name: { type: String, default: "" } };
+const sealSchema = {
+  userId: { type: String, default: "" }, name: { type: String, default: "" }, position: { type: String, default: "" },
+  signedAt: { type: Date, default: null }, hash: { type: String, default: "" },
+};
+
 
 const lineSchema = new mongoose.Schema(
   {
@@ -55,6 +60,8 @@ const stockReturnSchema = new mongoose.Schema(
     rejectReason: { type: String, default: "" },
     cancelledBy: personSchema,
     cancelledAt: { type: Date, default: null },
+    /** ลายเซ็นอิเล็กทรอนิกส์ ผู้คืน · ผู้ตรวจรับ */
+    signatures: { returner: sealSchema, receiver: sealSchema },
     activityLog: [{ action: String, detail: String, userId: String, userName: String, timestamp: { type: Date, default: Date.now } }],
   },
   { timestamps: true }

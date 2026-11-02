@@ -8,6 +8,12 @@ const mongoose = require("../db");
  * ⚠️ บังคับอิงงานทุกใบ (eventId) — ดูได้ว่างานไหนใช้ของอะไรไปเท่าไร
  */
 const personSchema = { userId: { type: String, default: "" }, name: { type: String, default: "" } };
+/** ลายเซ็นอิเล็กทรอนิกส์ที่ผนึกในใบ (hash อ้างรูปใน SignatureImage) — ดู services/signatureSeal.js */
+const sealSchema = {
+  userId: { type: String, default: "" }, name: { type: String, default: "" }, position: { type: String, default: "" },
+  signedAt: { type: Date, default: null }, hash: { type: String, default: "" },
+};
+
 
 const lineSchema = new mongoose.Schema(
   {
@@ -29,7 +35,10 @@ const stockRequestSchema = new mongoose.Schema(
     dept: { type: String, required: true, index: true },
     status: { type: String, enum: ["pending", "issued", "returned", "rejected", "cancelled"], default: "pending", index: true },
     requester: { userId: { type: String, index: true, default: "" }, name: { type: String, default: "" }, position: { type: String, default: "" } },
-    eventId: { type: String, required: true, index: true },
+    /** งานในตาราง (ไม่บังคับแล้ว) — ✅ (2 พ.ย. 2569 ผู้ใช้: "ให้พิมพ์ชื่อโครงการแยกได้ด้วย ไม่อิงแค่งานที่เข้าอย่างเดียว") */
+    eventId: { type: String, default: "", index: true },
+    /** ชื่อโครงการที่พิมพ์เอง (ใช้เมื่อไม่ได้เลือกงานในตาราง) */
+    projectName: { type: String, default: "", trim: true },
     jobTitle: { type: String, default: "" },
     jobType: { type: String, default: "" },
     jobColor: { type: String, default: "" },
@@ -44,6 +53,8 @@ const stockRequestSchema = new mongoose.Schema(
     rejectReason: { type: String, default: "" },
     cancelledBy: personSchema,
     cancelledAt: { type: Date, default: null },
+    /** ✅ (2 พ.ย. 2569 ผู้ใช้: "เพิ่มให้ใส่ลายเซ็นอิเล็กทรอนิกส์") ผู้เบิก · ผู้อนุมัติ/จ่ายของ */
+    signatures: { requester: sealSchema, issuer: sealSchema },
     activityLog: [{ action: String, detail: String, userId: String, userName: String, timestamp: { type: Date, default: Date.now } }],
   },
   { timestamps: true }
