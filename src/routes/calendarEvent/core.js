@@ -807,6 +807,13 @@ module.exports = (router) => {
         ...(contractYears !== undefined && contractYears !== "" && contractYears !== null ? { contractYears: Number(contractYears) } : {}),
         ...(estimatedDaysPerVisit !== undefined && estimatedDaysPerVisit !== "" && estimatedDaysPerVisit !== null ? { estimatedDaysPerVisit: Number(estimatedDaysPerVisit) } : {}),
         jobValue,
+        // ✅ มูลค่างานครั้งนี้ — ตัวเลข ≥ 0 เท่านั้น · "" / null = ล้างค่า · ไม่ส่งมา = ไม่แตะ
+        ...(req.body.workValue !== undefined ? (() => {
+          const raw = req.body.workValue;
+          const n = raw === "" || raw === null ? null : Number(raw);
+          if (n !== null && (!Number.isFinite(n) || n < 0)) return {};
+          return { workValue: n, workValueBy: resubmitterName, workValueAt: new Date() };
+        })() : {}),
         ...pickJobInfo(req.body),
 
         // ✅ ส่งขออนุมัติใหม่อัตโนมัติ (ดู shouldResubmit ด้านบน) — ไม่เข้าเงื่อนไขก็ไม่ใส่ key พวกนี้เลย
