@@ -89,7 +89,18 @@ const attendanceSchema = new mongoose.Schema(
 attendanceSchema.index({ userId: 1, status: 1 });
 attendanceSchema.index({ "checkIn.at": -1 });
 // เอกสารเก่าไม่มี workDay จึงไม่ชน index; เอกสารใหม่กันบันทึกซ้ำในวันเดียวกันแบบ atomic
-attendanceSchema.index({ eventId: 1, workDay: 1 }, { unique: true, partialFilterExpression: { workDay: { $type: "string" } } });
+// 🔁 (4 พ.ย. 2569 ผู้ใช้: "การบันทึกเข้างาน ให้แยกทุกคนต้องกดเข้างานเองด้วย แยกเป็นบุคคล ไม่ต้องแค่หัวหน้าทีม")
+//    เดิม 1 บันทึกต่อ "งาน" ต่อวัน (หัวหน้าทีมกดแทนทั้งทีม) → 1 บันทึกต่อ "คน" ต่อวัน
+attendanceSchema.index({ eventId: 1, userId: 1, workDay: 1 }, { unique: true, partialFilterExpression: { workDay: { $type: "string" } } });
 
 const Attendance = mongoose.model("Attendance", attendanceSchema);
+
+// 🔧 (4 พ.ย. 2569) ลบดัชนีเดิม (1 บันทึกต่องานต่อวัน) — ไม่ลบ = คนที่ 2 ในทีมบันทึกเข้างานวันเดียวกันไม่ได้ (ชน unique)
+//    Mongoose สร้างดัชนีใหม่ (eventId+userId+workDay) ให้เอง · ไม่มีดัชนีเดิมแล้ว = ข้ามเงียบๆ
+const dropLegacyIndex = () => Attendance.collection.dropIndex("eventId_1_workDay_1")
+  .then(() => console.log("🔧 Attendance: ลบดัชนีเดิม eventId_1_workDay_1 แล้ว (เข้างานแยกรายคน)"))
+  .catch(() => {})
+  .finally(() => Attendance.createIndexes().catch(() => {}));
+if (mongoose.connection.readyState === 1) dropLegacyIndex();
+else mongoose.connection.once("open", dropLegacyIndex);
 module.exports = Attendance;

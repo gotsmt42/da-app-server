@@ -61,6 +61,11 @@ const isTeamHead = (ev, user, userId) =>
       (user?.fname && ev.responsiblePerson === user.fname)
     ))
   );
+/** ✅ (4 พ.ย. 2569 ผู้ใช้: "การบันทึกเข้างาน ให้แยกทุกคนต้องกดเข้างานเองด้วย แยกเป็นบุคคล ไม่ต้องแค่หัวหน้าทีม")
+ *    ผู้ปฏิบัติงานทุกคน (หัวหน้าทีม + ลูกทีม) บันทึกเข้างานของตัวเอง — 1 บันทึกต่อคนต่อวัน */
+const isOnTeam = (ev, user, userId) =>
+  isTeamHead(ev, user, userId) ||
+  (ev.teamMembers || []).some((m) => (m?.userId && String(m.userId) === String(userId)) || (user?.fname && m?.name === user.fname));
 const membersOf = (ev) => [...new Set((ev.teamMembers || []).map((m) => m?.name).filter((n) => n && n !== ev.team))];
 
 /**
@@ -268,8 +273,8 @@ router.post("/check-in", verifyToken, async (req, res) => {
     if (!ev.team && !ev.resPerson && !ev.responsiblePersonId && !ev.responsiblePerson) {
       return res.status(400).json({ message: "งานนี้ยังไม่มีหัวหน้าทีมเข้างาน — รอแอดมินมอบหมายก่อน" });
     }
-    if (!isTeamHead(ev, req.user, req.userId)) {
-      return res.status(403).json({ message: `กดเข้างานได้เฉพาะหัวหน้าทีมเข้างาน${ev.team ? ` (${ev.team})` : ""}` });
+    if (!isOnTeam(ev, req.user, req.userId)) {
+      return res.status(403).json({ message: "บันทึกเข้างานได้เฉพาะผู้ปฏิบัติงานของงานนี้ — ให้ผู้รับผิดชอบเพิ่มชื่อคุณในทีมก่อน" });
     }
     {
       const today0 = bkkDay(new Date());
@@ -313,6 +318,7 @@ router.post("/check-in", verifyToken, async (req, res) => {
     // workDay เป็นตัวสำรองเฉพาะข้อมูลเก่าที่ไม่มี checkIn.at เท่านั้น
     const already = await Attendance.findOne({
       eventId: ev._id,
+      userId: req.userId, // 🔁 แยกรายคน
       $or: [
         { "checkIn.at": { $gte: dayStart, $lt: dayEnd } },
         { workDay: today, "checkIn.at": { $exists: false } },
@@ -320,7 +326,7 @@ router.post("/check-in", verifyToken, async (req, res) => {
       ],
     }).sort({ "checkIn.at": -1 }).lean();
     if (already) {
-      return res.status(409).json({ message: `งานนี้บันทึกเข้างานวันที่ ${today} แล้ว (${thTime(already.checkIn?.at)} โดย ${already.userName})`, attendance: already });
+      return res.status(409).json({ message: `คุณบันทึกเข้างานวันที่ ${today} แล้ว (${thTime(already.checkIn?.at)})`, attendance: already });
     }
 
     // 🐛 (15 ต.ค. 2569 ผู้ใช้: "การบันทึกเข้างาน เด้งมาให้กดซ้ำทั้งที่งานเข้าวันเดียว")
@@ -333,10 +339,10 @@ router.post("/check-in", verifyToken, async (req, res) => {
       const planned = Math.min(366, Math.round((new Date(`${lastDay}T00:00:00Z`) - new Date(`${firstDay}T00:00:00Z`)) / 86400000) + 1);
       const isPlannedToday = today >= firstDay && today <= lastDay;
       if (!isPlannedToday) {
-        const rows = await Attendance.find({ eventId: ev._id }).select("checkIn.at workDay").lean();
+        const rows = await Attendance.find({ eventId: ev._id, userId: req.userId }).select("checkIn.at workDay").lean();
         const days = new Set(rows.map((r) => (r.checkIn?.at ? bkkDay(r.checkIn.at) : r.workDay)).filter(Boolean));
         if (days.size >= planned) {
-          return res.status(409).json({ message: `งานนี้บันทึกเข้างานครบ ${planned} วันตามที่นัดไว้แล้ว — ไม่ต้องบันทึกซ้ำ` });
+          return res.status(409).json({ message: `คุณบันทึกเข้างานงานนี้ครบ ${planned} วันตามที่นัดไว้แล้ว — ไม่ต้องบันทึกซ้ำ` });
         }
       }
     }
@@ -373,6 +379,7 @@ router.post("/check-in", verifyToken, async (req, res) => {
       if (err?.code === 11000) {
         const duplicate = await Attendance.findOne({
           eventId: ev._id,
+          userId: req.userId,
           $or: [
             { "checkIn.at": { $gte: dayStart, $lt: dayEnd } },
             { workDay: today, "checkIn.at": { $exists: false } },
@@ -380,7 +387,7 @@ router.post("/check-in", verifyToken, async (req, res) => {
           ],
         }).lean();
         return res.status(409).json({
-          message: `งานนี้บันทึกเข้างานวันที่ ${today} แล้ว${duplicate?.checkIn?.at ? ` (${thTime(duplicate.checkIn.at)} โดย ${duplicate.userName})` : ""}`,
+          message: `คุณบันทึกเข้างานวันที่ ${today} แล้ว${duplicate?.checkIn?.at ? ` (${thTime(duplicate.checkIn.at)})` : ""}`,
           ...(duplicate ? { attendance: duplicate } : {}),
         });
       }
@@ -422,12 +429,21 @@ router.post("/check-in", verifyToken, async (req, res) => {
         dayInfo = ` · วันที่ ${Math.min(done, planned)}/${planned}${done >= planned ? " (ครบ)" : ""}`;
       }
     }
+    // ✅ แจ้งเตือนบอกความคืบหน้าของทีมวันนี้ (เช่น 2/3 คน) — ผู้รับผิดชอบ/แอดมินรู้ว่าใครยังไม่เข้า
+    let teamInfo = "";
+    {
+      const crew = [...new Set([ev.team, ...((ev.teamMembers || []).map((m) => m?.name))].filter(Boolean))];
+      if (crew.length > 1) {
+        const inToday = new Set((await Attendance.find({ eventId: ev._id, "checkIn.at": { $gte: dayStart, $lt: dayEnd } }).select("userId").lean()).map((r) => String(r.userId))).size;
+        teamInfo = ` · ทีมเข้างานแล้ว ${Math.min(inToday, crew.length)}/${crew.length} คน`;
+      }
+    }
     const attendancePush = {
       title: `📍 ${name} บันทึกเข้างานแล้ว${dayInfo}`,
-      body: `${jobLabelOf(ev)} · ${thTime(stamp.at)}${offSchedule ? " · นอกวันนัด" : ""}${where}`,
+      body: `${jobLabelOf(ev)} · ${thTime(stamp.at)}${offSchedule ? " · นอกวันนัด" : ""}${where}${teamInfo}`,
       url: `/operation/${ev._id}`,
       // แยก tag ตามวัน เพื่อให้การเข้างานคนละวันไม่ทับแจ้งเตือนเดิมของงานเดียวกัน
-      tag: `attendance-${ev._id}-${today}`,
+      tag: `attendance-${ev._id}-${today}-${uid}`,
     };
     const directRecipients = [...pushRecipients].filter((id) => id !== uid);
     if (directRecipients.length) sendPushToUsers(directRecipients, attendancePush).catch(() => {});
@@ -452,6 +468,7 @@ async function applyCorrection(row, c, byName, byUserId) {
     const dayEnd = new Date(`${addDays(workDay, 1)}T00:00:00+07:00`);
     const duplicate = await Attendance.findOne({
       eventId: row.eventId,
+      userId: row.userId, // 🔁 แยกรายคน
       _id: { $ne: row._id },
       $or: [
         { workDay },
@@ -459,7 +476,7 @@ async function applyCorrection(row, c, byName, byUserId) {
       ],
     }).lean();
     if (duplicate) {
-      const err = new Error(`แก้เวลาไม่ได้ — งานนี้มีบันทึกเข้างานวันที่ ${workDay} อยู่แล้ว`);
+      const err = new Error(`แก้เวลาไม่ได้ — ${row.userName || "คนนี้"} มีบันทึกเข้างานวันที่ ${workDay} ของงานนี้อยู่แล้ว`);
       err.status = 409;
       throw err;
     }
