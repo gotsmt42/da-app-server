@@ -226,7 +226,8 @@ router.get("/", verifyToken, async (req, res) => {
     //    รายการของงานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ไม่แสดงในหน้าเข้า-ออกงาน — ดูได้ในการ์ดงานหน้าการดำเนินงาน
     //    ⚠️ แท็บคำขอแก้เวลา (pending=1) ยังแสดงครบ ไม่งั้นคำขอของงานที่ปิดแล้วจะค้างโดยไม่มีใครเห็น
     let closedHidden = 0;
-    if (req.query.pending !== "1" && rows.length) {
+    // ✅ (4 พ.ย. 2569 ผู้ใช้: "ประวัติเข้างานทำให้ละเอียดและชัดเจนสมบูรณ์") includeClosed=1 = รวมงานที่ปิดแล้ว (ดูย้อนหลังครบ)
+    if (req.query.pending !== "1" && req.query.includeClosed !== "1" && rows.length) {
       const closed = new Set((await CalendarEvent.find({ _id: { $in: [...new Set(rows.map((r) => String(r.eventId)))] }, status: CLOSED })
         .select("_id").lean()).map((e) => String(e._id)));
       const before = rows.length;
