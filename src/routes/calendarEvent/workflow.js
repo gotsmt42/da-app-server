@@ -181,6 +181,46 @@ module.exports = (router) => {
     }
   });
 
+  /**
+   * ✅ (10 พ.ย. 2569 ผู้ใช้: "มูลค่างานครั้งนี้ … งานที่ไม่มีมูลค่า ให้เอา AI มาช่วยอ่านไฟล์ และเลือกได้ว่ายอดบวก VAT หรือ Net")
+   *    POST /:id/work-value/scan — อ่านไฟล์ของทั้งงาน (ทุกวันของ jobGroupId) คืน "ยอดก่อน VAT / VAT / ยอดรวม"
+   *    ⚠️ ไม่บันทึกอะไรเลย หน้าจอให้คนเลือกค่าแล้วกดบันทึกเอง · อ่านเฉพาะไฟล์ที่แนบกับงานนี้จริง (กัน SSRF/เผาโควตา)
+   *    ลำดับไฟล์: PO/เอกสารผลใบเสนอราคา > ใบเสนอราคาฉบับปัจจุบัน > ใบวางบิล > ไฟล์หลักฐาน (PDF ก่อน · ไม่เอารูปเช็คอิน/เช็คเอาต์)
+   */
+  router.post("/:id/work-value/scan", verifyToken, async (req, res) => {
+    try {
+      const WorkValueScan = require("../../services/WorkValueScan");
+      if (!WorkValueScan.isEnabled()) return res.status(503).json({ message: "ยังไม่ได้เปิดใช้งานการอ่านเอกสารด้วย AI (ไม่พบ ANTHROPIC_API_KEY)" });
+      const SEL = "_id jobGroupId quotationFiles quotationResultFiles invoiceFiles sitePhotoFiles userId team resPerson responsiblePerson responsiblePersonId teamMembers";
+      const ev = await CalendarEvent.findById(req.params.id).select(SEL).lean();
+      if (!ev) return res.status(404).json({ message: "ไม่พบงานนี้" });
+      const sessions = ev.jobGroupId ? await CalendarEvent.find({ jobGroupId: ev.jobGroupId }).select(SEL).lean() : [ev];
+      const allowed = can(req.user, "editFinance") || can(req.user, "editAnyJob")
+        || sessions.some((x) => isJobParticipant(x, req.userId, req.user.fname));
+      if (!allowed) return res.status(403).json({ message: "อ่านมูลค่างานได้เฉพาะงานที่คุณเกี่ยวข้องเท่านั้น" });
+      const { isPdfFile, isImageFile } = require("../../services/aiFileSource");
+      const seen = new Set();
+      const pick = (arr, kind) => arr
+        .filter((f) => f?.fileUrl && !seen.has(f.fileUrl) && (isPdfFile(f) || isImageFile(f)) && seen.add(f.fileUrl))
+        .map((f) => ({ fileName: f.fileName || "", fileUrl: f.fileUrl, fileType: f.fileType || "", kind }));
+      const all = (k) => sessions.flatMap((x) => x[k] || []);
+      const evidence = all("sitePhotoFiles").filter((f) => !f.stage);
+      const files = [
+        ...pick(all("quotationResultFiles"), "PO / เอกสารผลใบเสนอราคา"),
+        ...pick(all("quotationFiles").filter((f) => !f.supersededAt), "ใบเสนอราคา"),
+        ...pick(all("invoiceFiles"), "ใบวางบิล"),
+        ...pick(evidence.filter((f) => isPdfFile(f)), "เอกสารหลักฐาน"),
+        ...pick(evidence, "รูปหลักฐาน"),
+      ].slice(0, WorkValueScan.MAX_FILES);
+      if (!files.length) return res.status(400).json({ message: "งานนี้ยังไม่มีไฟล์รูปหรือ PDF ให้ AI อ่าน — แนบใบเสนอราคา/PO ก่อน หรือกรอกยอดเอง" });
+      const result = await WorkValueScan.scanWorkValue(files);
+      res.json({ result });
+    } catch (err) {
+      console.error("❌ อ่านมูลค่างานด้วย AI ไม่สำเร็จ:", err?.status, err?.message);
+      res.status(502).json({ message: require("../../services/aiFileSource").safeAiError(err) });
+    }
+  });
+
   // ─── สรุป Service Report ด้วย AI ────────────────────────────────────────────
   /**
    * ✅ (25 ต.ค. 2569 ผู้ใช้: "ทำระบบให้อ่าน Service Report ของช่าง แล้วกดสร้างสรุปออกมาเป็น PDF ให้สมบูรณ์ที่สุด")

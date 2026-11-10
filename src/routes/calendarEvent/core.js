@@ -815,6 +815,11 @@ module.exports = (router) => {
           if (n !== null && (!Number.isFinite(n) || n < 0)) return {};
           return { workValue: n, workValueBy: resubmitterName, workValueAt: new Date() };
         })() : {}),
+        // ✅ (10 พ.ย. 2569) ยอดนี้รวม VAT หรือก่อน VAT · ที่มาของค่า (ส่งมาเฉพาะตอนเปลี่ยน)
+        ...(req.body.workValueVatIncluded !== undefined ? { workValueVatIncluded: req.body.workValueVatIncluded === true || req.body.workValueVatIncluded === "true" } : {}),
+        ...(req.body.workValueSource !== undefined
+          ? { workValueSource: ["", "contract", "job", "quotation", "ai", "manual"].includes(req.body.workValueSource) ? req.body.workValueSource : "manual" }
+          : {}),
         ...pickJobInfo(req.body),
 
         // ✅ ส่งขออนุมัติใหม่อัตโนมัติ (ดู shouldResubmit ด้านบน) — ไม่เข้าเงื่อนไขก็ไม่ใส่ key พวกนี้เลย
