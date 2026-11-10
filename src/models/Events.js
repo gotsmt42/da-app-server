@@ -507,6 +507,22 @@ const eventSchema = new mongoose.Schema(
     contractYears: Number,
     estimatedDaysPerVisit: Number,
     jobValue: Number,
+    /**
+     * ✅ (10 พ.ย. 2569 ผู้ใช้: "งานสัญญาไม่ให้ระบุก่อน/รวม VAT รายครั้ง … ให้ไประบุที่หน้าภาพรวมงาน พร้อมแนบใบเสนอราคา")
+     *    jobValueVatIncluded = มูลค่าสัญญา (jobValue) รวม VAT แล้วหรือไม่ · null = ยังไม่ระบุ (คำนวณเป็นก่อน VAT)
+     *    ระดับ "สัญญา" — แก้ที่ PUT /contract/:id เท่านั้น · ทุกครั้งของสัญญาใช้ค่านี้เป็น workValueVatIncluded เสมอ
+     *    contractQuotationFiles = ใบเสนอราคา/เอกสารมูลค่าของทั้งสัญญา — เก็บชุดเดียวกัน (_id เดียวกัน) ทุกครั้งในสัญญา
+     */
+    jobValueVatIncluded: { type: Boolean, default: null },
+    contractQuotationFiles: [
+      {
+        fileName: String,
+        fileUrl: String,
+        fileType: String,
+        uploadedAt: { type: Date, default: Date.now },
+        uploadedBy: String,
+      },
+    ],
     // ✅ (2 พ.ย. 2569 ผู้ใช้: "เพิ่มการใส่มูลค่างานของทุกงาน ก่อนที่ช่างจะขอปิดงานได้")
     //    มูลค่างาน "ครั้งนี้" (รายครั้ง/รายงาน) — คนละค่ากับ jobValue (ระดับสัญญา) · ใส่ได้ทุกเมื่อ/ตอนขอปิดงาน (ไม่บังคับ — บางงานไม่มีมูลค่า)
     //    งานเข้าหลายวัน (jobGroupId) เก็บค่าเดียวกันทุกวัน — รวมยอดต้องนับครั้งเดียวต่องาน

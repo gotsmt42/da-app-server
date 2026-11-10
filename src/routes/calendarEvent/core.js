@@ -178,6 +178,19 @@ module.exports = (router) => {
         if (sibling) inheritedJobClassification = sibling.jobClassification;
       }
 
+      // ✅ (10 พ.ย. 2569) ครั้งใหม่ของสัญญาที่มีอยู่แล้ว = ใช้ธง VAT ของมูลค่าสัญญา + ใบเสนอราคาของสัญญาชุดเดียวกัน
+      //    (ทุกเส้นทางที่ลงครั้งใหม่ — ภาพรวมงาน/ปฏิทิน/คัดลอก — ไม่ต้องส่งมาเอง) · สัญญาใหม่ทั้งชุด = รับค่าจากฟอร์ม
+      let contractInherit = null;
+      if (req.body.contractGroupId) {
+        const sib = await CalendarEvent.findOne({ contractGroupId: req.body.contractGroupId })
+          .select("jobValueVatIncluded contractQuotationFiles").lean();
+        if (sib) contractInherit = { jobValueVatIncluded: sib.jobValueVatIncluded ?? null, contractQuotationFiles: sib.contractQuotationFiles || [] };
+      }
+      if (!contractInherit && contractGroupId && req.body.jobValueVatIncluded !== undefined) {
+        const v = req.body.jobValueVatIncluded;
+        contractInherit = { jobValueVatIncluded: v === true || v === "true" ? true : v === false || v === "false" ? false : null };
+      }
+
       // ⚠️ ตัดการเช็คช่างชนกัน (double-booking กับงานอื่นในระบบ) ออกตามที่ผู้ใช้ขอ — 1 ทีมรับหลายงานใน
       // วันเดียวกันได้ตามปกติ ไม่ควรบล็อก ยังคงเหลือแค่เช็ค "ชนกันเอง" ภายในชุดที่กำลังจะสร้างพร้อมกัน
       // (เช่น กรอกวันที่ครั้งที่ 1/3 ทับกันเอง) ไว้ เพราะเป็นการกรอกข้อมูลผิดพลาดจริง ไม่ใช่ double-booking
@@ -259,6 +272,10 @@ module.exports = (router) => {
         Object.assign(eventData, pickJobInfo(req.body));
         if (jobGroupId) eventData.jobGroupId = jobGroupId;
         if (contractGroupId) eventData.contractGroupId = contractGroupId;
+        if (contractGroupId && contractInherit) {
+          Object.assign(eventData, contractInherit);
+          eventData.workValueVatIncluded = contractInherit.jobValueVatIncluded === true;
+        }
         // ✅ สืบทอดหมวดหมู่งานจากพี่น้องในกลุ่มเดิม (ดูเหตุผลเต็มที่ inheritedJobClassification ด้านบน)
         if (inheritedJobClassification) eventData.jobClassification = inheritedJobClassification;
         eventData.userId = req.userId || req.body.userId;
@@ -816,7 +833,10 @@ module.exports = (router) => {
           return { workValue: n, workValueBy: resubmitterName, workValueAt: new Date() };
         })() : {}),
         // ✅ (10 พ.ย. 2569) ยอดนี้รวม VAT หรือก่อน VAT · ที่มาของค่า (ส่งมาเฉพาะตอนเปลี่ยน)
-        ...(req.body.workValueVatIncluded !== undefined ? { workValueVatIncluded: req.body.workValueVatIncluded === true || req.body.workValueVatIncluded === "true" } : {}),
+        // 🔁 งานสัญญา = ใช้ธงของมูลค่าสัญญาเสมอ (เลือกเองรายครั้งไม่ได้ — ระบุที่หน้าภาพรวมงาน)
+        ...(existingEvent.contractGroupId && (req.body.workValue !== undefined || req.body.workValueVatIncluded !== undefined)
+          ? { workValueVatIncluded: existingEvent.jobValueVatIncluded === true }
+          : req.body.workValueVatIncluded !== undefined ? { workValueVatIncluded: req.body.workValueVatIncluded === true || req.body.workValueVatIncluded === "true" } : {}),
         ...(req.body.workValueSource !== undefined
           ? { workValueSource: ["", "contract", "job", "quotation", "ai", "manual"].includes(req.body.workValueSource) ? req.body.workValueSource : "manual" }
           : {}),

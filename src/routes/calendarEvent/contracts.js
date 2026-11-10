@@ -13,13 +13,27 @@ const {
   findDuplicateContractNo,
   diffContractFields,
   DEPARTMENT,
+  upload,
+  cloudinary,
+  streamifier,
 } = require("./shared");
+const mongoose = require("mongoose");
+const { ALLOWED_IMAGE_TYPES } = require("../../config/upload");
 const { syncGroupsOf, syncGroupResponsible } = require("../../services/groupResponsible");
 const { totalRoundsOf } = require("../../utils/contractVisits");
 
 // ✅ ค่าแผนกที่ยอมรับได้ — อ่านจากตารางกลาง (config/roles.js) ไม่ hardcode สตริงซ้ำ เพื่อให้เพิ่มแผนก
 // ใหม่ในอนาคตแก้ที่เดียวแล้วมีผลทั้ง schema/route/หน้าจอพร้อมกัน
 const DEPARTMENT_VALUES = Object.values(DEPARTMENT);
+
+// ✅ (10 พ.ย. 2569) ธง "มูลค่าสัญญารวม VAT" — true/false · null/"" = ยังไม่ระบุ · undefined = ไม่ได้ส่งมา (ไม่แตะ)
+const parseVatFlag = (v) => {
+  if (v === undefined) return undefined;
+  if (v === true || v === "true") return true;
+  if (v === false || v === "false") return false;
+  return null;
+};
+const actorName = (req) => [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ไม่ทราบชื่อ";
 
 module.exports = (router) => {
   // ✅ รวมงานเก่าที่ยังไม่มี contractGroupId (สร้างก่อนมีฟีเจอร์สัญญา) เข้าเป็นสัญญาเดียวกัน — เลือก
@@ -41,6 +55,7 @@ module.exports = (router) => {
       // 1 แถวในตารางอาจมีหลาย document ที่ควรรวมเป็น "ครั้งเดียวกัน" ไม่ใช่แยกคนละครั้ง — เปลี่ยนมารับ
       // rounds เป็น array ของ array (แต่ละกลุ่มย่อย = document ทั้งหมดที่ควรอยู่ครั้งเดียวกัน) แทน
       const { rounds, contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, contractYears, estimatedDaysPerVisit, jobValue, province, city } = req.body;
+      const mergeVat = parseVatFlag(req.body.jobValueVatIncluded);
       if (!Array.isArray(rounds) || rounds.length === 0 || rounds.some((r) => !Array.isArray(r) || r.length === 0)) {
         return res.status(400).json({ message: "กรุณาเลือกงานอย่างน้อย 1 รายการ" });
       }
@@ -103,6 +118,7 @@ module.exports = (router) => {
                       estimatedDaysPerVisit: Number(estimatedDaysPerVisit) > 0 ? Number(estimatedDaysPerVisit) : undefined,
                       visitCount: resolvedVisitCount,
                       jobValue: jobValue != null && jobValue !== "" ? Number(jobValue) : undefined,
+                      ...(mergeVat !== undefined ? { jobValueVatIncluded: mergeVat, workValueVatIncluded: mergeVat === true } : {}),
                       time,
                       ...(jobGroupId ? { jobGroupId } : {}),
                     },
@@ -217,6 +233,9 @@ module.exports = (router) => {
             contractYears: contractHead.contractYears,
             estimatedDaysPerVisit: contractHead.estimatedDaysPerVisit,
             jobValue: contractHead.jobValue,
+            jobValueVatIncluded: contractHead.jobValueVatIncluded ?? null,
+            workValueVatIncluded: contractHead.jobValueVatIncluded === true,
+            contractQuotationFiles: contractHead.toObject().contractQuotationFiles || [],
             time: String(time),
             ...(jobGroupId ? { jobGroupId } : {}),
           },
@@ -259,6 +278,8 @@ module.exports = (router) => {
             contractEnd: "",
             visitCount: "",
             jobValue: "",
+            jobValueVatIncluded: "",
+            contractQuotationFiles: "",
           },
         }
       );
@@ -459,6 +480,10 @@ module.exports = (router) => {
         update.visitCount = visitCount;
       }
       if (jobValue !== undefined) update.jobValue = jobValue;
+      // ✅ (10 พ.ย. 2569) มูลค่าสัญญารวม VAT หรือไม่ — มูลค่างานรายครั้งของสัญญานี้ทุกครั้งใช้ธงเดียวกันเสมอ
+      //    (ฟอร์มรายครั้งไม่มีให้เลือกแล้ว) จึงอัปเดต workValueVatIncluded ทุกครั้งไปพร้อมกัน ยอดรวม/วางบิลถอด VAT ถูก
+      const vatFlag = parseVatFlag(req.body.jobValueVatIncluded);
+      if (vatFlag !== undefined) update.jobValueVatIncluded = vatFlag;
       // ⚠️ ห้ามติดลบ — ค่าคอมติดลบไม่มีความหมาย และจะไปทำให้ยอดรวมท้ายตารางเพี้ยนแบบหาสาเหตุยาก
       if (commission !== undefined) {
         if (commission !== "" && commission !== null && Number(commission) < 0) {
@@ -499,9 +524,10 @@ module.exports = (router) => {
 
       // ⚠️ ไม่มีอะไรเปลี่ยนจริงก็ไม่ต้อง log — หน้าภาพรวมงานส่งค่าทั้งชุดกลับมาทุกครั้งที่กดบันทึก
       // (แม้แก้ช่องเดียว) ถ้า log ทุกครั้งที่เรียก ไทม์ไลน์จะเต็มไปด้วยรายการ "ไม่ได้แก้อะไร" จนใช้ไม่ได้
+      const setFields = vatFlag !== undefined ? { ...update, workValueVatIncluded: vatFlag === true } : update;
       await CalendarEvent.updateMany(
         { contractGroupId },
-        logEntry ? { $set: update, $push: { activityLog: logEntry } } : { $set: update },
+        logEntry ? { $set: setFields, $push: { activityLog: logEntry } } : { $set: setFields },
       );
       const updatedEvents = await CalendarEvent.find({ contractGroupId }).lean();
       res.json({ events: updatedEvents });
@@ -515,6 +541,108 @@ module.exports = (router) => {
   // ที่ลบได้ทีละ event เท่านั้น ไม่มีทางลบสัญญาทั้งสัญญาได้จากหน้า "ภาพรวมสัญญา" เลย ต้องไล่ลบทีละครั้ง
   // path นี้ยาว 2 segment ("contract" + id) ต่างจาก DELETE /:id (1 segment) จึงไม่ชนกันไม่ว่าจะประกาศ
   // ก่อน/หลัง (ไม่เหมือนกรณี PUT /contract/merge vs PUT /contract/:contractGroupId ที่ต้องระวังลำดับ)
+  /**
+   * ✅ (10 พ.ย. 2569 ผู้ใช้: "ให้ไปดำเนินการที่หน้าภาพรวมงาน ระบุว่ารวม VAT หรือไม่ พร้อมให้แนบใบเสนอราคาที่หน้านั้นเลย")
+   *    POST   /contract/:id/quotation-file          แนบใบเสนอราคาของทั้งสัญญา (เก็บชุดเดียวกันทุกครั้งในสัญญา)
+   *    DELETE /contract/:id/quotation-file/:fileId  ลบไฟล์นั้นออกจากทุกครั้ง
+   *    POST   /contract/:id/value/scan              ให้ AI อ่านมูลค่าสัญญา (ก่อน VAT / รวม VAT) จากไฟล์ที่แนบ — ไม่บันทึกเอง
+   *    สิทธิ์ = editContracts เหมือนแก้ข้อมูลสัญญาอื่นๆ
+   */
+  router.post("/contract/:contractGroupId/quotation-file", verifyToken, upload.single("file"), async (req, res) => {
+    try {
+      if (!can(req.user, "editContracts")) return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขข้อมูลสัญญานี้" });
+      const { contractGroupId } = req.params;
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "ไม่พบไฟล์ที่แนบ" });
+      if (!(await CalendarEvent.exists({ contractGroupId }))) return res.status(404).json({ message: "ไม่พบสัญญานี้" });
+
+      const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
+      const safeName = originalName.replace(/[^\w\-.]/g, "_");
+      const isImage = ALLOWED_IMAGE_TYPES.includes(file.mimetype);
+      const stamp = Date.now();
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            resource_type: isImage ? "image" : "raw",
+            folder: `contracts/${contractGroupId}`,
+            // raw ต้องมีนามสกุลใน public_id เอง · image ให้ Cloudinary ต่อนามสกุลให้ · ประทับเวลากันชื่อซ้ำทับไฟล์เดิม
+            public_id: isImage ? `${stamp}_${safeName.replace(/\.[^.]+$/, "")}` : `${stamp}_${safeName}`,
+            use_filename: false,
+            unique_filename: false,
+            overwrite: false,
+          },
+          (error, r) => (error ? reject(error) : resolve(r))
+        );
+        streamifier.createReadStream(file.buffer).pipe(stream);
+      });
+
+      const entry = {
+        _id: new mongoose.Types.ObjectId(),
+        fileName: originalName,
+        fileUrl: result.secure_url,
+        fileType: file.mimetype,
+        uploadedAt: new Date(),
+        uploadedBy: actorName(req),
+      };
+      await CalendarEvent.updateMany(
+        { contractGroupId },
+        {
+          $push: {
+            contractQuotationFiles: entry,
+            activityLog: { action: "contract_updated", detail: `แนบใบเสนอราคาของสัญญา: ${originalName}`, userId: String(req.userId || ""), userName: actorName(req), timestamp: new Date() },
+          },
+        }
+      );
+      res.json({ file: entry });
+    } catch (err) {
+      console.error("❌ แนบใบเสนอราคาของสัญญาไม่สำเร็จ:", err?.message);
+      res.status(500).json({ message: "อัปโหลดไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง" });
+    }
+  });
+
+  router.delete("/contract/:contractGroupId/quotation-file/:fileId", verifyToken, async (req, res) => {
+    try {
+      if (!can(req.user, "editContracts")) return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขข้อมูลสัญญานี้" });
+      const { contractGroupId, fileId } = req.params;
+      if (!mongoose.isValidObjectId(fileId)) return res.status(400).json({ message: "รหัสไฟล์ไม่ถูกต้อง" });
+      const head = await CalendarEvent.findOne({ contractGroupId, "contractQuotationFiles._id": fileId }).select("contractQuotationFiles").lean();
+      if (!head) return res.status(404).json({ message: "ไม่พบไฟล์นี้ในสัญญา" });
+      const f = (head.contractQuotationFiles || []).find((x) => String(x._id) === String(fileId));
+      await CalendarEvent.updateMany(
+        { contractGroupId },
+        {
+          $pull: { contractQuotationFiles: { _id: new mongoose.Types.ObjectId(fileId) } },
+          $push: { activityLog: { action: "contract_updated", detail: `ลบใบเสนอราคาของสัญญา: ${f?.fileName || ""}`, userId: String(req.userId || ""), userName: actorName(req), timestamp: new Date() } },
+        }
+      );
+      res.json({ success: true });
+    } catch (err) {
+      console.error("❌ ลบใบเสนอราคาของสัญญาไม่สำเร็จ:", err?.message);
+      res.status(500).json({ message: "ลบไฟล์ไม่สำเร็จ" });
+    }
+  });
+
+  router.post("/contract/:contractGroupId/value/scan", verifyToken, async (req, res) => {
+    try {
+      if (!can(req.user, "editContracts")) return res.status(403).json({ message: "คุณไม่มีสิทธิ์แก้ไขข้อมูลสัญญานี้" });
+      const WorkValueScan = require("../../services/WorkValueScan");
+      if (!WorkValueScan.isEnabled()) return res.status(503).json({ message: "ยังไม่ได้เปิดใช้งานการอ่านเอกสารด้วย AI (ไม่พบ ANTHROPIC_API_KEY)" });
+      const { isPdfFile, isImageFile } = require("../../services/aiFileSource");
+      const head = await CalendarEvent.findOne({ contractGroupId: req.params.contractGroupId }).select("contractQuotationFiles").lean();
+      if (!head) return res.status(404).json({ message: "ไม่พบสัญญานี้" });
+      const usable = (head.contractQuotationFiles || []).filter((f) => f?.fileUrl && (isPdfFile(f) || isImageFile(f)));
+      const files = [...usable.filter((f) => isPdfFile(f)), ...usable.filter((f) => !isPdfFile(f))]
+        .slice(0, WorkValueScan.MAX_FILES)
+        .map((f) => ({ fileName: f.fileName || "", fileUrl: f.fileUrl, fileType: f.fileType || "", kind: "ใบเสนอราคาของสัญญา (มูลค่าทั้งสัญญา)" }));
+      if (!files.length) return res.status(400).json({ message: "แนบใบเสนอราคา (PDF หรือรูปภาพ) ของสัญญาก่อน แล้วค่อยให้ AI อ่าน" });
+      const result = await WorkValueScan.scanWorkValue(files);
+      res.json({ result });
+    } catch (err) {
+      console.error("❌ อ่านมูลค่าสัญญาด้วย AI ไม่สำเร็จ:", err?.status, err?.message);
+      res.status(502).json({ message: require("../../services/aiFileSource").safeAiError(err) });
+    }
+  });
+
   router.delete("/contract/:contractGroupId", verifyToken, async (req, res) => {
     try {
       if (!can(req.user, "editContracts")) {

@@ -88,6 +88,7 @@ const CONTRACT_FIELD_LABELS = {
   remark: "หมายเหตุ",
   contactName: "ผู้ติดต่อหน้างาน",
   contactTel: "เบอร์ผู้ติดต่อ",
+  jobValueVatIncluded: "มูลค่าสัญญา (VAT)",
 };
 // responsiblePersonId เปลี่ยนคู่กับ responsiblePerson เสมอ — log แค่ชื่อที่คนอ่านออกก็พอ ไม่งั้นได้
 // บรรทัดรหัสยาวๆ ที่ไม่มีความหมายกับผู้อ่านซ้อนมาอีกรายการทุกครั้งที่เปลี่ยนผู้รับผิดชอบ
@@ -121,6 +122,7 @@ function formatContractValue(field, v) {
   if (norm === "") return "(ว่าง)";
   if (DATE_CONTRACT_FIELDS.has(field)) return thaiDateNumeric(moment(norm, "YYYY-MM-DD"));
   if (field === "jobValue" || field === "commission") return `${Number(norm).toLocaleString("th-TH")} บาท`;
+  if (field === "jobValueVatIncluded") return norm === "true" ? "รวม VAT" : "ก่อน VAT";
   return norm;
 }
 
