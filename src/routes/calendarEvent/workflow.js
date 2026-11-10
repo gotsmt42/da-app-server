@@ -464,6 +464,15 @@ module.exports = (router) => {
    *    อิงสัญญา/งาน: เก็บชื่ออ้างอิงไว้ (label) + เติมลูกค้า/โครงการจากต้นทางให้ตรงกัน (ไม่ต้องพิมพ์ซ้ำ)
    *    สิทธิ์: ผู้ที่ดูใบเสนอราคาได้ (viewQuotations) หรือฝ่ายบริหาร/การเงิน
    */
+  /**
+   * ✅ (10 พ.ย. 2569 ผู้ใช้: "บันทึกได้งาน ให้แยกตัดเฉพาะใบที่ติ๊ก ไม่ใช่ตัดรวมทั้งหมด แบบนี้จะติดตามใบที่เหลือไม่ได้
+   *    ให้ตัดใบที่กดได้งาน และยอดนั้นๆ ไปได้งาน")
+   *    ได้งานบางใบ: ใบที่ได้งานอยู่กับงานเดิม (สถานะได้งาน · เลขที่/ยอดเฉพาะใบที่ได้)
+   *    ใบที่ยังไม่ได้ → ย้ายไฟล์ไปเป็น "ใบเสนอราคาแยก" ที่อิงงานนี้ ติดตามต่อได้ทันที (นับวันต่อจากเดิม · ประวัติติดตามติดไปด้วย)
+   *    ผลอ่าน AI (เลขที่/ยอดรายใบ) แบ่งตามใบ และเลขไฟล์ถูกนับใหม่ให้ตรงไฟล์ของแต่ละใบ
+   */
+  const splitRemainingQuotes = (anchor, d, ctx) => require("../../services/quotationSplit").splitRemainingQuotes(CalendarEvent, anchor, d, ctx);
+
   const quoteRefOf = async (raw) => {
     const r = raw || {};
     const str = (v, max) => String(v ?? "").trim().slice(0, max);
@@ -580,6 +589,13 @@ module.exports = (router) => {
         return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null;
       };
       const baht = (n) => `฿${Number(n).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      // ใบที่ "ไม่ได้" ติ๊กได้งาน → แยกไปติดตามต่อ: { fileIds, nos, amount }
+      const splitOf = (v) => {
+        if (!v || typeof v !== "object") return null;
+        const fileIds = Array.isArray(v.fileIds) ? [...new Set(v.fileIds.map((x) => str(x, 40)).filter(Boolean))].slice(0, 30) : [];
+        const nos = nosOf(v.nos);
+        return fileIds.length || nos.length ? { fileIds, nos, amount: amountOf(v.amount) } : null;
+      };
       const partText = (d) => (d.approvedNos?.length ? ` · อนุมัติ ${d.approvedNos.join(", ")}` : "") + (d.approvedAmount != null ? ` · ยอด ${baht(d.approvedAmount)}` : "");
 
       if (body.quotationNo !== undefined) { $set.quotationNo = str(body.quotationNo, 60); changes.push("เลขที่"); }
@@ -630,6 +646,7 @@ module.exports = (router) => {
       let log = changes.length ? ["quotation_updated", `แก้ข้อมูลใบเสนอราคา (${changes.join(" · ")})`] : null;
       let pushAfter = null;
       let pushHistory = null;
+      let splitAfter = null;
       const action = String(body.action || "");
       if (action) {
         const hasFiles = (anchor.quotationFiles || []).length > 0;
@@ -651,6 +668,7 @@ module.exports = (router) => {
             action, decidedAt: parseDay(body.decidedAt, true) || now, poNo: action === "approve" ? str(body.poNo, 60) : "", note,
             approvedNos: action === "approve" ? nosOf(body.approvedNos) : [],
             approvedAmount: action === "approve" ? amountOf(body.approvedAmount) : null,
+            split: action === "approve" ? splitOf(body.split) : null,
           };
           const label = action === "approve" ? "ได้งาน" : "ไม่ได้งาน";
           if (!isFinance) {
@@ -667,6 +685,7 @@ module.exports = (router) => {
             }, [String(req.userId)]);
           } else {
             Object.assign($set, applyDecision(decision, actorName, actorName, now));
+            splitAfter = decision.split ? decision : null;
             const others = [anchor.responsiblePersonId, anchor.userId].filter((u) => u && String(u) !== String(req.userId)).map(String);
             if (others.length) {
               pushAfter = () => sendPushToUsers(others, {
@@ -695,9 +714,11 @@ module.exports = (router) => {
               // แอดมินแก้ใบที่อนุมัติ/ยอดได้ตอนอนุมัติ (ไม่ส่ง = ตามคำขอ)
               approvedNos: r.action === "approve" ? (body.approvedNos !== undefined ? nosOf(body.approvedNos) : nosOf(r.approvedNos)) : [],
               approvedAmount: r.action === "approve" ? (body.approvedAmount !== undefined ? amountOf(body.approvedAmount) : amountOf(r.approvedAmount)) : null,
+              split: r.action === "approve" ? (body.split !== undefined ? splitOf(body.split) : splitOf(r.split)) : null,
             };
             if (decision.action === "reject" && !decision.note) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ไม่ได้งาน" });
             Object.assign($set, applyDecision(decision, r.by || actorName, actorName, now));
+            splitAfter = decision.split ? decision : null;
             log = [r.action === "approve" ? "quotation_approved" : "quotation_rejected", `อนุมัติผล "${label}" ตามคำขอของ ${r.by || "-"}${decision.poNo ? ` (PO ${decision.poNo})` : ""}${partText(decision)}${decision.note ? ` · ${decision.note}` : ""}`];
             pushAfter = () => r.byId && sendPushToUsers([r.byId], {
               title: `✅ อนุมัติผลใบเสนอราคาแล้ว: ${label}`,
@@ -790,6 +811,11 @@ module.exports = (router) => {
         await CalendarEvent.updateOne({ _id: anchor._id }, {
           $push: { activityLog: { action: log[0], detail: log[1], userId: String(req.userId), userName: actorName, timestamp: now } },
         });
+      }
+      // ✅ (10 พ.ย. 2569) ได้งานบางใบ → แยกใบที่เหลือไปติดตามต่อ (ไม่ปิดทั้งก้อน)
+      if (splitAfter) {
+        try { await splitRemainingQuotes(anchor, splitAfter, { actorName, userId: req.userId, now }); }
+        catch (e) { console.error("❌ แยกใบเสนอราคาที่เหลือไม่สำเร็จ:", e?.message); }
       }
       // แก้ผล (reset) แล้วใบที่มีไฟล์อยู่ → เริ่มนับติดตามต่อทันที (กลับไป "รอลูกค้าตอบ") ไม่ค้างที่ "กำลังเริ่มนับ"
       if (action === "reset") await require("../../services/quotationAutoStart").syncQuotationStartSafe({ ids: [anchor._id] });

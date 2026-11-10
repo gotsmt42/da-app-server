@@ -13,7 +13,8 @@
     "lint": "eslint . --max-warnings 0",
     "check:routes": "node scripts/checkRoutes.js",
     "check:perms": "node scripts/checkPermissions.js",
-    "test": "npm run lint && npm run check:routes && npm run check:perms",
+    "check:quote-split": "node scripts/checkQuotationSplit.js",
+    "test": "npm run lint && npm run check:routes && npm run check:quote-split && npm run check:perms",
     "force-logout-all": "node scripts/forceLogoutAll.js",
     "backfill-responsible-person": "node scripts/backfillResponsiblePerson.js",
     "check:users": "node scripts/checkUserRanks.js"

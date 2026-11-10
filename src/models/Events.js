@@ -311,6 +311,8 @@ const eventSchema = new mongoose.Schema(
      */
     quoteOnly: { type: Boolean, default: undefined, index: true },
     quoteRef: { type: mongoose.Schema.Types.Mixed, default: null },
+    // ✅ (10 พ.ย. 2569) ได้งานบางใบ → ใบที่ยังไม่ได้งานแยกไปติดตามต่อเป็นใบเสนอราคาแยก (id ของใบนั้น)
+    quotationSplitTo: { type: String, default: undefined },
     quotationApprovedAmount: { type: Number, default: null },
     /**
      * ✅ (26 ต.ค. 2569 ผู้ใช้: "การอัพเดตว่าได้งาน และ ไม่ได้งาน ให้ช่างส่งคำขอมา และต้องให้แอดมินอนุมัติก่อนเท่านั้น")
