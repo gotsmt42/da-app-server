@@ -299,6 +299,20 @@ const eventSchema = new mongoose.Schema(
     quotationDecisionNote: { type: String, default: "" }, // เหตุผลที่ปฏิเสธ / หมายเหตุตอนอนุมัติ
     quotationPoNo: { type: String, default: "" },         // เลขที่ PO ของลูกค้าเมื่ออนุมัติ
     /**
+     * ✅ (10 พ.ย. 2569 ผู้ใช้: "งานที่มีใบเสนอราคา 2 ใบ แต่อนุมัติแค่ใบเดียว ให้บันทึกได้งานแยกได้ · ยอดจะไม่ตรง")
+     *    ได้งานบางใบ: เลขที่ใบที่ลูกค้าอนุมัติ + ยอดที่อนุมัติจริง (ว่าง/null = อนุมัติทุกใบ ยอดเต็ม quotationAmount)
+     */
+    quotationApprovedNos: { type: [String], default: undefined },
+    /**
+     * ✅ (10 พ.ย. 2569 ผู้ใช้: "อัพไฟล์ใบเสนอราคาต่างหากได้ เลือกอิงงาน/งานสัญญาได้ · สัญญาหมดอายุต้องเสนอราคาใหม่ ติดตามได้")
+     *    quoteOnly = ใบเสนอราคาแยก (ไม่ใช่งานเข้างาน) — เก็บเป็นงาน unscheduled เพื่อใช้ระบบติดตามชุดเดียวกันทั้งหมด
+     *    ⚠️ ไม่ขึ้นในปฏิทิน/รับงาน/แผนงานล่วงหน้า (GET /drafts ตัดทิ้งเว้นแต่ขอ ?quotes=1|only) · ไม่มี contractGroupId (ไม่นับเป็นครั้งของสัญญา)
+     *    quoteRef = อิงกับอะไร: { kind: "event"|"contract", eventId, contractGroupId, label } · ไม่มี = ใบลอย
+     */
+    quoteOnly: { type: Boolean, default: undefined, index: true },
+    quoteRef: { type: mongoose.Schema.Types.Mixed, default: null },
+    quotationApprovedAmount: { type: Number, default: null },
+    /**
      * ✅ (26 ต.ค. 2569 ผู้ใช้: "การอัพเดตว่าได้งาน และ ไม่ได้งาน ให้ช่างส่งคำขอมา และต้องให้แอดมินอนุมัติก่อนเท่านั้น")
      *    คนที่ไม่มีสิทธิ์ editFinance กด ได้งาน/ไม่ได้งาน = ส่ง "คำขอ" ไว้ที่นี่ (สถานะใบยังไม่เปลี่ยน)
      *    ผู้มีสิทธิ์ editFinance อนุมัติ → ใช้ผลตามคำขอ · ไม่อนุมัติ → ล้างคำขอพร้อมเหตุผล

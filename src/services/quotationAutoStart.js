@@ -62,7 +62,7 @@ async function syncQuotationStart(scope = {}) {
     const filter2 = list[0].jobGroupId ? { jobGroupId: key } : { _id: list[0]._id };
     const res = await CalendarEvent.updateMany(
       { ...filter2, $or: [{ quotationStatus: null }, { quotationStatus: { $exists: false } }] },
-      { $set: { quotationStatus: "sent", quotationSentAt: sentAt, quotationDecisionAt: null, quotationDecisionBy: null, quotationDecisionNote: "", quotationPoNo: "" } },
+      { $set: { quotationStatus: "sent", quotationSentAt: sentAt, quotationDecisionAt: null, quotationDecisionBy: null, quotationDecisionNote: "", quotationPoNo: "", quotationApprovedNos: [], quotationApprovedAmount: null } },
     );
     if (res.modifiedCount) {
       started += 1;

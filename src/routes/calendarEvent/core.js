@@ -551,7 +551,8 @@ module.exports = (router) => {
       //    ไม่ใช่ฝ่ายบริหาร/การเงิน = ทิ้งช่องผลใบเสนอราคาที่ส่งมา (ค่าเดิมคงอยู่ ไม่ error — ฟอร์มที่ส่งทั้งก้อนยังบันทึกได้)
       if (!can(req.user, "editFinance") && req.body && typeof req.body === "object") {
         ["quotationStatus", "quotationDecisionAt", "quotationDecisionBy", "quotationDecisionNote", "quotationPoNo",
-          "quotationDecisionRequest", "quotationDecisionApprovedBy", "quotationDecisionApprovedAt"].forEach((k) => { delete req.body[k]; });
+          "quotationDecisionRequest", "quotationDecisionApprovedBy", "quotationDecisionApprovedAt",
+          "quotationApprovedNos", "quotationApprovedAmount"].forEach((k) => { delete req.body[k]; });
       }
 
       // ✅ งานที่ปิดแล้ว (ดำเนินการเสร็จสิ้น) ห้ามช่างแก้ไขอีก มีแค่ admin/manager เท่านั้นที่ทำได้

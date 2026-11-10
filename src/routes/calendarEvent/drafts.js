@@ -349,6 +349,18 @@ module.exports = (router) => {
       // ✅ งานวางแผนล่วงหน้าก็แยกแผนกเหมือนกัน
       // ✅ งานที่ยกเลิกแล้ว (เมนู "รับงาน") ไม่ขึ้นในแผงงานล่วงหน้า/ป้ายตัวเลข — หน้า "รับงาน" ขอดูได้ด้วย ?includeCancelled=1
       if (req.query.includeCancelled !== "1") { query.cancelledAt = null; query.noteDoneAt = null; }
+      // ✅ (10 พ.ย. 2569) ใบเสนอราคาแยก (quoteOnly) ไม่ใช่แผนงาน — ไม่ขึ้นในแผงงานล่วงหน้า/รับงาน/ป้ายตัวเลข
+      //    ?quotes=1 = รวมด้วย (หน้าติดตามใบเสนอราคา) · ?quotes=only = เฉพาะใบเสนอราคาแยก (หน้าภาพรวมงาน — สถานะเสนอราคาต่อสัญญา)
+      if (req.query.quotes === "only") {
+        query.quoteOnly = true;
+        // ✅ คนที่อยู่ในงาน (ช่าง/หัวหน้าทีม) เห็นใบเสนอราคาแยกที่ "อิงงานของตัวเอง" ด้วย แม้คนอื่นเป็นผู้สร้างใบ
+        if (!isAdminOrManager && Array.isArray(query.$or)) {
+          const mine = await CalendarEvent.find({ $or: query.$or, quoteOnly: { $ne: true } }).select("_id jobGroupId").lean();
+          const ids = mine.map((m) => String(m._id));
+          const gids = [...new Set(mine.map((m) => m.jobGroupId).filter(Boolean).map(String))];
+          query.$or = [...query.$or, { "quoteRef.eventId": { $in: ids } }, ...(gids.length ? [{ "quoteRef.jobGroupId": { $in: gids } }] : [])];
+        }
+      } else if (req.query.quotes !== "1") query.quoteOnly = { $ne: true };
       // ✅ (12 ต.ค. 2569) คลังงานในหน่วยความจำ (ดู services/eventOpCache.js)
       const drafts = await findEvents(withDepartmentScope(query, req), { sort: { createdAt: -1 } });
       res.json({ drafts });
@@ -693,7 +705,8 @@ module.exports = (router) => {
       if (draft.quotationStatus && !target.quotationStatus) {
         ["quotationStatus", "quotationSentAt", "quotationAmount", "quotationNo", "quotationDate", "quotationValidUntil", "quotationVatIncluded",
           "quotationContact", "quotationNextFollowUpAt", "quotationApplicable", "quotationRevision", "quotationRevisions", "quotationAiFilled",
-          "quotationDecisionAt", "quotationDecisionBy", "quotationDecisionNote", "quotationPoNo", "quotationDecisionRequest"].forEach((k) => {
+          "quotationDecisionAt", "quotationDecisionBy", "quotationDecisionNote", "quotationPoNo", "quotationDecisionRequest",
+          "quotationApprovedNos", "quotationApprovedAmount"].forEach((k) => {
           if (draft[k] !== undefined) job[k] = draft[k];
         });
       }

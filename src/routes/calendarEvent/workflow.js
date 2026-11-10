@@ -15,6 +15,8 @@ const {
   sendPushToRoles,
   SUPERVISOR_ROLES,
   isJobParticipant,
+  departmentOf,
+  DEPARTMENT,
 } = require("./shared");
 
 const FOLLOWUP_CHANNELS = ["phone", "line", "email", "visit", "other"];
@@ -167,7 +169,11 @@ module.exports = (router) => {
         const out = await QuotationScan.autoFillQuotation(ev._id);
         return res.json({ result: out?.result || null, filled: out?.filled || [] });
       }
-      const result = await QuotationScan.scanQuotationFiles((ev.quotationFiles || []).filter((f) => !f.supersededAt));
+      // ✅ (10 พ.ย. 2569 ผู้ใช้: "ให้ AI อ่านยอดต้องติ๊กเลือกไฟล์ก่อน · ไฟล์ที่มีราคาแล้วไม่ต้องอ่านซ้ำ") — fileId = อ่านเฉพาะไฟล์นั้น (ไม่บันทึกทับผลเดิม)
+      const current = (ev.quotationFiles || []).filter((f) => !f.supersededAt);
+      const only = req.body.fileId ? current.filter((f) => String(f._id) === String(req.body.fileId)) : current;
+      if (req.body.fileId && !only.length) return res.status(404).json({ message: "ไม่พบไฟล์นี้ในใบเสนอราคาฉบับปัจจุบัน" });
+      const result = await QuotationScan.scanQuotationFiles(only);
       res.json({ result });
     } catch (err) {
       console.error("❌ อ่านใบเสนอราคาด้วย AI ไม่สำเร็จ:", err?.status, err?.message);
@@ -443,8 +449,113 @@ module.exports = (router) => {
     quotationStatus: d.action === "approve" ? "approved" : "rejected",
     quotationDecisionAt: d.decidedAt || now, quotationDecisionBy: decidedBy,
     quotationDecisionNote: d.note || "", quotationPoNo: d.action === "approve" ? d.poNo || "" : "",
+    // ✅ (10 พ.ย. 2569) ได้งานบางใบ — เลขที่ใบที่อนุมัติ + ยอดที่อนุมัติจริง (ไม่ส่ง = ทุกใบ/ยอดเต็ม)
+    quotationApprovedNos: d.action === "approve" && d.approvedNos?.length ? d.approvedNos : [],
+    quotationApprovedAmount: d.action === "approve" && d.approvedAmount != null ? d.approvedAmount : null,
     quotationNextFollowUpAt: null, quotationDecisionRequest: null,
     quotationDecisionApprovedBy: approvedBy, quotationDecisionApprovedAt: now,
+  });
+
+  /**
+   * ✅ (10 พ.ย. 2569 ผู้ใช้: "เพิ่มให้อัพไฟล์ต่างหากได้ เลือกอิงงานต่างๆ หรืองานสัญญาได้ · อัพเดตให้ตรงกันทั้งหมด
+   *    · สัญญาหมดอายุแล้วต้องเสนอราคาใหม่ อ้างอิงยังไงให้ดูง่าย ติดตามได้ · หน้าภาพรวมงานมีสถานะ + ลิงก์มาดูได้")
+   *    POST /quotation-only     — สร้างใบเสนอราคาแยก { company, site, title, system?, description?, quoteRef? }
+   *    PUT  /:id/quote-ref      — แก้ข้อมูล/การอิงของใบเสนอราคาแยก · { cancel: true } = ยกเลิกใบ (เก็บประวัติ)
+   *    อิงสัญญา/งาน: เก็บชื่ออ้างอิงไว้ (label) + เติมลูกค้า/โครงการจากต้นทางให้ตรงกัน (ไม่ต้องพิมพ์ซ้ำ)
+   *    สิทธิ์: ผู้ที่ดูใบเสนอราคาได้ (viewQuotations) หรือฝ่ายบริหาร/การเงิน
+   */
+  const quoteRefOf = async (raw) => {
+    const r = raw || {};
+    const str = (v, max) => String(v ?? "").trim().slice(0, max);
+    if (r.kind === "contract" && r.contractGroupId) {
+      const c = await CalendarEvent.findOne({ contractGroupId: String(r.contractGroupId) })
+        .select("company site title system contractNo contractEnd contractGroupId").sort({ start: 1 }).lean();
+      if (!c) return { error: "ไม่พบสัญญาที่อ้างอิง" };
+      return { ref: { kind: "contract", contractGroupId: String(c.contractGroupId), label: str(c.contractNo || `สัญญา ${c.site || c.company || ""}`, 120), contractEnd: c.contractEnd || null }, src: c };
+    }
+    if (r.kind === "event" && r.eventId) {
+      const e = await CalendarEvent.findById(String(r.eventId)).select("company site title system jobNo start jobGroupId quoteOnly").lean();
+      if (!e || e.quoteOnly) return { error: "ไม่พบงานที่อ้างอิง" };
+      // jobGroupId = งานหลายวัน — ทุกวันของงานเห็นใบที่อิงได้ (ไม่ใช่เฉพาะวันที่เลือก)
+      return { ref: { kind: "event", eventId: String(e._id), jobGroupId: e.jobGroupId ? String(e.jobGroupId) : null, label: str([e.jobNo, e.title, e.system].filter(Boolean).join(" · ") || "งาน", 120), start: e.start || null }, src: e };
+    }
+    return { ref: null, src: null };
+  };
+
+  router.post("/quotation-only", verifyToken, async (req, res) => {
+    try {
+      if (!can(req.user, "viewQuotations") && !can(req.user, "editFinance")) return res.status(403).json({ message: "ไม่มีสิทธิ์เพิ่มใบเสนอราคา" });
+      const b = req.body || {};
+      const str = (v, max) => String(v ?? "").trim().slice(0, max);
+      const { ref, src, error } = await quoteRefOf(b.quoteRef);
+      if (error) return res.status(404).json({ message: error });
+      const company = str(b.company, 200) || src?.company || "";
+      const site = str(b.site, 200) || src?.site || company;
+      const title = str(b.title, 200) || (ref?.kind === "contract" ? "เสนอราคาต่อสัญญา" : src?.title) || "ใบเสนอราคา";
+      if (!site) return res.status(400).json({ message: "กรุณาระบุลูกค้า / โครงการ" });
+      const actorName = [req.user.fname, req.user.lname].filter(Boolean).join(" ") || req.user.username;
+      const now = new Date();
+      const doc = await new CalendarEvent({
+        quoteOnly: true, quoteRef: ref, unscheduled: true,
+        department: departmentOf(req.user) || DEPARTMENT.SERVICE,
+        company, site, title, system: str(b.system, 120) || src?.system || "",
+        description: str(b.description, 2000),
+        start: now, end: now, allDay: true,
+        backgroundColor: "#2563eb", textColor: "#ffffff", fontSize: 8,
+        userId: req.userId, responsiblePerson: req.user.fname || actorName, responsiblePersonId: String(req.userId),
+        quotationApplicable: true, approvalStatus: "approved", status: "กำลังดำเนินการ",
+        activityLog: [{ userId: String(req.userId), userName: actorName, action: "quotation_created", timestamp: now,
+          detail: `เพิ่มใบเสนอราคาแยก${ref ? ` · อิง${ref.kind === "contract" ? "สัญญา" : "งาน"} ${ref.label}` : ""}` }],
+      }).save();
+      res.status(201).json({ event: doc });
+    } catch (err) {
+      console.error("❌ เพิ่มใบเสนอราคาแยกไม่สำเร็จ:", err?.message);
+      res.status(500).json({ message: "เพิ่มใบเสนอราคาไม่สำเร็จ" });
+    }
+  });
+
+  router.put("/:id/quote-ref", verifyToken, async (req, res) => {
+    try {
+      const ev = await CalendarEvent.findById(req.params.id);
+      if (!ev || !ev.quoteOnly) return res.status(404).json({ message: "ไม่พบใบเสนอราคานี้" });
+      const isFinance = can(req.user, "editFinance");
+      if (!isFinance && !isJobParticipant(ev, req.userId, req.user.fname)) return res.status(403).json({ message: "แก้ไขได้เฉพาะผู้รับผิดชอบหรือฝ่ายบริหาร/การเงิน" });
+      const b = req.body || {};
+      const str = (v, max) => String(v ?? "").trim().slice(0, max);
+      const actorName = [req.user.fname, req.user.lname].filter(Boolean).join(" ") || req.user.username;
+      const $set = {};
+      let detail = "";
+      if (b.cancel) {
+        if (ev.quotationStatus === "approved" && !isFinance) return res.status(403).json({ message: "ใบที่ได้งานแล้ว ยกเลิกได้เฉพาะฝ่ายบริหาร/การเงิน" });
+        $set.cancelledAt = new Date(); $set.cancelledBy = actorName; $set.cancelReason = str(b.reason, 300) || "ยกเลิกใบเสนอราคา";
+        detail = `ยกเลิกใบเสนอราคาแยก — ${$set.cancelReason}`;
+      } else {
+        if (b.quoteRef !== undefined) {
+          const { ref, src, error } = await quoteRefOf(b.quoteRef);
+          if (error) return res.status(404).json({ message: error });
+          $set.quoteRef = ref;
+          // อิงใหม่ = ลูกค้า/โครงการตามต้นทาง (ตรงกันทั้งระบบ) เว้นแต่ส่งค่ามาเอง
+          if (src && b.company === undefined) $set.company = src.company || ev.company;
+          if (src && b.site === undefined) $set.site = src.site || ev.site;
+          detail = ref ? `เปลี่ยนการอ้างอิงเป็น${ref.kind === "contract" ? "สัญญา" : "งาน"} ${ref.label}` : "ยกเลิกการอ้างอิง (ใบลอย)";
+        }
+        if (b.company !== undefined) $set.company = str(b.company, 200);
+        if (b.site !== undefined) { $set.site = str(b.site, 200); if (!$set.site) return res.status(400).json({ message: "กรุณาระบุลูกค้า / โครงการ" }); }
+        if (b.title !== undefined) $set.title = str(b.title, 200) || "ใบเสนอราคา";
+        if (b.system !== undefined) $set.system = str(b.system, 120);
+        if (b.description !== undefined) $set.description = str(b.description, 2000);
+        if (!detail && Object.keys($set).length) detail = "แก้ข้อมูลใบเสนอราคาแยก";
+      }
+      if (!Object.keys($set).length) return res.json({ event: ev });
+      const updated = await CalendarEvent.findByIdAndUpdate(ev._id, {
+        $set,
+        $push: { activityLog: { userId: String(req.userId), userName: actorName, action: "quotation_updated", detail, timestamp: new Date() } },
+      }, { new: true });
+      res.json({ event: updated });
+    } catch (err) {
+      console.error("❌ แก้ใบเสนอราคาแยกไม่สำเร็จ:", err?.message);
+      res.status(500).json({ message: "บันทึกไม่สำเร็จ" });
+    }
   });
 
   router.put("/:id/quotation", verifyToken, async (req, res) => {
@@ -461,6 +572,15 @@ module.exports = (router) => {
       const $set = {};
       const changes = [];
       const str = (v, max) => String(v ?? "").trim().slice(0, max);
+      // ได้งานบางใบ: รายการเลขที่ (ไม่ซ้ำ ≤ 20 ใบ) · ยอด ≥ 0 ปัด 2 ตำแหน่ง · ค่าว่าง/ผิด = ไม่ระบุ (ทุกใบ)
+      const nosOf = (v) => (Array.isArray(v) ? [...new Set(v.map((x) => str(x, 60)).filter(Boolean))].slice(0, 20) : []);
+      const amountOf = (v) => {
+        if (v === undefined || v === null || v === "") return null;
+        const n = Number(v);
+        return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null;
+      };
+      const baht = (n) => `฿${Number(n).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const partText = (d) => (d.approvedNos?.length ? ` · อนุมัติ ${d.approvedNos.join(", ")}` : "") + (d.approvedAmount != null ? ` · ยอด ${baht(d.approvedAmount)}` : "");
 
       if (body.quotationNo !== undefined) { $set.quotationNo = str(body.quotationNo, 60); changes.push("เลขที่"); }
       if (body.quotationDate !== undefined) { $set.quotationDate = parseDay(body.quotationDate); changes.push("วันที่ใบเสนอราคา"); }
@@ -473,6 +593,14 @@ module.exports = (router) => {
       }
       // ✅ (19 ต.ค. 2569) แก้/เติมรายละเอียดผลภายหลังได้ (เลข PO · วันที่ลูกค้าตอบ · หมายเหตุ/เหตุผล) โดยไม่เปลี่ยนสถานะ
       if (body.quotationPoNo !== undefined) { $set.quotationPoNo = str(body.quotationPoNo, 60); changes.push("เลข PO"); }
+      // ✅ (10 พ.ย. 2569) แก้ใบที่ลูกค้าอนุมัติ/ยอดอนุมัติภายหลัง (เฉพาะใบที่ได้งานแล้ว · ฝ่ายบริหาร/การเงิน)
+      if (body.quotationApprovedNos !== undefined || body.quotationApprovedAmount !== undefined) {
+        if (!isFinance) return res.status(403).json({ message: "แก้ยอดที่ลูกค้าอนุมัติได้เฉพาะฝ่ายบริหาร/การเงิน" });
+        if (anchor.quotationStatus !== "approved") return res.status(409).json({ message: "แก้ยอดอนุมัติได้เฉพาะใบที่ได้งานแล้ว" });
+        if (body.quotationApprovedNos !== undefined) $set.quotationApprovedNos = nosOf(body.quotationApprovedNos);
+        if (body.quotationApprovedAmount !== undefined) $set.quotationApprovedAmount = amountOf(body.quotationApprovedAmount);
+        changes.push("ยอดที่อนุมัติ");
+      }
       if (body.quotationDecisionNote !== undefined) {
         $set.quotationDecisionNote = str(body.quotationDecisionNote, 500);
         if (anchor.quotationStatus === "rejected" && !$set.quotationDecisionNote) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ไม่ได้งาน" });
@@ -511,6 +639,7 @@ module.exports = (router) => {
             quotationStatus: "sent", quotationSentAt: parseDay(body.sentAt, true) || now,
             quotationDecisionAt: null, quotationDecisionBy: null, quotationDecisionNote: "", quotationPoNo: "",
             quotationDecisionRequest: null, quotationDecisionApprovedBy: "", quotationDecisionApprovedAt: null,
+            quotationApprovedNos: [], quotationApprovedAmount: null,
           });
           log = ["quotation_sent", anchor.quotationStatus ? "ส่งใบเสนอราคา (ฉบับแก้ไข) ให้ลูกค้าอีกครั้ง" : "ส่งใบเสนอราคาให้ลูกค้า"];
         } else if (action === "approve" || action === "reject") {
@@ -518,13 +647,17 @@ module.exports = (router) => {
           if (["approved", "rejected"].includes(anchor.quotationStatus)) return res.status(409).json({ message: "ใบนี้บันทึกผลแล้ว" });
           const note = str(body.decisionNote, 500);
           if (action === "reject" && !note) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ลูกค้าปฏิเสธ" });
-          const decision = { action, decidedAt: parseDay(body.decidedAt, true) || now, poNo: action === "approve" ? str(body.poNo, 60) : "", note };
+          const decision = {
+            action, decidedAt: parseDay(body.decidedAt, true) || now, poNo: action === "approve" ? str(body.poNo, 60) : "", note,
+            approvedNos: action === "approve" ? nosOf(body.approvedNos) : [],
+            approvedAmount: action === "approve" ? amountOf(body.approvedAmount) : null,
+          };
           const label = action === "approve" ? "ได้งาน" : "ไม่ได้งาน";
           if (!isFinance) {
             // ✅ ไม่ใช่แอดมิน = ส่งคำขอ รออนุมัติ — สถานะใบยังไม่เปลี่ยน (ยังนับติดตามต่อ)
             if (anchor.quotationDecisionRequest?.action) return res.status(409).json({ message: "มีคำขอบันทึกผลรออนุมัติอยู่แล้ว — ยกเลิกคำขอเดิมก่อน" });
             $set.quotationDecisionRequest = { ...decision, by: actorName, byId: String(req.userId), at: now };
-            log = ["quotation_decision_requested", `ขอบันทึกผล "${label}" — รอแอดมินอนุมัติ${decision.poNo ? ` (PO ${decision.poNo})` : ""}${note ? ` · ${note}` : ""}`];
+            log = ["quotation_decision_requested", `ขอบันทึกผล "${label}" — รอแอดมินอนุมัติ${decision.poNo ? ` (PO ${decision.poNo})` : ""}${partText(decision)}${note ? ` · ${note}` : ""}`];
             pushAfter = () => sendPushToRoles(financeRanks(), {
               title: `🧾 ${actorName} ขออนุมัติผลใบเสนอราคา: ${label}`,
               body: `${[anchor.company, anchor.site].filter(Boolean).join(" · ") || anchor.title || "ใบเสนอราคา"}${anchor.quotationNo ? ` · ${anchor.quotationNo}` : ""}${note ? ` · ${note}` : ""}`,
@@ -543,7 +676,7 @@ module.exports = (router) => {
               });
             }
             log = action === "approve"
-              ? ["quotation_approved", `ลูกค้าอนุมัติใบเสนอราคา${decision.poNo ? ` (PO ${decision.poNo})` : ""}`]
+              ? ["quotation_approved", `ลูกค้าอนุมัติใบเสนอราคา${decision.poNo ? ` (PO ${decision.poNo})` : ""}${partText(decision)}`]
               : ["quotation_rejected", `ลูกค้าปฏิเสธใบเสนอราคา — ${note}`];
           }
         } else if (action === "approveRequest" || action === "rejectRequest") {
@@ -559,10 +692,13 @@ module.exports = (router) => {
               decidedAt: parseDay(body.decidedAt, true) || (r.decidedAt ? new Date(r.decidedAt) : now),
               poNo: r.action === "approve" ? (body.poNo !== undefined ? str(body.poNo, 60) : str(r.poNo, 60)) : "",
               note: body.decisionNote !== undefined ? str(body.decisionNote, 500) : str(r.note, 500),
+              // แอดมินแก้ใบที่อนุมัติ/ยอดได้ตอนอนุมัติ (ไม่ส่ง = ตามคำขอ)
+              approvedNos: r.action === "approve" ? (body.approvedNos !== undefined ? nosOf(body.approvedNos) : nosOf(r.approvedNos)) : [],
+              approvedAmount: r.action === "approve" ? (body.approvedAmount !== undefined ? amountOf(body.approvedAmount) : amountOf(r.approvedAmount)) : null,
             };
             if (decision.action === "reject" && !decision.note) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ไม่ได้งาน" });
             Object.assign($set, applyDecision(decision, r.by || actorName, actorName, now));
-            log = [r.action === "approve" ? "quotation_approved" : "quotation_rejected", `อนุมัติผล "${label}" ตามคำขอของ ${r.by || "-"}${decision.poNo ? ` (PO ${decision.poNo})` : ""}${decision.note ? ` · ${decision.note}` : ""}`];
+            log = [r.action === "approve" ? "quotation_approved" : "quotation_rejected", `อนุมัติผล "${label}" ตามคำขอของ ${r.by || "-"}${decision.poNo ? ` (PO ${decision.poNo})` : ""}${partText(decision)}${decision.note ? ` · ${decision.note}` : ""}`];
             pushAfter = () => r.byId && sendPushToUsers([r.byId], {
               title: `✅ อนุมัติผลใบเสนอราคาแล้ว: ${label}`,
               body: `${[anchor.company, anchor.site].filter(Boolean).join(" · ")}${anchor.quotationNo ? ` · ${anchor.quotationNo}` : ""} · โดย ${actorName}`,
@@ -618,6 +754,7 @@ module.exports = (router) => {
             quotationRevision: rev + 1, quotationStatus: "revising", quotationSentAt: null,
             quotationDecisionAt: null, quotationDecisionBy: null, quotationDecisionNote: "", quotationPoNo: "",
             quotationNextFollowUpAt: null, quotationDecisionRequest: null, quotationDecisionApprovedBy: "", quotationDecisionApprovedAt: null,
+            quotationApprovedNos: [], quotationApprovedAmount: null,
             // ให้ AI อ่านเลขที่/วันที่/มูลค่า/ผู้ติดต่อจากฉบับใหม่ทับค่าฉบับเดิม (แก้เองทีหลังได้)
             quotationAiFilled: { ...(anchor.toObject().quotationAiFilled || {}), fields: ["quotationNo", "quotationDate", "quotationValidUntil", "quotationAmount", "quotationContact"] },
           });
@@ -637,6 +774,7 @@ module.exports = (router) => {
             quotationStatus: null, quotationSentAt: null, quotationDecisionAt: null, quotationDecisionBy: null,
             quotationDecisionNote: "", quotationPoNo: "", quotationNextFollowUpAt: null,
             quotationDecisionRequest: null, quotationDecisionApprovedBy: "", quotationDecisionApprovedAt: null,
+            quotationApprovedNos: [], quotationApprovedAmount: null,
           });
           log = ["quotation_reset", "ย้อนสถานะใบเสนอราคากลับเป็น \"ยังไม่ส่งลูกค้า\""];
         } else {
