@@ -868,8 +868,30 @@ router.get("/report", verifyToken, async (req, res) => {
       .lean();
     // ✅ เติมชื่อ-นามสกุลให้ครบเหมือนหน้าอื่น — รายงาน/ไฟล์ Excel ต้องไม่โชว์ชื่อต้นอย่างเดียว
     const rows = advances.map((a) => ({ ...a, claim: claimByAdvance.get(String(a._id)) || null }));
-    await withFullNames([...rows, ...rows.map((r) => r.claim).filter(Boolean), ...reimbursements, ...contractors]);
-    res.json({ advances: rows, reimbursements, contractors });
+    /**
+     * ✅ (11 พ.ย. 2569 ผู้ใช้: "ยอดเคลม/สำรองจ่ายอิงยอด Advance ไหม ใบข้ามเดือนจะเช็คยอดเดือนให้ถูกต้อง")
+     *    carryIn = ใบเคลมที่ "ลงวันที่ในช่วงนี้" แต่ใบ Advance อยู่ก่อนช่วง (เบิก ต.ค. · เคลม พ.ย.)
+     *    หน้ารายงานโหมด "นับตามวันที่ใบเคลม" ใช้ก้อนนี้ให้ยอดใช้จริงของเดือนครบ · โหมด "ตามวันที่ใบ Advance" ไม่ใช้
+     */
+    let carryIn = [];
+    if (query.docDate) {
+      const inRangeIds = new Set(ids);
+      const lateClaims = await Expense.find({
+        ...scopeFor(req), kind: "claim", advanceId: { $exists: true, $nin: [null, "", ...ids] },
+        claimType: { $nin: ["reimburse", "contractor"] }, status: { $ne: "cancelled" }, docDate: query.docDate,
+        ...(query["requester.userId"] ? { "requester.userId": query["requester.userId"] } : {}),
+      }).select("-activityLog -attachments").sort({ createdAt: -1 }).lean();
+      const advIds = [...new Set(lateClaims.map((c) => String(c.advanceId)).filter((id) => !inRangeIds.has(id)))];
+      if (advIds.length) {
+        const olderAdvances = await Expense.find({ _id: { $in: advIds }, kind: "advance", status: { $ne: "cancelled" } })
+          .select("-activityLog -attachments").lean();
+        const latestByAdv = new Map();
+        lateClaims.forEach((c) => { if (!latestByAdv.has(String(c.advanceId))) latestByAdv.set(String(c.advanceId), c); });
+        carryIn = olderAdvances.map((a) => ({ ...a, claim: latestByAdv.get(String(a._id)) || null })).filter((a) => a.claim);
+      }
+    }
+    await withFullNames([...rows, ...rows.map((r) => r.claim).filter(Boolean), ...carryIn, ...carryIn.map((r) => r.claim), ...reimbursements, ...contractors]);
+    res.json({ advances: rows, carryIn, reimbursements, contractors });
   } catch (err) {
     console.error("❌ ดึงรายงานการเบิกไม่สำเร็จ:", err);
     res.status(500).json({ message: "ดึงรายงานไม่สำเร็จ" });

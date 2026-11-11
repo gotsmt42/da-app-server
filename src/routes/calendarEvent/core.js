@@ -866,6 +866,24 @@ module.exports = (router) => {
        */
       // 🔁 (26 ต.ค. 2569 ผู้ใช้: "อัพใบมั่วๆ ยังขอปิดมาได้") — ทุกคนที่ "ขอปิดงาน" ต้องผ่านการตรวจ (รวมผู้จัดการ/แอดมิน)
       //    แอดมินยังอนุมัติ/ปิดงานเองได้ตามเดิม (คนละเส้นทางกับการขอปิด)
+      /**
+       * ⛔ (11 พ.ย. 2569 ผู้ใช้: "บังคับช่างที่มีชื่ออยู่ในรายการงาน ต้องบันทึกเข้างานของตัวเองทุกคน ไม่ใช่แค่หัวหน้าทีม")
+       *    ขอปิดงานได้เมื่อทุกคนในทีม (หัวหน้าทีม + ลูกทีม) มีบันทึกเข้างานของตัวเองแล้ว — ใครไม่ได้ไป ให้เอาชื่อออกจากทีม
+       */
+      if (req.body.closeRequested === true && !existingEvent.closeRequested) {
+        const { crewStatus, enforced } = require("../../services/crewAttendance");
+        if (enforced(existingEvent)) {
+          const { missing } = await crewStatus(existingEvent);
+          if (missing.length) {
+            const names = missing.map((m) => m.name || "ไม่ทราบชื่อ").join(", ");
+            return res.status(409).json({
+              code: "CREW_NOT_CHECKED_IN",
+              missing: missing.map((m) => m.name),
+              message: `ขอปิดงานไม่ได้ — ยังไม่ได้บันทึกเข้างาน: ${names} · ทุกคนในทีมต้องกดบันทึกเข้างานของตัวเอง (ใครไม่ได้ไปจริง ให้ผู้รับผิดชอบเอาชื่อออกจากทีมก่อน)`,
+            });
+          }
+        }
+      }
       if (req.body.closeRequested === true && !existingEvent.closeRequested
         && require("../../services/InvoiceScan").isEnabled()) {
         const CloseCheck = require("../../services/CloseCheck");

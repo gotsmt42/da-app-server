@@ -25,6 +25,20 @@ const verifyToken = require("../middleware/auth");
 const { can, SUPERVISOR_ROLES, effectiveCapabilities } = require("../config/roles");
 const { sendPushToUsers, sendPushToRoles } = require("../services/PushNotify");
 const { resolveMapUrl } = require("../services/mapEmbed");
+const { covers, coveringSibling, moveSitePhotos, healOffSchedule, rangeLabel } = require("../services/attendanceSession");
+
+/** ✅ (11 พ.ย. 2569) ก่อนส่งบันทึกเข้างาน — ย้ายบันทึกที่อยู่ผิดช่วงวันของงานเดียวกันไปช่วงที่ถูก (ดู services/attendanceSession.js) */
+async function healGroups(jobGroupIds) {
+  const ids = [...new Set((jobGroupIds || []).filter(Boolean))].slice(0, 100);
+  if (!ids.length) return 0;
+  try {
+    const off = await Attendance.find({ jobGroupId: { $in: ids }, offSchedule: true }).select("_id eventId jobGroupId userId userName offSchedule checkIn.at checkIn.photos").lean();
+    return await healOffSchedule(off);
+  } catch (err) {
+    console.error("ย้ายบันทึกเข้างานที่อยู่ผิดช่วงไม่สำเร็จ:", err.message);
+    return 0;
+  }
+}
 
 const router = express.Router();
 
@@ -178,9 +192,11 @@ router.get("/events", verifyToken, async (req, res) => {
   try {
     const ids = [...new Set(String(req.query.ids || "").split(",").filter((x) => /^[a-f0-9]{24}$/i.test(x)))].slice(0, 300);
     if (!ids.length) return res.json({ byEvent: {}, serverNow: new Date() });
-    const evs = await CalendarEvent.find({ _id: { $in: ids } }).select("resPerson responsiblePersonId team responsiblePerson teamMembers userId").lean();
+    const evs = await CalendarEvent.find({ _id: { $in: ids } }).select("jobGroupId resPerson responsiblePersonId team responsiblePerson teamMembers userId").lean();
     const all = can(req.user, "viewAllJobs");
-    const allowed = evs.filter((ev) => all || isParticipant(ev, req.user, req.userId) || String(ev.userId) === String(req.userId)).map((ev) => ev._id);
+    const allowedEvs = evs.filter((ev) => all || isParticipant(ev, req.user, req.userId) || String(ev.userId) === String(req.userId));
+    const allowed = allowedEvs.map((ev) => ev._id);
+    await healGroups(allowedEvs.map((ev) => ev.jobGroupId));
     const rows = allowed.length ? await withTeam(await Attendance.find({ eventId: { $in: allowed } }).sort({ "checkIn.at": -1 }).lean()) : [];
     const byEvent = {};
     allowed.forEach((id) => { byEvent[String(id)] = []; });
@@ -200,6 +216,7 @@ router.get("/event/:eventId", verifyToken, async (req, res) => {
     if (!can(req.user, "viewAllJobs") && !isParticipant(ev, req.user, req.userId) && String(ev.userId) !== String(req.userId)) {
       return res.status(403).json({ message: "ไม่มีสิทธิ์ดูข้อมูลงานนี้" });
     }
+    if (ev.jobGroupId) await healGroups([ev.jobGroupId]);
     const filter = req.query.group === "1" && ev.jobGroupId ? { jobGroupId: ev.jobGroupId } : { eventId: ev._id };
     const rows = await withTeam(await Attendance.find(filter).sort({ "checkIn.at": -1 }).lean());
     // ?site=1 — พิกัดหน้างาน ให้หน้าเช็คอินบอกระยะห่างได้ก่อนกดยืนยัน (ไม่ส่งมา = ไม่เสียเวลาแปลงลิงก์)
@@ -261,8 +278,28 @@ router.get("/", verifyToken, async (req, res) => {
 // ── เช็คอิน ────────────────────────────────────────────────────────────────
 router.post("/check-in", verifyToken, async (req, res) => {
   try {
-    const ev = await CalendarEvent.findById(req.body.eventId);
+    let ev = await CalendarEvent.findById(req.body.eventId);
     if (!ev) return res.status(404).json({ message: "ไม่พบงาน" });
+    /**
+     * 🐛 (11 พ.ย. 2569 ผู้ใช้: "บันทึกงานของอีกวันช่วงนี้ ไปขึ้นอีกช่วง") — งานเดียวแบ่งหลายช่วงวัน (jobGroupId):
+     *    วันนี้ไม่อยู่ในช่วงของการ์ดที่กด แต่มีช่วงอื่นของงานเดียวกันครอบคลุม → บันทึกลงช่วงนั้นแทน (ย้ายรูปที่เพิ่งแนบตามไป)
+     */
+    let redirectedFrom = null;
+    {
+      const todayKey = bkkDay(new Date());
+      if (ev.jobGroupId && !covers(ev, todayKey)) {
+        const sib = await coveringSibling(ev, todayKey);
+        if (sib) {
+          if (!isOnTeam(sib, req.user, req.userId)) {
+            return res.status(400).json({ message: `วันนี้เป็นงานช่วง ${rangeLabel(sib)} — ไม่มีชื่อคุณในทีมของช่วงนั้น ให้ผู้รับผิดชอบเพิ่มชื่อก่อน แล้วบันทึกเข้างานที่ช่วงนั้น` });
+          }
+          await moveSitePhotos(ev._id, sib._id, req.body.photoIds);
+          redirectedFrom = { _id: String(ev._id), label: rangeLabel(ev) };
+          ev = await CalendarEvent.findById(sib._id);
+          if (!ev) return res.status(404).json({ message: "ไม่พบงาน" });
+        }
+      }
+    }
     if (ev.department === "sales") return res.status(400).json({ message: "นัดหมายฝ่ายขายไม่ใช้การกดเข้างาน" });
     if (ev.unscheduled || ev.cancelledAt) return res.status(400).json({ message: "งานนี้ยังไม่ได้ลงตาราง" });
     if (ev.status === CLOSED) return res.status(400).json({ message: "งานนี้ปิดแล้ว" });
@@ -438,22 +475,53 @@ router.post("/check-in", verifyToken, async (req, res) => {
         teamInfo = ` · ทีมเข้างานแล้ว ${Math.min(inToday, crew.length)}/${crew.length} คน`;
       }
     }
-    const attendancePush = {
-      title: `📍 ${name} บันทึกเข้างานแล้ว${dayInfo}`,
-      body: `${jobLabelOf(ev)} · ${thTime(stamp.at)}${offSchedule ? " · นอกวันนัด" : ""}${where}${teamInfo}`,
-      url: `/operation/${ev._id}`,
+    /**
+     * 🔁 (11 พ.ย. 2569 ผู้ใช้: "การแจ้งเตือนต่างๆ ให้ลิงก์ให้ตรง เวลามีการบันทึกเข้างาน ให้ชัดเจน")
+     *    • ข้อความบอกผลตำแหน่งเป็นภาษาคน: ✓ อยู่หน้างาน / ⚠ ห่างหน้างาน / ⚠ ไม่มีพิกัด / เทียบหน้างานไม่ได้
+     *    • ลิงก์: หัวหน้า (เห็นบันทึกทุกคน) → เปิดรายละเอียดบันทึกนั้นทันที (/attendance?date=&open=)
+     *             ผู้รับผิดชอบงาน → เปิดงานนั้น (เห็นบันทึกเข้างานในการ์ดงาน)
+     */
+    const locText = stamp.gps !== "ok" ? "⚠ ไม่มีพิกัด GPS"
+      : stamp.distanceM == null ? "บันทึกพิกัดแล้ว (หน้างานยังไม่มีพิกัดให้เทียบ)"
+        : stamp.distanceM <= 300 ? `✓ อยู่หน้างาน (ห่าง ${distText(stamp.distanceM)})` : `⚠ ห่างหน้างาน ${distText(stamp.distanceM)}`;
+    const pushBase = {
+      title: `📍 ${name} บันทึกเข้างาน ${thTime(stamp.at)}${dayInfo}`,
+      body: [jobLabelOf(ev), locText, offSchedule ? "⚠ นอกวันนัด" : "", teamInfo.replace(/^ · /, "")].filter(Boolean).join(" · "),
       // แยก tag ตามวัน เพื่อให้การเข้างานคนละวันไม่ทับแจ้งเตือนเดิมของงานเดียวกัน
       tag: `attendance-${ev._id}-${today}-${uid}`,
     };
     const directRecipients = [...pushRecipients].filter((id) => id !== uid);
-    if (directRecipients.length) sendPushToUsers(directRecipients, attendancePush).catch(() => {});
+    if (directRecipients.length) sendPushToUsers(directRecipients, { ...pushBase, url: `/operation/${ev._id}` }).catch(() => {});
     // แจ้งแอดมิน/ผู้จัดการ/กรรมการผู้จัดการให้ติดตามด้วย และตัดผู้รับผิดชอบที่รับแจ้งตรงออกเพื่อไม่ให้ซ้ำ
-    sendPushToRoles(SUPERVISOR_ROLES, attendancePush, [...pushRecipients]).catch(() => {});
+    sendPushToRoles(SUPERVISOR_ROLES, { ...pushBase, url: `/attendance?date=${today}&open=${row._id}` }, [...pushRecipients]).catch(() => {});
+
+    /**
+     * ✅ (11 พ.ย. 2569 ผู้ใช้: "บังคับช่างที่มีชื่อในงาน ต้องบันทึกเข้างานของตัวเองทุกคน · การแจ้งเตือนให้ดูง่าย ชัดเจน")
+     *    คนในทีมที่ยังไม่บันทึกเข้างานวันนี้ → แจ้งให้กดของตัวเอง (ส่งครั้งเดียวต่อคนต่อวัน — tag เดียวกันทับของเดิม)
+     */
+    try {
+      const { crewStatus, enforced } = require("../services/crewAttendance");
+      if (enforced(ev)) {
+        const { missing } = await crewStatus(ev, { range: { from: dayStart, to: dayEnd } });
+        const ids = missing.map((m) => m.userId).filter((id) => id && id !== uid);
+        if (ids.length) {
+          sendPushToUsers(ids, {
+            title: `⏰ ยังไม่ได้บันทึกเข้างานวันนี้`,
+            body: `${jobLabelOf(ev)} · ${name} เข้างานแล้ว ${thTime(stamp.at)} — กดบันทึกเข้างานของคุณเอง (ถ่ายรูป + ตำแหน่ง)`,
+            url: `/operation/${ev._id}`,
+            tag: `attendance-remind-${ev._id}-${today}`,
+          }).catch(() => {});
+        }
+      }
+    } catch (e) { console.error("แจ้งเตือนทีมที่ยังไม่บันทึกเข้างานไม่สำเร็จ:", e.message); }
 
     // ✅ (11 ต.ค. 2569 ผู้ใช้: "เมื่อกดเข้างาน สถานะงานต้องเปลี่ยนเป็นกำลังดำเนินการ")
     //    คืนงานทั้งกลุ่ม (สถานะใหม่ + acks) ให้หน้าจอแก้ข้อมูลในที่ทันที — ฟอร์ม EditEvent จะได้ไม่บันทึกสถานะเก่าทับ
     const events = await CalendarEvent.find(groupFilter(ev)).lean();
-    res.status(201).json({ attendance: row.toObject(), events, serverNow: new Date() });
+    res.status(201).json({
+      attendance: row.toObject(), events, serverNow: new Date(),
+      ...(redirectedFrom ? { redirected: { from: redirectedFrom, to: { _id: String(ev._id), label: rangeLabel(ev) } } } : {}),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "บันทึกเข้างานไม่สำเร็จ ลองใหม่อีกครั้ง" });
