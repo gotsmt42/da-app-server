@@ -421,8 +421,17 @@ module.exports = (router) => {
 
       res.status(201).json({ events });
     } catch (error) {
-      console.error(error);
-      res.status(500).send("Internal Server Error");
+      console.error("❌ POST /events:", error);
+      // ✅ (11 พ.ย. 2569 ผู้ใช้: "กดลงงานไม่ได้") ส่งเหตุผลกลับไปให้หน้าฟอร์มแสดง — เดิมเป็นข้อความ "Internal Server Error"
+      //    หน้าฟอร์มจึงขึ้นได้แค่ "บันทึกไม่สำเร็จ" ไม่รู้ว่าต้องแก้อะไร
+      if (error?.name === "ValidationError") {
+        const fields = Object.keys(error.errors || {}).join(", ");
+        return res.status(400).json({ message: `ข้อมูลไม่ครบหรือไม่ถูกต้อง (${fields}) — ตรวจช่องที่ต้องกรอกแล้วลองใหม่` });
+      }
+      if (error?.name === "CastError") {
+        return res.status(400).json({ message: `ข้อมูลช่อง ${error.path || ""} ไม่ถูกต้อง — ตรวจแล้วลองใหม่` });
+      }
+      res.status(500).json({ message: "บันทึกงานไม่สำเร็จ (เซิร์ฟเวอร์ขัดข้อง) — ลองใหม่อีกครั้ง ถ้ายังไม่ได้แจ้งผู้ดูแลระบบ" });
     }
   });
 
