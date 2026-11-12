@@ -344,8 +344,12 @@ module.exports = (router) => {
         // ⚠️ ค่าคอมต้องถูกกันด้วยเงื่อนไขเดียวกับมูลค่างาน — เป็นข้อมูลการเงินเหมือนกัน และฝั่งจอก็เปิดให้
         // แก้เฉพาะ isAdminOrManager อยู่แล้ว (ดู editable ของช่อง commission ใน ContractOverview.js)
         // ถ้าลืมกันตรงนี้จะกลายเป็นช่องโหว่ที่ยิง API ตรงๆ แล้วผู้รับผิดชอบงานแก้ตัวเลขค่าคอมเองได้
-        if (jobValue !== undefined) {
-          return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แก้ไขมูลค่างานได้" });
+        // 🔁 (12 พ.ย. 2569 ผู้ใช้: "มูลค่ารวมให้แก้ตรงนี้ได้ด้วย · งานของผู้รับผิดชอบนั้นๆ") ผู้รับผิดชอบงานแก้ "มูลค่างานรวม"
+        //    ของงานตัวเองได้ (รวมงานสัญญา) — เฉพาะคำขอที่แก้มูลค่างานอย่างเดียว · ค่าคอมยังเฉพาะแอดมิน/manager
+        var onlyJobValue = jobValue !== undefined && [company, site, system, title, docNo, team, resPerson, commission, departmentTag, statusNote, remark, contactName, contactTel]
+          .every((v) => v === undefined);
+        if (jobValue !== undefined && !onlyJobValue) {
+          return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แก้ไขมูลค่างานพร้อมข้อมูลอื่นได้" });
         }
         if (commission !== undefined) {
           return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่แก้ไขค่าคอมมิชชั่นได้" });
@@ -357,7 +361,7 @@ module.exports = (router) => {
           .select("responsiblePersonId responsiblePerson contractGroupId").lean();
         const userId = req.userId;
         const isAllResponsible = targetEvents.length === eventIds.length && targetEvents.every((e) =>
-          !e.contractGroupId && (
+          (!e.contractGroupId || onlyJobValue) && (
             (e.responsiblePersonId && e.responsiblePersonId === userId) ||
             (e.responsiblePerson && e.responsiblePerson === req.user.fname)
           )
@@ -431,6 +435,17 @@ module.exports = (router) => {
             responsiblePerson: update.responsiblePerson || "",
             responsiblePersonId: update.responsiblePersonId || "",
           });
+        }
+      }
+      // ✅ มูลค่างานรวมเป็นของ "ทั้งงาน/ทั้งสัญญา" — แก้จากวันใดวันหนึ่ง = อัปเดตทุกวัน/ทุกครั้งในกลุ่มเดียวกัน
+      if (update.jobValue !== undefined) {
+        const touched = await CalendarEvent.find({ _id: { $in: eventIds } }).select("contractGroupId jobGroupId").lean();
+        const seen = new Set();
+        for (const d of touched) {
+          const f = groupFilterOf(d);
+          if (!f || seen.has(JSON.stringify(f))) continue;
+          seen.add(JSON.stringify(f));
+          await CalendarEvent.updateMany(f, { $set: { jobValue: update.jobValue } });
         }
       }
       const updatedEvents = await CalendarEvent.find({ _id: { $in: eventIds } }).lean();

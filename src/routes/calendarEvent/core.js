@@ -230,10 +230,23 @@ module.exports = (router) => {
       // ต่อเนื่องให้ครั้งเดิม (isIntentionalExtend) เพราะไม่ได้กินโควตาครั้งใหม่เพิ่ม
       if (req.body.contractGroupId && Number(req.body.visitCount) > 0 && rangesToCheck.length > 0 && !isIntentionalExtend) {
         const visitCount = Number(req.body.visitCount);
-        const existingCount = await CalendarEvent.countDocuments({ contractGroupId: req.body.contractGroupId });
-        if (existingCount + rangesToCheck.length > visitCount) {
+        /**
+         * 🐛 (12 พ.ย. 2569 ผู้ใช้: "มีรอบสัญญาให้ลง แต่ลงแล้วไม่ได้" — สัญญา 2 ครั้ง ลงครั้งที่ 1 แล้ว กดลงครั้งที่ 2 ขึ้น
+         *    "ตอนนี้มี 2 ครั้งแล้ว") เดิมนับด้วย countDocuments = จำนวน record ดิบ — ครั้งที่เข้าหลายช่วงวัน (ไม่ติดกัน)
+         *    มีหลาย record ต่อ 1 ครั้ง จึงนับเกินจริง ทั้งที่หน้าจอ (countUsedRounds) นับได้ 1 ครั้ง
+         *    ✅ นับ "ครั้งที่ไม่ซ้ำกัน" (distinct time) แบบเดียวกับหน้าจอ / PUT สัญญา / ใบแจ้งงาน
+         *    ✅ ครั้งที่ขอเพิ่ม = ครั้งที่ในคำขอที่ยังไม่มีในสัญญา (หลายช่วงของครั้งเดียวกัน = 1 ครั้ง)
+         */
+        const asRound = (t) => (t === undefined || t === null || t === "" ? null : String(t));
+        const existingDocs = await CalendarEvent.find({ contractGroupId: req.body.contractGroupId }).select("time").lean();
+        const usedRounds = new Set(existingDocs.map((e) => asRound(e.time)).filter(Boolean));
+        const reqTimes = (Array.isArray(dates) && dates.length > 0 ? dates.map((d) => asRound(d?.time ?? req.body.time)) : [asRound(req.body.time)]);
+        const newRounds = reqTimes.every(Boolean)
+          ? new Set(reqTimes.filter((t) => !usedRounds.has(t))).size
+          : rangesToCheck.length; // คำขอไม่ระบุครั้งที่ — นับตามจำนวนช่วงเหมือนเดิม
+        if (usedRounds.size + newRounds > visitCount) {
           return res.status(409).json({
-            message: `สัญญานี้กำหนดไว้ ${visitCount} ครั้ง ตอนนี้มี ${existingCount} ครั้งแล้ว ไม่สามารถเพิ่มอีก ${rangesToCheck.length} ครั้งได้`,
+            message: `สัญญานี้กำหนดไว้ ${visitCount} ครั้ง ลงไปแล้ว ${usedRounds.size} ครั้ง — เพิ่มอีก ${newRounds} ครั้งไม่ได้ (แก้ "จำนวนครั้งทั้งหมด" ของสัญญาก่อน ถ้าต้องการเพิ่ม)`,
           });
         }
       }
