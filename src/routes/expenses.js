@@ -167,6 +167,7 @@ const sanitizeItems = (raw, kind) =>
         timeFrom: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(it?.timeFrom || "")) ? String(it.timeFrom) : "",
         people: Math.min(Math.max(Math.round(Number(it?.people) || 0), 0), 999),
         timeTo: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(it?.timeTo || "")) ? String(it.timeTo) : "",
+        shift: it?.shift === "night" && parseDay(it?.workDate) ? "night" : "", // กะกลางคืน (เฉพาะแถวที่มีวันที่)
         person: {
           userId: /^[a-f0-9]{24}$/i.test(String(it?.person?.userId || "")) ? String(it.person.userId) : "",
           name: String(it?.person?.name || "").trim().slice(0, 80),
