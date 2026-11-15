@@ -29,7 +29,7 @@ const OrgSetting = require("../models/OrgSetting");
 const CalendarEvent = require("../models/Events");
 const DocCounter = require("../models/DocCounter");
 const verifyToken = require("../middleware/auth");
-const { can, rankLabelOf, titleOf, normalizeRank, rankFilter, effectiveCapabilities, CAPABILITIES, DEPARTMENT } = require("../config/roles");
+const { can, rankLabelOf, titleOf, normalizeRank, rankFilter, effectiveCapabilities, CAPABILITIES, DEPARTMENT, isSuperAdmin } = require("../config/roles");
 const { cloudinary } = require("../config/cloudinary");
 const { fileFilter, limits } = require("../config/upload");
 const { sendPushToUsers } = require("../services/PushNotify");
@@ -2298,6 +2298,70 @@ router.post("/:id/settle", verifyToken, upload.array("files", 5), async (req, re
   } catch (err) {
     console.error("❌ ปิดส่วนต่างไม่สำเร็จ:", err);
     res.status(500).json({ message: "ปิดส่วนต่างไม่สำเร็จ" });
+  }
+});
+
+/**
+ * ย้อนขั้นอนุมัติ 1 ขั้น — ✅ (15 พ.ย. 2569 ผู้ใช้: "ใบเบิก/เคลม ให้ย้อนกลับได้ เวลากดอนุมัติขั้นสุดท้าย เพราะบางทีกดผิดแล้วไปเลย · ให้ได้เฉพาะ Super Admin")
+ *   🔒 เฉพาะ Super Admin (Role ในระบบ) · ต้องใส่เหตุผล · เก็บประวัติในใบทุกครั้ง
+ *   ตรวจสอบแล้ว → รอตรวจสอบ · อนุมัติแล้ว → รออนุมัติ
+ *   Advance จ่ายเงินแล้ว → รออนุมัติเบิกจ่าย (ยังไม่มีใบเคลม) · ใบเคลมปิดแล้ว → ขั้นก่อนหน้า + ใบ Advance กลับไปรอเคลียร์
+ *   ⚠️ ไฟล์ที่แนบตอนจ่าย (สลิป) ยังอยู่ในใบ — ลบเองได้ถ้าไม่ใช้
+ */
+const REVERT_LABEL = { pending: "รอตรวจสอบ", reviewed: "รออนุมัติ", approved: "รออนุมัติเบิกจ่าย", paid: "จ่ายเงินแล้ว", settled: "ปิดรายการแล้ว" };
+router.post("/:id/revert", verifyToken, async (req, res) => {
+  try {
+    if (!isSuperAdmin(req.user)) return res.status(403).json({ message: "ย้อนขั้นอนุมัติได้เฉพาะ Super Admin" });
+    const doc = await loadVisible(req, res);
+    if (!doc) return;
+    const reason = String(req.body?.reason || "").trim().slice(0, 300);
+    if (!reason) return res.status(400).json({ message: "กรุณาระบุเหตุผลที่ย้อนขั้น" });
+
+    const me = actor(req);
+    const from = doc.status;
+    let to = "";
+    let advance = null;
+    const clearReview = () => { doc.reviewedBy = undefined; doc.reviewedAt = null; doc.set("signatures.reviewer", undefined); };
+    const clearApprove = () => { doc.approvedBy = undefined; doc.approvedAt = null; doc.set("signatures.approver", undefined); };
+    const clearPayment = () => { doc.payment = undefined; doc.set("signatures.disburser", undefined); };
+
+    if (from === "reviewed") {
+      to = "pending"; clearReview();
+    } else if (from === "approved") {
+      to = "reviewed"; clearApprove();
+    } else if (doc.kind === "advance" && from === "paid") {
+      to = "approved"; clearPayment(); doc.dueClearAt = null;
+    } else if (doc.kind === "claim" && from === "settled") {
+      // ปิดตอนกดอนุมัติเลย (ไม่มีส่วนต่าง) → ย้อนไปรออนุมัติ · ปิดตอนอนุมัติเบิกจ่าย → ย้อนไปรออนุมัติเบิกจ่าย
+      const lastStep = [...(doc.activityLog || [])].reverse().find((l) => ["approved", "settled"].includes(l.action))?.action;
+      clearPayment();
+      if (lastStep === "approved") { to = "reviewed"; clearApprove(); } else to = "approved";
+      advance = doc.advanceId ? await Expense.findById(doc.advanceId) : null;
+      if (advance && advance.status === "cleared") {
+        advance.status = "clearing";
+        log(advance, "reverted", `ใบเคลม ${doc.docNo} ถูกย้อนขั้น — กลับไปรอเคลียร์`, me);
+      } else advance = null;
+    } else if (doc.kind === "advance" && ["clearing", "cleared"].includes(from)) {
+      return res.status(409).json({ message: `ใบ Advance นี้มีใบเคลมแล้ว (${doc.claimDocNo || "ใบเคลม"}) — ย้อนขั้นที่ใบเคลมแทน` });
+    } else {
+      return res.status(409).json({ message: "ใบในสถานะนี้ย้อนขั้นไม่ได้" });
+    }
+
+    doc.status = to;
+    log(doc, "reverted", `ย้อนขั้น: ${REVERT_LABEL[from] || from} → ${REVERT_LABEL[to] || to} · เหตุผล: ${reason}`, me);
+    await doc.save();
+    if (advance) await advance.save();
+
+    notifyUsers(ownersOf(doc), me, {
+      title: `↩️ ${labelOf(doc)}ถูกย้อนขั้นอนุมัติ`,
+      body: [`${doc.docNo} · ${doc.subject || ""}`, `${REVERT_LABEL[from] || from} → ${REVERT_LABEL[to] || to}`, `เหตุผล: ${reason}`, `โดย ${fullNameOf(req.user)}`].join("\n"),
+      url: urlOf(doc),
+      tag: `expense-${doc._id}`,
+    });
+    res.json({ expense: await withFullNames(doc.toObject()) });
+  } catch (err) {
+    console.error("❌ ย้อนขั้นใบเบิกไม่สำเร็จ:", err);
+    res.status(500).json({ message: "ย้อนขั้นไม่สำเร็จ" });
   }
 });
 
