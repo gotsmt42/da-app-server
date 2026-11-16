@@ -439,6 +439,36 @@ function expiryPayload(kind, list, personal) {
   };
 }
 
+/**
+ * ✅ สัญญาที่ "ต่อแล้ว" (contractGroupId) — มีสัญญาจริงของ บริษัท + โครงการ + ประเภทงาน + ระบบ เดียวกัน ที่เริ่มหลังสัญญานี้
+ * 🐛 (16 พ.ย. 2569 ผู้ใช้: "สัญญาที่กดต่อสัญญาไปแล้ว ไม่มีในแถบหมดอายุ แต่ยังแจ้งเตือนมา")
+ *    เดิมดูแค่วันสิ้นสุดสัญญา → สัญญาเก่าที่ต่อเป็นฉบับใหม่แล้วยังถูกแจ้งว่า "หมดอายุแล้ว" ทุกสัปดาห์
+ * ⚠️ เกณฑ์ต้องตรงกับ renewalMap ใน da-app/src/shared/utils/contractOverdue.js (แถบ "หมดอายุ · รอต่อสัญญา" ใช้ตัวนั้น)
+ */
+async function renewedGroups() {
+  const norm = (v) => String(v || "").trim().toLowerCase();
+  const rows = await CalendarEvent.find({ contractGroupId: { $exists: true, $nin: [null, ""] }, contractStart: { $ne: null } })
+    .select("contractGroupId company site title system contractStart")
+    .lean();
+  const startOf = new Map(); // groupId → { key, start }
+  rows.forEach((e) => {
+    if (startOf.has(e.contractGroupId)) return;
+    const start = moment(e.contractStart).utcOffset(7 * 60).startOf("day");
+    if (!start.isValid()) return;
+    startOf.set(e.contractGroupId, { key: [e.company, e.site, e.title, e.system].map(norm).join("|"), start });
+  });
+  const startsByKey = new Map();
+  startOf.forEach(({ key, start }) => {
+    if (!startsByKey.has(key)) startsByKey.set(key, []);
+    startsByKey.get(key).push(start);
+  });
+  const renewed = new Set();
+  startOf.forEach(({ key, start }, gid) => {
+    if ((startsByKey.get(key) || []).some((s) => s.isAfter(start, "day"))) renewed.add(gid);
+  });
+  return renewed;
+}
+
 async function checkAndNotifyExpiringContracts() {
   try {
     if (!NotifyLog.isWeeklyDay()) return;
@@ -451,6 +481,8 @@ async function checkAndNotifyExpiringContracts() {
       .select("contractGroupId contractNo company site contractEnd resPerson team userId responsiblePersonId responsiblePerson")
       .lean();
     if (events.length === 0) return;
+    // ต่อสัญญาแล้ว = ไม่ต้องแจ้งทั้ง "ใกล้หมด" และ "หมดอายุแล้ว" (ตรงกับแถบ "หมดอายุ · รอต่อสัญญา" ในแอป)
+    const renewed = await renewedGroups();
 
     // ⚠️ ต้องยุบเป็น "รายสัญญา" ก่อนเสมอ — ทุกครั้งในสัญญาถือ contractEnd ชุดเดียวกัน ถ้านับจาก
     // document ดิบ สัญญาที่มี 4 ครั้งจะถูกนับเป็น 4 สัญญาทันที ตัวเลขในแจ้งเตือนจะเกินจริงหลายเท่า
@@ -462,7 +494,8 @@ async function checkAndNotifyExpiringContracts() {
 
     const today = moment().utcOffset(7 * 60).startOf("day");
     const contracts = [];
-    byContract.forEach((visits) => {
+    byContract.forEach((visits, gid) => {
+      if (renewed.has(gid)) return;
       const head = visits[0];
       const end = moment(head.contractEnd).utcOffset(7 * 60).startOf("day");
       if (!end.isValid()) return;
