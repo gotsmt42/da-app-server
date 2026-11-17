@@ -127,15 +127,25 @@ module.exports = (router) => {
       if (!event) return res.status(404).json({ message: "ไม่พบงานนี้" });
       if (!requireEventFinanceAccess(req, res, event)) return;
 
-      const file = (event.invoiceFiles || []).find((f) => String(f._id) === String(req.body.fileId));
-      if (!file) return res.status(404).json({ message: "ไม่พบไฟล์ใบวางบิลนี้ในงานดังกล่าว" });
+      // 🔁 (17 พ.ย. 2569 ผู้ใช้: "บิลมีหลายใบ แต่บันทึกเป็นยอดรวม") รับ fileIds หลายไฟล์ → AI อ่านทุกใบแล้วรวมยอด
+      //    ⚠️ รับเฉพาะไฟล์ที่แนบอยู่กับงานนี้จริง (กัน SSRF) · fileId เดียวแบบเดิมยังใช้ได้
+      const wanted = (Array.isArray(req.body.fileIds) ? req.body.fileIds : [req.body.fileId]).map(String).filter(Boolean);
+      const files = (event.invoiceFiles || []).filter((f) => wanted.includes(String(f._id)));
+      if (!files.length) return res.status(404).json({ message: "ไม่พบไฟล์ใบวางบิลนี้ในงานดังกล่าว" });
 
-      const isImage = /^image\//.test(file.fileType || "") || /\.(png|jpe?g|webp|gif)$/i.test(file.fileName || "");
-      if (!isImage) {
+      const isImage = (file) => /^image\//.test(file.fileType || "") || /\.(png|jpe?g|webp|gif)$/i.test(file.fileName || "");
+      const images = files.filter(isImage);
+      if (!images.length) {
         return res.status(400).json({ message: "อ่านได้เฉพาะไฟล์รูปภาพเท่านั้น (ไฟล์ PDF ให้กรอกยอดเอง)" });
       }
+      if (images.length > InvoiceScan.MAX_FILES) {
+        return res.status(400).json({ message: `อ่านพร้อมกันได้ไม่เกิน ${InvoiceScan.MAX_FILES} ไฟล์` });
+      }
 
-      const result = await InvoiceScan.scanInvoiceImage(file.fileUrl);
+      const result = await InvoiceScan.scanInvoiceImages(images.map((f) => f.fileUrl));
+      // บอกหน้าจอว่าไฟล์ลำดับไหนคือไฟล์อะไร (แสดงรายใบ) · ไฟล์ที่ไม่ใช่รูปถูกข้าม
+      result.fileIds = images.map((f) => String(f._id));
+      result.skipped = files.length - images.length;
       res.json({ result });
     } catch (err) {
       console.error("❌ Error scanning invoice:", err?.status, err?.message);

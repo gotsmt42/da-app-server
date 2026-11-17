@@ -72,8 +72,14 @@ async function toContentBlocks(file) {
     `/image/upload/c_crop,x_0,y_${y},w_${size.w},h_${Math.min(tileH, size.h - y)}/c_limit,w_1400,h_1700,q_auto:good,f_jpg/`))));
 }
 
+/** รุ่นที่ไม่รับ tool_choice แบบบังคับ ("tool"/"any" = 400) — เปลี่ยนเป็น auto ตั้งแต่แรก ไม่ต้องเสียคำขอที่ล้มก่อน */
+const NO_FORCED_TOOL = /^claude-(sonnet-5-5|opus-5-5|fable-5-[12]|mythos-5-[12])/;
+
 /** เรียก AI · ถ้ารุ่นไม่รับการบังคับเครื่องมือ (tool_choice) ลองใหม่แบบ auto อีกครั้ง */
 async function createMessage(client, params) {
+  if (NO_FORCED_TOOL.test(String(params.model || "")) && ["tool", "any"].includes(params.tool_choice?.type)) {
+    params = { ...params, tool_choice: { type: "auto" } };
+  }
   try {
     return await client.messages.create(params);
   } catch (err) {
