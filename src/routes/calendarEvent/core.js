@@ -588,6 +588,20 @@ module.exports = (router) => {
       // ⛔ (26 ต.ค. 2569 ผู้ใช้: "ได้งาน/ไม่ได้งาน ให้ช่างส่งคำขอมา และต้องให้แอดมินอนุมัติก่อนเท่านั้น")
       //    ผลใบเสนอราคาเปลี่ยนได้ทาง PUT /:id/quotation ที่เดียว (มีขั้นคำขอ → อนุมัติ) — กันส่งตรงมาทางนี้ข้ามขั้นอนุมัติ
       //    ไม่ใช่ฝ่ายบริหาร/การเงิน = ทิ้งช่องผลใบเสนอราคาที่ส่งมา (ค่าเดิมคงอยู่ ไม่ error — ฟอร์มที่ส่งทั้งก้อนยังบันทึกได้)
+      /**
+       * ✅ (17 พ.ย. 2569 ผู้ใช้: "มูลค่างานครั้งนี้ให้ช่างทุกคนระบุลงงานของตัวเอง หรือแอดมินระบุ ·
+       *    มูลค่างานรวมถ้ามี เช่นงาน PM ที่ต้องเข้าหลายรอบ ให้ผู้รับผิดชอบ แอดมินระบุ")
+       *    • jobValue (มูลค่างานรวม) — เฉพาะผู้รับผิดชอบงาน หรือแอดมิน/ผู้มีสิทธิ์แก้สัญญา · คนอื่นส่งมา = ไม่บันทึก (ไม่ error เพราะฟอร์มส่งทั้งชุด)
+       *    • workValue (มูลค่าครั้งนี้ของงาน · 1 ค่าต่องาน) — 🔁 ผู้ใช้: "แต่ละงานมีมูลค่าครั้งนี้ 1 ค่า" — แอดมินหรือผู้รับผิดชอบงาน
+       *      (ผลงานรายคนของช่างบันทึกผ่าน PUT /:id/worker-value แยกกัน ไม่รวมกัน)
+       */
+      if (req.body && typeof req.body === "object") {
+        const isResponsibleUser = (existingEvent.responsiblePersonId && String(existingEvent.responsiblePersonId) === String(userId))
+          || (existingEvent.responsiblePerson && existingEvent.responsiblePerson === req.user.fname);
+        if (req.body.jobValue !== undefined && !isAdminOrManager && !can(req.user, "editContracts") && !isResponsibleUser) delete req.body.jobValue;
+        if (!isAdminOrManager && !isResponsibleUser) ["workValue", "workValueVatIncluded", "workValueSource"].forEach((k) => { delete req.body[k]; });
+      }
+
       if (!can(req.user, "editFinance") && req.body && typeof req.body === "object") {
         ["quotationStatus", "quotationDecisionAt", "quotationDecisionBy", "quotationDecisionNote", "quotationPoNo",
           "quotationDecisionRequest", "quotationDecisionApprovedBy", "quotationDecisionApprovedAt",

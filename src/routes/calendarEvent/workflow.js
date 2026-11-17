@@ -231,7 +231,7 @@ module.exports = (router) => {
    */
   router.put("/:id/worker-value", verifyToken, async (req, res) => {
     try {
-      const SEL = "_id jobGroupId userId team resPerson responsiblePerson responsiblePersonId teamMembers status department";
+      const SEL = "_id jobGroupId userId team resPerson responsiblePerson responsiblePersonId teamMembers status department workerValues workValue workValueVatIncluded workValueBy workValueAt";
       const ev = await CalendarEvent.findById(req.params.id).select(SEL).lean();
       if (!ev) return res.status(404).json({ message: "ไม่พบงานนี้" });
       if (ev.department === "sales") return res.status(400).json({ message: "นัดฝ่ายขายไม่มีมูลค่างาน" });
@@ -249,10 +249,10 @@ module.exports = (router) => {
 
       const uid = String(req.userId);
       const isSelf = name === myName || (workers.get(name) && workers.get(name) === uid);
-      const isResponsible = sessions.some((x) => (x.responsiblePersonId && String(x.responsiblePersonId) === uid)
-        || (x.responsiblePerson && myName && x.responsiblePerson === myName));
-      const manager = can(req.user, "approveJobs") || can(req.user, "editFinance");
-      if (!isSelf && !manager && !isResponsible) return res.status(403).json({ message: "ลงมูลค่างานแทนคนอื่นได้เฉพาะผู้รับผิดชอบงานหรือผู้อนุมัติ" });
+      // 🔁 (17 พ.ย. 2569 ผู้ใช้: "มูลค่างานครั้งนี้ให้ช่างทุกคนระบุลงงานของตัวเองที่มีรายชื่อปฏิบัติงาน หรือแอดมินระบุ")
+      //    ลงแทนคนอื่นได้เฉพาะแอดมิน (approveJobs) — ผู้รับผิดชอบที่ไม่ได้อยู่ในทีมจัดการ "มูลค่างานรวม" แทน
+      const manager = can(req.user, "approveJobs");
+      if (!isSelf && !manager) return res.status(403).json({ message: "ลงมูลค่าครั้งนี้แทนคนอื่นได้เฉพาะแอดมิน — ช่างแต่ละคนลงของตัวเอง" });
       if (!manager && sessions.every((x) => x.status === "ดำเนินการเสร็จสิ้น")) {
         return res.status(403).json({ message: "งานนี้ปิดแล้ว — แก้มูลค่างานได้เฉพาะผู้อนุมัติ" });
       }
@@ -269,6 +269,26 @@ module.exports = (router) => {
       const ids = sessions.map((x) => x._id);
       const now = new Date();
 
+      /**
+       * 🔁 (17 พ.ย. 2569 ผู้ใช้: "มูลค่าครั้งนี้คือให้ช่างทุกคนลง · มูลค่ารวมของงานแยกต่างหากโดยผู้รับผิดชอบงานจัดการ")
+       *    ช่องเดียว: มูลค่าครั้งนี้ = ที่ช่างแต่ละคนบันทึก (ผลงานรายคน ไม่รวมกัน) · มูลค่างานรวม (jobValue) แยกต่างหาก
+       *    ข้อมูลเดิม: ยอดของงานที่ "ช่างในทีมลงเอง" ก่อนวันแยกช่อง (LEGACY_CUTOFF) = ผลงานเดิมของช่างคนนั้น
+       *    → ย้ายเป็นรายการรายคนของเขาก่อนบันทึกคนแรก (กติกาเดียวกับ personValueOf ฝั่งหน้าจอ) · workValue ของงานคงไว้ตามเดิม
+       */
+      const hasEntries = sessions.some((x) => (x.workerValues || []).length);
+      const LEGACY_CUTOFF = new Date("2026-11-18T00:00:00+07:00");
+      const legacy = !hasEntries && sessions.find((x) => x.workValue !== null && x.workValue !== undefined && x.workValue !== ""
+        && (!x.workValueAt || new Date(x.workValueAt) < LEGACY_CUTOFF));
+      if (legacy) {
+        const by = String(legacy.workValueBy || "").trim();
+        const owner = [...workers.keys()].find((n) => by && (by === n || by.split(/\s+/)[0] === n));
+        if (owner && owner !== name) {
+          await CalendarEvent.updateMany({ _id: { $in: ids } }, {
+            $push: { workerValues: { name: owner, userId: workers.get(owner) || "", amount: Number(legacy.workValue), vatIncluded: legacy.workValueVatIncluded === true, at: now, by: "ยอดเดิมของงาน" } },
+          });
+        }
+      }
+
       // ทีละคน: เอารายการเดิมของคนนี้ออก แล้วใส่ค่าใหม่ — คนอื่นในทีมไม่ถูกแตะ
       await CalendarEvent.updateMany({ _id: { $in: ids } }, { $pull: { workerValues: { name } } });
       if (amount !== null) {
@@ -282,6 +302,8 @@ module.exports = (router) => {
       const updated = await CalendarEvent.findByIdAndUpdate(ev._id, {
         $push: { activityLog: { action: "worker_value_saved", detail, userId: uid, userName: actorName, timestamp: now } },
       }, { new: true }).select("workerValues").lean();
+      // 🔁 (17 พ.ย. 2569 ผู้ใช้: "ยอดมูลค่าที่ลงจะไม่นำมารวมยอดกัน ให้แยกเป็นผลงานของแต่ละคนที่ลง")
+      //    ไม่รวมเป็นยอดของงาน — workValue ของงานไม่ถูกแตะ (ค่าเดิมคงไว้เป็นข้อมูลเก่า) · ยอดของงาน = มูลค่างานรวม (jobValue)
       res.json({ workerValues: updated?.workerValues || [], eventIds: ids.map(String) });
     } catch (err) {
       console.error("❌ บันทึกมูลค่างานรายคนไม่สำเร็จ:", err?.message);
