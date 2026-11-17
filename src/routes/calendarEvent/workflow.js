@@ -221,6 +221,74 @@ module.exports = (router) => {
     }
   });
 
+  /**
+   * ✅ (17 พ.ย. 2569 ผู้ใช้: "ผู้ปฏิบัติงาน 1 ใส่มูลค่าเข้างานครั้งนั้น 5000 คนที่ 2 ลง 3000 แล้วไม่รวมมูลค่ากัน ให้แยกตามคน")
+   *    PUT /:id/worker-value  { name?, amount (null/"" = ล้าง), vatIncluded }
+   *    เดิมทุกคนบันทึกลงช่อง workValue ช่องเดียว → คนหลังทับคนแรก และรายงานรายช่างให้ทุกคนได้ยอดเดียวกัน
+   *    ตอนนี้: แต่ละคนมีรายการของตัวเองใน workerValues (ทุกวันของ jobGroupId) — ไม่แตะ workValue ของงาน
+   *    สิทธิ์: ลงของตัวเองได้ถ้าอยู่ในทีมเข้างาน · ลงแทนคนอื่นได้ = ผู้อนุมัติงาน/การเงิน หรือผู้รับผิดชอบงาน
+   *    งานปิดแล้ว: เฉพาะผู้อนุมัติงาน/การเงิน (เติมย้อนหลัง/แก้ค่าที่ใส่ผิด)
+   */
+  router.put("/:id/worker-value", verifyToken, async (req, res) => {
+    try {
+      const SEL = "_id jobGroupId userId team resPerson responsiblePerson responsiblePersonId teamMembers status department";
+      const ev = await CalendarEvent.findById(req.params.id).select(SEL).lean();
+      if (!ev) return res.status(404).json({ message: "ไม่พบงานนี้" });
+      if (ev.department === "sales") return res.status(400).json({ message: "นัดฝ่ายขายไม่มีมูลค่างาน" });
+      const sessions = ev.jobGroupId ? await CalendarEvent.find({ jobGroupId: ev.jobGroupId }).select(SEL).lean() : [ev];
+
+      // ผู้ปฏิบัติงานของทั้งงาน (หัวหน้าทีม + ลูกทีม ทุกวัน) → userId ที่รู้
+      const workers = new Map();
+      sessions.forEach((x) => {
+        if (x.team && !workers.has(x.team)) workers.set(x.team, "");
+        (x.teamMembers || []).forEach((m) => { if (m?.name) workers.set(m.name, m.userId || workers.get(m.name) || ""); });
+      });
+      const myName = req.user.fname || "";
+      const name = String(req.body.name || myName).trim();
+      if (!name || !workers.has(name)) return res.status(400).json({ message: `${name || "ผู้ใช้นี้"} ไม่ได้อยู่ในทีมเข้างานนี้` });
+
+      const uid = String(req.userId);
+      const isSelf = name === myName || (workers.get(name) && workers.get(name) === uid);
+      const isResponsible = sessions.some((x) => (x.responsiblePersonId && String(x.responsiblePersonId) === uid)
+        || (x.responsiblePerson && myName && x.responsiblePerson === myName));
+      const manager = can(req.user, "approveJobs") || can(req.user, "editFinance");
+      if (!isSelf && !manager && !isResponsible) return res.status(403).json({ message: "ลงมูลค่างานแทนคนอื่นได้เฉพาะผู้รับผิดชอบงานหรือผู้อนุมัติ" });
+      if (!manager && sessions.every((x) => x.status === "ดำเนินการเสร็จสิ้น")) {
+        return res.status(403).json({ message: "งานนี้ปิดแล้ว — แก้มูลค่างานได้เฉพาะผู้อนุมัติ" });
+      }
+
+      const raw = req.body.amount;
+      let amount = null;
+      if (raw !== null && raw !== undefined && String(raw).trim() !== "") {
+        amount = Number(String(raw).replace(/[,\s฿]/g, ""));
+        if (!Number.isFinite(amount) || amount < 0) return res.status(400).json({ message: "มูลค่างานต้องเป็นตัวเลข 0 ขึ้นไป" });
+        amount = Math.round(amount * 100) / 100;
+      }
+      const vatIncluded = req.body.vatIncluded === true || req.body.vatIncluded === "true";
+      const actorName = [req.user.fname, req.user.lname].filter(Boolean).join(" ") || req.user.username || "";
+      const ids = sessions.map((x) => x._id);
+      const now = new Date();
+
+      // ทีละคน: เอารายการเดิมของคนนี้ออก แล้วใส่ค่าใหม่ — คนอื่นในทีมไม่ถูกแตะ
+      await CalendarEvent.updateMany({ _id: { $in: ids } }, { $pull: { workerValues: { name } } });
+      if (amount !== null) {
+        await CalendarEvent.updateMany({ _id: { $in: ids } }, {
+          $push: { workerValues: { name, userId: workers.get(name) || (isSelf ? uid : ""), amount, vatIncluded, at: now, by: actorName } },
+        });
+      }
+      const detail = amount === null
+        ? `ล้างมูลค่างานของ ${name}`
+        : `มูลค่างานของ ${name} ${amount.toLocaleString("th-TH")} บาท (${vatIncluded ? "รวม VAT" : "ก่อน VAT"})${isSelf ? "" : ` · ลงโดย ${actorName}`}`;
+      const updated = await CalendarEvent.findByIdAndUpdate(ev._id, {
+        $push: { activityLog: { action: "worker_value_saved", detail, userId: uid, userName: actorName, timestamp: now } },
+      }, { new: true }).select("workerValues").lean();
+      res.json({ workerValues: updated?.workerValues || [], eventIds: ids.map(String) });
+    } catch (err) {
+      console.error("❌ บันทึกมูลค่างานรายคนไม่สำเร็จ:", err?.message);
+      res.status(500).json({ message: "บันทึกมูลค่างานไม่สำเร็จ" });
+    }
+  });
+
   // ─── สรุป Service Report ด้วย AI ────────────────────────────────────────────
   /**
    * ✅ (25 ต.ค. 2569 ผู้ใช้: "ทำระบบให้อ่าน Service Report ของช่าง แล้วกดสร้างสรุปออกมาเป็น PDF ให้สมบูรณ์ที่สุด")

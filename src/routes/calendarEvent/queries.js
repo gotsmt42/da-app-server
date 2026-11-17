@@ -84,7 +84,11 @@ module.exports = (router) => {
       const SLIM_FIELDS = "status start end allDay date system company site title team time "
         + "jobGroupId closeRequested approvalStatus responsiblePerson userId "
         // ✅ (4 พ.ย. 2569) รายงานรายช่าง — ใครเข้างานไหน มูลค่าต่อครั้ง (ฟิลด์เล็ก ไม่กระทบขนาดมาก)
-        + "teamMembers workValue workValueVatIncluded jobValueVatIncluded jobNo department unscheduled checkedInAt checkedOutAt visitCount contractGroupId";
+        // ✅ (17 พ.ย. 2569) workerValues = มูลค่างานรายคน · workValueBy = ยอดแบบเดิมที่ช่างลงไว้ (นับให้คนที่ลง)
+        // ✅ (17 พ.ย. 2569 ผู้ใช้: "ความครบของข้อมูลควรมีมากกว่านี้") ความครบของงานในรายงานรายช่าง —
+        //    เอาแค่ url ของไฟล์ (นับว่ามีไหม) + ธงเอกสาร + สรุปงาน · ไม่ดึงไฟล์ทั้งก้อน
+        + "reportFiles.fileUrl invoiceFiles.fileUrl completionFiles.fileUrl documentSentReport invoiceApplicable completionApplicable description "
+        + "teamMembers workValue workValueVatIncluded workValueBy workerValues jobValueVatIncluded jobNo department unscheduled checkedInAt checkedOutAt visitCount contractGroupId";
       const slim = req.query.slim === "1" || req.query.slim === "true";
 
       /**
