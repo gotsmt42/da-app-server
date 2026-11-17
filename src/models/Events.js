@@ -259,6 +259,22 @@ const eventSchema = new mongoose.Schema(
           slipFileName: { type: String, default: "" },
           slipFileUrl: { type: String, default: "" },
           slipFileType: { type: String, default: "" },
+          /**
+           * ✅ (17 พ.ย. 2569 ผู้ใช้: "เอกสารการรับเงิน ให้อัปได้หลายไฟล์ ตอนนี้ได้ไฟล์เดียว")
+           *    หลักฐานหลายไฟล์ต่อ 1 การรับเงิน (สลิป + ใบเสร็จ + หนังสือรับรองหัก ณ ที่จ่าย ฯลฯ)
+           *    ⚠️ slipFile* ด้านบนยังเก็บ = ไฟล์แรก (ข้อมูลเก่า/หน้าจอเก่าอ่านได้) · รายการเก่าที่มีแค่ slipFile*
+           *    ถูกย้ายเข้ามาที่นี่ตอนแนบไฟล์เพิ่มครั้งแรก (ดู routes/calendarEvent/billing.js → slipFilesOf)
+           */
+          slipFiles: {
+            type: [{
+              fileName: { type: String, default: "" },
+              fileUrl: { type: String, default: "" },
+              fileType: { type: String, default: "" },
+              uploadedAt: { type: Date, default: Date.now },
+              uploadedByName: { type: String, default: "" },
+            }],
+            default: [],
+          },
           recordedBy: { type: String, default: "" },
           recordedByName: { type: String, default: "" },
           recordedAt: { type: Date, default: Date.now },

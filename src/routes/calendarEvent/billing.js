@@ -159,11 +159,49 @@ module.exports = (router) => {
     res.json({ enabled: InvoiceScan.isEnabled(), model: InvoiceScan.MODEL });
   });
 
+  /**
+   * ✅ (17 พ.ย. 2569) หลักฐานการรับเงินหลายไฟล์
+   * อัปไฟล์ 1 ไฟล์ขึ้น Cloudinary — รูปใช้ resource_type "image" (ย่อ/พรีวิวได้) · อื่นๆ "raw"
+   */
+  const MAX_SLIPS = 10;
+  const uploadSlip = async (eventId, file) => {
+    const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
+    const sanitizedName = originalName.replace(/[^\w\-.]/g, "_");
+    const isImage = ["image/jpeg", "image/png", "image/webp"].includes(file.mimetype);
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: isImage ? "image" : "raw",
+          folder: `events/${eventId}/payments`,
+          // resource_type "image" เติมนามสกุลให้เองจากเนื้อไฟล์ ต้องตัดออกก่อนไม่งั้นได้ ".jpg.jpg"
+          public_id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${isImage ? sanitizedName.replace(/\.[^.]+$/, "") : sanitizedName}`,
+          use_filename: false,
+          unique_filename: false,
+          overwrite: true,
+        },
+        (error, uploaded) => (error ? reject(error) : resolve(uploaded)),
+      );
+      streamifier.createReadStream(file.buffer).pipe(stream);
+    });
+    return { fileName: originalName, fileUrl: result.secure_url, fileType: file.mimetype };
+  };
+  /** ไฟล์หลักฐานของรายการรับเงิน — รายการเก่าที่มีแค่ slipFile* (ไฟล์เดียว) ถือเป็นไฟล์แรก */
+  const slipFilesOf = (p) => ((p.slipFiles || []).length
+    ? p.slipFiles
+    : p.slipFileUrl ? [{ fileName: p.slipFileName, fileUrl: p.slipFileUrl, fileType: p.slipFileType }] : []);
+  /** ช่องไฟล์เดี่ยวเดิม = ไฟล์แรกเสมอ (หน้าจอ/รายงานเก่ายังอ่านได้) */
+  const syncLegacySlip = (p) => {
+    const first = (p.slipFiles || [])[0];
+    p.slipFileName = first?.fileName || "";
+    p.slipFileUrl = first?.fileUrl || "";
+    p.slipFileType = first?.fileType || "";
+  };
+
   /** บันทึกการรับเงิน 1 งวด (รับเงินแบ่งจ่ายได้ จึงเป็น push ไม่ใช่ set) */
   // ⚠️ upload.single("slip") ต้องมีเสมอแม้ไม่ได้แนบไฟล์ — multer เป็นตัวที่ parse multipart/form-data
   // ให้ req.body ด้วย ถ้าไม่ใส่ req.body จะว่างเปล่าทั้งก้อนเมื่อฝั่งจอส่งมาเป็น FormData
   // (ฝั่งจอส่ง FormData เสมอ ไม่ว่าจะแนบไฟล์หรือไม่ — เทียบ pattern เดียวกับ /:id/quotation-followup)
-  router.post("/:id/billing/payment", verifyToken, upload.single("slip"), async (req, res) => {
+  router.post("/:id/billing/payment", verifyToken, upload.array("slip", 10), async (req, res) => {
     try {
       const { id } = req.params;
       const event = await CalendarEvent.findById(id);
@@ -211,38 +249,20 @@ module.exports = (router) => {
         recordedAt: new Date(),
       };
 
-      // ✅ แนบสลิป/ใบเสร็จ (ถ้ามี) — ขึ้น Cloudinary เหมือนไฟล์อื่นในระบบ
-      // ⚠️ รูปใช้ resource_type "image" ไม่ใช่ "raw" เพราะ "raw" ใช้ URL transformation ไม่ได้เลย
-      // ตอนเปิดพรีวิวจะต้องโหลดไฟล์เต็มความละเอียดจากมือถือ (หลาย MB) ทุกครั้ง — เหตุผลเต็มที่ files.js
-      if (req.file) {
-        const originalName = Buffer.from(req.file.originalname, "latin1").toString("utf8");
-        const sanitizedName = originalName.replace(/[^\w\-.]/g, "_");
-        const isImage = ["image/jpeg", "image/png", "image/webp"].includes(req.file.mimetype);
-        const result = await new Promise((resolve, reject) => {
-          const stream = cloudinary.uploader.upload_stream(
-            {
-              resource_type: isImage ? "image" : "raw",
-              folder: `events/${id}/payments`,
-              // resource_type "image" เติมนามสกุลให้เองจากเนื้อไฟล์ ต้องตัดออกก่อนไม่งั้นได้ ".jpg.jpg"
-              public_id: `${Date.now()}_${isImage ? sanitizedName.replace(/\.[^.]+$/, "") : sanitizedName}`,
-              use_filename: false,
-              unique_filename: false,
-              overwrite: true,
-            },
-            (error, uploaded) => (error ? reject(error) : resolve(uploaded)),
-          );
-          streamifier.createReadStream(req.file.buffer).pipe(stream);
-        });
-        payment.slipFileName = originalName;
-        payment.slipFileUrl = result.secure_url;
-        payment.slipFileType = req.file.mimetype;
+      // ✅ แนบสลิป/ใบเสร็จ (ได้หลายไฟล์) — ขึ้น Cloudinary เหมือนไฟล์อื่นในระบบ
+      const files = (req.files || []).slice(0, MAX_SLIPS);
+      payment.slipFiles = [];
+      for (const f of files) {
+        // eslint-disable-next-line no-await-in-loop -- อัปทีละไฟล์ กันหน่วยความจำพุ่ง
+        payment.slipFiles.push({ ...(await uploadSlip(id, f)), uploadedAt: new Date(), uploadedByName: actor.name });
       }
+      syncLegacySlip(payment);
 
       event.billing.payments.push(payment);
       event.activityLog = event.activityLog || [];
       event.activityLog.push({
         action: "payment_recorded",
-        detail: `รับเงิน ${amount.toLocaleString("th-TH")} บาท (${thaiDate(paidAt)})`,
+        detail: `รับเงิน ${amount.toLocaleString("th-TH")} บาท (${thaiDate(paidAt)})${files.length ? ` · แนบหลักฐาน ${files.length} ไฟล์` : ""}`,
         userId: actor.id,
         userName: actor.name,
         timestamp: new Date(),
@@ -267,7 +287,7 @@ module.exports = (router) => {
    * ⚠️ แก้ได้แค่ "เลขที่ใบเสร็จ" กับ "ไฟล์แนบ" เท่านั้น — ยอดเงิน/วันที่รับ แก้ไม่ได้โดยตั้งใจ
    * เพราะเป็นตัวเลขที่กระทบยอดรวมและสถานะการชำระ ถ้าจะแก้ต้องลบรายการแล้วบันทึกใหม่ให้เห็นร่องรอย
    */
-  router.patch("/:id/billing/payment/:paymentId", verifyToken, upload.single("slip"), async (req, res) => {
+  router.patch("/:id/billing/payment/:paymentId", verifyToken, upload.array("slip", 10), async (req, res) => {
     try {
       const { id, paymentId } = req.params;
       const event = await CalendarEvent.findById(id);
@@ -281,27 +301,21 @@ module.exports = (router) => {
         item.receiptNo = String(req.body.receiptNo || "").trim();
       }
 
-      if (req.file) {
-        const originalName = Buffer.from(req.file.originalname, "latin1").toString("utf8");
-        const sanitizedName = originalName.replace(/[^\w\-.]/g, "_");
-        const isImage = ["image/jpeg", "image/png", "image/webp"].includes(req.file.mimetype);
-        const result = await new Promise((resolve, reject) => {
-          const stream = cloudinary.uploader.upload_stream(
-            {
-              resource_type: isImage ? "image" : "raw",
-              folder: `events/${id}/payments`,
-              public_id: `${Date.now()}_${isImage ? sanitizedName.replace(/\.[^.]+$/, "") : sanitizedName}`,
-              use_filename: false,
-              unique_filename: false,
-              overwrite: true,
-            },
-            (error, uploaded) => (error ? reject(error) : resolve(uploaded)),
-          );
-          streamifier.createReadStream(req.file.buffer).pipe(stream);
-        });
-        item.slipFileName = originalName;
-        item.slipFileUrl = result.secure_url;
-        item.slipFileType = req.file.mimetype;
+      // ✅ (17 พ.ย. 2569) แนบหลักฐานเพิ่มได้หลายไฟล์ (ต่อท้ายของเดิม) · ลบทีละไฟล์ด้วย removeFileUrl
+      const actorName = financeActor(req).name;
+      const added = (req.files || []);
+      const removeUrl = String(req.body.removeFileUrl || "");
+      if (added.length || removeUrl) {
+        if (!(item.slipFiles || []).length && item.slipFileUrl) item.slipFiles = slipFilesOf(item); // ย้ายไฟล์เดี่ยวเดิมเข้ารายการ
+        if (removeUrl) item.slipFiles = (item.slipFiles || []).filter((f) => f.fileUrl !== removeUrl);
+        if ((item.slipFiles || []).length + added.length > MAX_SLIPS) {
+          return res.status(400).json({ message: `แนบหลักฐานได้ไม่เกิน ${MAX_SLIPS} ไฟล์ต่อการรับเงิน 1 ครั้ง` });
+        }
+        for (const f of added) {
+          // eslint-disable-next-line no-await-in-loop -- อัปทีละไฟล์
+          item.slipFiles.push({ ...(await uploadSlip(id, f)), uploadedAt: new Date(), uploadedByName: actorName });
+        }
+        syncLegacySlip(item);
       }
 
       const actor = financeActor(req);
@@ -309,7 +323,7 @@ module.exports = (router) => {
       event.activityLog.push({
         action: "payment_updated",
         detail: `แก้ไขหลักฐานการรับเงิน ${Number(item.amount).toLocaleString("th-TH")} บาท` +
-          `${item.receiptNo ? ` (ใบเสร็จ ${item.receiptNo})` : ""}${req.file ? " · แนบไฟล์" : ""}`,
+          `${item.receiptNo ? ` (ใบเสร็จ ${item.receiptNo})` : ""}${added.length ? ` · แนบไฟล์ ${added.length} ไฟล์` : ""}${removeUrl ? " · ลบไฟล์ 1 ไฟล์" : ""}`,
         userId: actor.id,
         userName: actor.name,
         timestamp: new Date(),
