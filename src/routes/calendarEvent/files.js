@@ -12,8 +12,24 @@ const {
   upload,
   cloudinary,
   streamifier,
+  isJobParticipant,
 } = require("./shared");
 const { ALLOWED_TYPES, ALLOWED_IMAGE_TYPES } = require("../../config/upload");
+
+/** ชนิดเอกสารของนัดเซล (salesDocFiles.docType) */
+const SALES_DOC_TYPES = ["quotation", "other"];
+const salesDocType = (v) => (SALES_DOC_TYPES.includes(String(v)) ? String(v) : "other");
+const salesDocNote = (v) => String(v || "").trim().slice(0, 1000);
+
+/**
+ * เอกสารของนัดเซล (type=salesDoc) — เฉพาะนัดฝ่ายขาย · เจ้าของนัด/ผู้รับผิดชอบ หรือแอดมิน/ผู้จัดการ
+ * ✅ (18 พ.ย. 2569) แนบได้ตลอด รวมหลังปิดงาน (ตามใบเสนอราคาย้อนหลัง) · คืนข้อความ error หรือ "" = ผ่าน
+ */
+function salesDocDenied(event, req) {
+  if (event.department !== "sales") return "แนบเอกสารแบบนี้ได้เฉพาะนัดหมายฝ่ายขาย";
+  if (can(req.user, "editAnyJob") || isJobParticipant(event, req.userId, req.user?.fname)) return "";
+  return "คุณไม่มีสิทธิ์แนบเอกสารในนัดหมายนี้";
+}
 
 module.exports = (router) => {
   router.put("/upload/:id", verifyToken, upload.single("file"), async (req, res) => {
@@ -38,6 +54,11 @@ module.exports = (router) => {
       // ✅ เอกสารผลลัพธ์ใบเสนอราคา (quotationResult) ก็เกิดหลังงานปิดได้ — ยกเว้นแบบเดียวกับใบเสนอราคา
       if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && type !== "quotation" && type !== "quotationResult") {
         return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถแก้ไขไฟล์ได้");
+      }
+      const isSalesDoc = type === "salesDoc";
+      if (isSalesDoc) {
+        const denied = salesDocDenied(eventForLock, req);
+        if (denied) return res.status(403).json({ message: denied });
       }
 
       // ✅ แปลงชื่อไฟล์ให้เป็น UTF-8 และ sanitize
@@ -110,14 +131,15 @@ module.exports = (router) => {
         fileUrl: result.secure_url,
         fileType: fileType,
         uploadedAt: new Date(),
-        ...(type === "sitePhoto" || isIntakeDoc || type === "quotationResult" ? { uploadedBy: [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") } : {}),
+        ...(type === "sitePhoto" || isIntakeDoc || type === "quotationResult" || isSalesDoc ? { uploadedBy: [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") } : {}),
+        ...(isSalesDoc ? { docType: salesDocType(req.body.docType), note: salesDocNote(req.body.note) } : {}),
         // ✅ (26 ต.ค. 2569) ใบเสนอราคา = ประทับฉบับปัจจุบัน (Rev.N) ของงาน
         ...(type === "quotation" ? { revision: Number(eventForLock.quotationRevision) || 0 } : {}),
         ...(isIntakeDoc ? { source: "intake", sourceLabel: `เอกสารรับงาน · ${INTAKE_DOC_LABEL[eventForLock.intakeDocType] || "เอกสาร"}${eventForLock.intakeDocNo ? ` ${eventForLock.intakeDocNo}` : ""}` } : {}),
       };
 
       // ⚠️ รูปหน้างานของนัดเซลไม่มีแนวคิด "ส่งเอกสารแล้ว" — ไม่ตั้ง documentSentSitePhoto
-      const setFields = type === "sitePhoto" || isIntakeDoc || type === "quotationResult" ? {} : {
+      const setFields = type === "sitePhoto" || isIntakeDoc || type === "quotationResult" || isSalesDoc ? {} : {
         [`documentSent${capitalize(type)}`]: true,
       };
       // ถ้ามีไฟล์แนบจริง แปลว่าเอกสารนี้ "มี" แน่นอน ไม่ว่าจะเคยติ๊ก "ไม่มี" ไว้ก่อนหรือไม่
@@ -151,10 +173,41 @@ module.exports = (router) => {
         fileName: savedFile.fileName,
         fileUrl: savedFile.fileUrl,
         fileType: savedFile.fileType,
+        ...(isSalesDoc ? { docType: savedFile.docType, note: savedFile.note } : {}),
       });
     } catch (err) {
       console.error("Upload error:", err);
       res.status(500).json({ message: "อัปโหลดขึ้นที่เก็บไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง" });
+    }
+  });
+
+  /**
+   * แก้รายละเอียด/ชนิดของเอกสารนัดเซล 1 ไฟล์ — { note?, docType? }
+   * ✅ (18 พ.ย. 2569) แก้ได้ตลอด รวมหลังปิดงาน (สิทธิ์เดียวกับการแนบ)
+   */
+  router.put("/:id/sales-doc/:fileId", verifyToken, async (req, res) => {
+    try {
+      const event = await CalendarEvent.findById(req.params.id).select("department userId responsiblePersonId responsiblePerson resPerson team teamMembers salesDocFiles");
+      if (!event) return res.status(404).json({ message: "ไม่พบนัดหมายนี้" });
+      const denied = salesDocDenied(event, req);
+      if (denied) return res.status(403).json({ message: denied });
+      const file = (event.salesDocFiles || []).find((f) => String(f._id) === String(req.params.fileId));
+      if (!file) return res.status(404).json({ message: "ไม่พบไฟล์นี้" });
+      const set = {
+        "salesDocFiles.$.noteUpdatedAt": new Date(),
+        "salesDocFiles.$.noteUpdatedBy": [req.user?.fname, req.user?.lname].filter(Boolean).join(" "),
+      };
+      if (req.body.note !== undefined) set["salesDocFiles.$.note"] = salesDocNote(req.body.note);
+      if (req.body.docType !== undefined) set["salesDocFiles.$.docType"] = salesDocType(req.body.docType);
+      const updated = await CalendarEvent.findOneAndUpdate(
+        { _id: req.params.id, "salesDocFiles._id": req.params.fileId },
+        { $set: set },
+        { new: true, projection: { salesDocFiles: 1 } }
+      );
+      res.json({ file: (updated?.salesDocFiles || []).find((f) => String(f._id) === String(req.params.fileId)) || null });
+    } catch (err) {
+      console.error("แก้รายละเอียดเอกสารนัดเซลไม่สำเร็จ:", err);
+      res.status(500).json({ message: "บันทึกรายละเอียดไม่สำเร็จ ลองใหม่อีกครั้ง" });
     }
   });
 
@@ -175,6 +228,10 @@ module.exports = (router) => {
       const isAdminOrManager = can(req.user, "editAnyJob");
       if (eventForLock.status === "ดำเนินการเสร็จสิ้น" && !isAdminOrManager && type !== "quotation" && type !== "quotationResult") {
         return res.status(403).send("งานนี้ปิดแล้ว ไม่สามารถลบไฟล์ได้");
+      }
+      if (type === "salesDoc") {
+        const denied = salesDocDenied(eventForLock, req);
+        if (denied) return res.status(403).json({ message: denied });
       }
 
       // 🔒 (10 ต.ค. 2569) ไฟล์ที่ผูกมาจากคำขอลงงาน ลบจากฝั่งงานไม่ได้ — ต้นฉบับเป็นของใบคำขอ (services/dispatchFiles.js)
@@ -199,7 +256,7 @@ module.exports = (router) => {
       }
 
       const remaining = updatedEvent[arrField]?.length || 0;
-      if (type !== "sitePhoto" && type !== "quotationResult") {
+      if (type !== "sitePhoto" && type !== "quotationResult" && type !== "salesDoc") {
         await CalendarEvent.updateOne(
           { _id: id },
           { $set: { [`documentSent${capitalize(type)}`]: remaining > 0 } }

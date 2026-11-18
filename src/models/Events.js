@@ -450,6 +450,23 @@ const eventSchema = new mongoose.Schema(
         dispatchId: String,
       },
     ],
+    // ✅ (18 พ.ย. 2569 ผู้ใช้: "ปิดงานไปแล้ว แต่ยังให้สามารถมาอัพไฟล์งานนั้นๆ พร้อมรายละเอียดได้
+    //    เพราะบางทีต้องมาอัพไฟล์ใบเสนอราคาย้อนหลังของงานที่ไปเพื่อติดตาม")
+    //    เอกสารของนัดเซล (ใบเสนอราคา/เอกสารอื่น) + รายละเอียดต่อไฟล์ — แนบ/แก้ได้ตลอด รวมหลังปิดงาน
+    //    (PUT /upload/:id type=salesDoc · PUT /:id/sales-doc/:fileId) · ไม่นับเป็นรูปหน้างาน ไม่เข้าระบบติดตามใบเสนอราคาของงานช่าง
+    salesDocFiles: [
+      {
+        fileName: String,
+        fileUrl: String,
+        fileType: String,
+        uploadedAt: { type: Date, default: Date.now },
+        uploadedBy: String,
+        docType: { type: String, default: "other" }, // quotation | other
+        note: { type: String, default: "" },
+        noteUpdatedAt: Date,
+        noteUpdatedBy: String,
+      },
+    ],
     visitResult: { type: String, default: "" },
     visitedAt: { type: Date, default: null },
     visitedBy: { type: String, default: "" },
