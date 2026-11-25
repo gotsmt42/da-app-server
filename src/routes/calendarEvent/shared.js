@@ -54,12 +54,28 @@ async function findDuplicateContractRound(contractGroupId, time, excludeId) {
 // อยู่แล้วโดยตั้งใจ (นับเป็นสัญญาเดียว ไม่ใช่ซ้ำ) ต้องกันเฉพาะกรณีเลขที่นี้ไปโผล่ที่ contractGroupId
 // อื่นเท่านั้นถึงจะถือว่าซ้ำจริง — excludeContractGroupId ไม่ใส่มาตอนสร้างสัญญาใหม่ทั้งชุด (ยังไม่มี
 // contractGroupId ให้ยกเว้น เจอที่ไหนก็ถือว่าซ้ำหมด) ใส่มาตอนแก้ไข/สร้างครั้งถัดไปของสัญญาที่มีอยู่แล้ว
+// 🐛 (25 พ.ย. 2569 ผู้ใช้: "จะเพิ่มเลขที่สัญญา ทั้งที่ไม่มีในระบบ แต่ขึ้นมีแล้ว")
+//    • นับเฉพาะ "สัญญาจริง" — ใบเสนอราคาแยก (quoteOnly) / งานที่ยกเลิกแล้ว (cancelledAt) ไม่ใช่สัญญา ไม่ถือว่าจองเลข
+//    • ต้องเป็นงานที่มี contractGroupId — เลขค้างในงานเดี่ยวที่ถูกแยกออกจากสัญญาไม่นับ
+//    • ไม่สนตัวพิมพ์เล็ก/ใหญ่ (fapty01-2569 = FAPTY01-2569) — ตรงกับการเช็คฝั่งหน้าจอ
+//    • คืนชื่อโครงการ/บริษัทของสัญญาที่ใช้เลขนี้อยู่ด้วย — ข้อความแจ้งบอกได้ว่าชนกับสัญญาไหน (ดู dupContractNoMessage)
 async function findDuplicateContractNo(contractNo, excludeContractGroupId) {
   const trimmed = (contractNo || "").trim();
   if (!trimmed) return null;
-  const query = { contractNo: trimmed };
-  if (excludeContractGroupId) query.contractGroupId = { $ne: excludeContractGroupId };
-  return CalendarEvent.findOne(query).select("contractGroupId contractNo").lean();
+  const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const query = {
+    contractNo: { $regex: `^\\s*${escaped}\\s*$`, $options: "i" },
+    contractGroupId: excludeContractGroupId ? { $nin: [null, "", excludeContractGroupId] } : { $nin: [null, ""] },
+    quoteOnly: { $ne: true },
+    cancelledAt: null,
+  };
+  return CalendarEvent.findOne(query).select("contractGroupId contractNo site company title system").lean();
+}
+
+/** ข้อความ 409 เลขที่สัญญาซ้ำ — บอกว่าชนกับสัญญาไหน ผู้ใช้ไปตรวจต่อได้ทันที */
+function dupContractNoMessage(contractNo, dup) {
+  const where = [dup?.site, dup?.company].filter((v) => v && v !== "-").join(" · ");
+  return `เลขที่สัญญา "${String(contractNo || "").trim()}" ถูกใช้แล้ว${where ? `กับสัญญา ${where}` : ""} — กรุณาใช้เลขอื่น`;
 }
 
 // ✅ เทียบข้อมูลสัญญา "ก่อน → หลัง" เพื่อบันทึกลง activityLog (ดู PUT /contract/:contractGroupId)
@@ -318,6 +334,7 @@ module.exports = {
   findMutualOverlaps,
   findDuplicateContractRound,
   findDuplicateContractNo,
+  dupContractNoMessage,
   normalizeContractValue,
   formatContractValue,
   diffContractFields,

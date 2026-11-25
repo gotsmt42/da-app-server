@@ -11,6 +11,7 @@ const {
   crypto,
   MAX_VISIT_COUNT,
   findDuplicateContractNo,
+  dupContractNoMessage,
   diffContractFields,
   DEPARTMENT,
   upload,
@@ -33,6 +34,8 @@ const parseVatFlag = (v) => {
   if (v === false || v === "false") return false;
   return null;
 };
+// ✅ (25 พ.ย. 2569) ประเภทเอกสารของสัญญา (contractQuotationFiles[].docType) — ป้ายใช้ในประวัติการแก้ไข
+const CONTRACT_DOC_TYPES = { contract: "สัญญาฉบับเซ็น", quotation: "ใบเสนอราคา", po: "ใบสั่งซื้อ (PO)", other: "เอกสาร" };
 const actorName = (req) => [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "ไม่ทราบชื่อ";
 
 module.exports = (router) => {
@@ -76,7 +79,7 @@ module.exports = (router) => {
       if (contractNo) {
         const dupContractNo = await findDuplicateContractNo(contractNo);
         if (dupContractNo) {
-          return res.status(409).json({ message: `เลขที่สัญญา "${contractNo}" ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
+          return res.status(409).json({ message: dupContractNoMessage(contractNo, dupContractNo) });
         }
       }
 
@@ -415,7 +418,7 @@ module.exports = (router) => {
       if (contractNo !== undefined) {
         const dupContractNo = await findDuplicateContractNo(contractNo, contractGroupId);
         if (dupContractNo) {
-          return res.status(409).json({ message: `เลขที่สัญญา "${contractNo}" ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
+          return res.status(409).json({ message: dupContractNoMessage(contractNo, dupContractNo) });
         }
       }
 
@@ -576,11 +579,14 @@ module.exports = (router) => {
         streamifier.createReadStream(file.buffer).pipe(stream);
       });
 
+      // ✅ (25 พ.ย. 2569) ประเภทเอกสารของสัญญา — ไม่ส่งมา (หน้ามูลค่าสัญญาเดิม) = ใบเสนอราคา
+      const docType = CONTRACT_DOC_TYPES[req.body?.docType] ? req.body.docType : "quotation";
       const entry = {
         _id: new mongoose.Types.ObjectId(),
         fileName: originalName,
         fileUrl: result.secure_url,
         fileType: file.mimetype,
+        docType,
         uploadedAt: new Date(),
         uploadedBy: actorName(req),
       };
@@ -589,7 +595,7 @@ module.exports = (router) => {
         {
           $push: {
             contractQuotationFiles: entry,
-            activityLog: { action: "contract_updated", detail: `แนบใบเสนอราคาของสัญญา: ${originalName}`, userId: String(req.userId || ""), userName: actorName(req), timestamp: new Date() },
+            activityLog: { action: "contract_updated", detail: `แนบ${CONTRACT_DOC_TYPES[docType]}ของสัญญา: ${originalName}`, userId: String(req.userId || ""), userName: actorName(req), timestamp: new Date() },
           },
         }
       );
@@ -612,7 +618,7 @@ module.exports = (router) => {
         { contractGroupId },
         {
           $pull: { contractQuotationFiles: { _id: new mongoose.Types.ObjectId(fileId) } },
-          $push: { activityLog: { action: "contract_updated", detail: `ลบใบเสนอราคาของสัญญา: ${f?.fileName || ""}`, userId: String(req.userId || ""), userName: actorName(req), timestamp: new Date() } },
+          $push: { activityLog: { action: "contract_updated", detail: `ลบ${CONTRACT_DOC_TYPES[f?.docType] || "ใบเสนอราคา"}ของสัญญา: ${f?.fileName || ""}`, userId: String(req.userId || ""), userName: actorName(req), timestamp: new Date() } },
         }
       );
       res.json({ success: true });
@@ -630,7 +636,8 @@ module.exports = (router) => {
       const { isPdfFile, isImageFile } = require("../../services/aiFileSource");
       const head = await CalendarEvent.findOne({ contractGroupId: req.params.contractGroupId }).select("contractQuotationFiles").lean();
       if (!head) return res.status(404).json({ message: "ไม่พบสัญญานี้" });
-      const usable = (head.contractQuotationFiles || []).filter((f) => f?.fileUrl && (isPdfFile(f) || isImageFile(f)));
+      // ✅ (25 พ.ย. 2569) เอกสาร "อื่นๆ" ไม่ใช่แหล่งมูลค่า — อ่านเฉพาะใบเสนอราคา/PO/สัญญา
+      const usable = (head.contractQuotationFiles || []).filter((f) => f?.fileUrl && f.docType !== "other" && (isPdfFile(f) || isImageFile(f)));
       const files = [...usable.filter((f) => isPdfFile(f)), ...usable.filter((f) => !isPdfFile(f))]
         .slice(0, WorkValueScan.MAX_FILES)
         .map((f) => ({ fileName: f.fileName || "", fileUrl: f.fileUrl, fileType: f.fileType || "", kind: "ใบเสนอราคาของสัญญา (มูลค่าทั้งสัญญา)" }));

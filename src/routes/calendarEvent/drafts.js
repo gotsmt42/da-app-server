@@ -16,6 +16,7 @@ const {
   findMutualOverlaps,
   findDuplicateContractRound,
   findDuplicateContractNo,
+  dupContractNoMessage,
   effectiveResponsibleOrClauses,
   strictResponsibleOrClauses,
   departmentOf,
@@ -184,7 +185,7 @@ module.exports = (router) => {
       if (isContractBatch && contractNo) {
         const dupContractNo = await findDuplicateContractNo(contractNo, contractGroupId);
         if (dupContractNo) {
-          return res.status(409).json({ message: `เลขที่สัญญา "${contractNo}" ถูกใช้ไปแล้ว กรุณาตรวจสอบ` });
+          return res.status(409).json({ message: dupContractNoMessage(contractNo, dupContractNo) });
         }
       }
 

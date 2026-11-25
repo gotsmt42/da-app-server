@@ -547,11 +547,15 @@ const eventSchema = new mongoose.Schema(
      *    contractQuotationFiles = ใบเสนอราคา/เอกสารมูลค่าของทั้งสัญญา — เก็บชุดเดียวกัน (_id เดียวกัน) ทุกครั้งในสัญญา
      */
     jobValueVatIncluded: { type: Boolean, default: null },
+    // ✅ (25 พ.ย. 2569 ผู้ใช้: "ให้มีไฟล์แนบหลักฐานของสัญญานั้นๆ ให้ติดตามได้ง่าย") เอกสารทั้งหมดของสัญญาเก็บที่นี่ชุดเดียว
+    //    docType: contract (สัญญาฉบับเซ็น) · quotation (ใบเสนอราคา) · po (ใบสั่งซื้อ/PO) · other (อื่นๆ) · "" = ไฟล์เก่า = ใบเสนอราคา
+    //    ⚠️ ใช้ฟิลด์เดิม (ไม่แยกฟิลด์ใหม่) — ทุกทางที่คัดลอก/ล้างข้อมูลสัญญา (สร้างครั้งใหม่ · ย้ายเข้า · แยกออก) ครอบคลุมอยู่แล้ว
     contractQuotationFiles: [
       {
         fileName: String,
         fileUrl: String,
         fileType: String,
+        docType: { type: String, default: "" },
         uploadedAt: { type: Date, default: Date.now },
         uploadedBy: String,
       },
