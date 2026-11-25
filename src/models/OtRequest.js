@@ -39,9 +39,19 @@ const lineSchema = new mongoose.Schema(
     multiplier: { type: Number, default: 1.5 },
     hourlyRate: { type: Number, default: 0 },
     amount: { type: Number, default: 0 },
-    /** งานที่ทำ OT (ไม่บังคับ) + snapshot ชื่องาน */
+    /** งานที่ทำ OT (ไม่บังคับ) + snapshot ชื่องาน — = งานแรกของ jobs (คงไว้ให้หน้าจอ/รายงานรุ่นเดิมอ่านได้) */
     eventId: { type: String, default: "" },
     jobTitle: { type: String, default: "" },
+    /**
+     * ✅ (25 พ.ย. 2569 ผู้ใช้: "ให้ผูกหลายงานได้รายการเดียวด้วย เผื่อมีเข้า ot หลายงาน")
+     * ทุกงานที่รายการนี้อิง (ช่วงเวลา OT เดียวกัน ทำให้หลายงาน) — ชั่วโมงนับครั้งเดียวต่อรายการ ไม่คูณตามจำนวนงาน
+     */
+    jobs: { type: [{ _id: false, eventId: { type: String, default: "" }, jobTitle: { type: String, default: "" } }], default: [] },
+    /**
+     * ✅ (25 พ.ย. 2569 ผู้ใช้: "ให้แต่ละรายการ สามารถแนบไฟล์หลักฐานแยกกันได้")
+     * รหัสรายการในฟอร์ม (1 รายการ = หลายบรรทัดได้เมื่อยื่นให้หลายคน) — หลักฐานที่ itemRef ตรงกันคือของรายการนี้
+     */
+    itemRef: { type: String, default: "" },
     task: { type: String, default: "", trim: true },
   },
   { _id: true }
@@ -83,7 +93,8 @@ const otRequestSchema = new mongoose.Schema(
     cancelledAt: { type: Date, default: null },
     cancelReason: { type: String, default: "" },
     /** หลักฐานการทำ OT (รูป/เอกสาร) — ✅ (27 ต.ค. 2569 ผู้ใช้: "ให้แนบหลักฐานการทำ OT ด้วย แต่ไม่บังคับ") */
-    attachments: [{ url: String, publicId: String, name: String, type: String, uploadedAt: { type: Date, default: Date.now }, uploadedBy: String }],
+    // itemRef = หลักฐานของรายการไหน (ว่าง = หลักฐานรวมของใบ — ใบเก่าทั้งหมด)
+    attachments: [{ url: String, publicId: String, name: String, type: String, itemRef: { type: String, default: "" }, uploadedAt: { type: Date, default: Date.now }, uploadedBy: String }],
     activityLog: [{ action: String, detail: String, userId: String, userName: String, timestamp: { type: Date, default: Date.now } }],
   },
   { timestamps: true }

@@ -53,6 +53,30 @@ const issuedDocumentSchema = new mongoose.Schema(
 
     issuedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     issuedByName: { type: String, default: "" },
+
+    /**
+     * ✅ (25 พ.ย. 2569 ผู้ใช้: "การออกใบแจ้งเข้างาน ทำให้สามารถกดแก้ไขได้ย้อนหลัง หรือสร้างซ้ำ เผื่อกำหนดการงานมีการแก้ไข")
+     * แก้ไขใบเดิม (เลขเดิม) — เก็บฉบับก่อนแก้ไว้ใน revisions ทุกครั้ง (ตามกลับได้ว่าเคยส่งอะไรไป) · revisionNo = แก้มาแล้วกี่ครั้ง
+     */
+    revisionNo: { type: Number, default: 0 },
+    revisedAt: { type: Date, default: null },
+    revisedByName: { type: String, default: "" },
+    revisions: {
+      type: [{
+        _id: false,
+        at: { type: Date, default: Date.now },
+        byName: { type: String, default: "" },
+        issuedAt: Date,
+        subject: String,
+        formSnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+      }],
+      default: [],
+    },
+    /** ออกใบใหม่แทน — ใบใหม่ชี้ใบเดิม (supersedes) · ใบเดิมถูกยกเลิกและชี้ใบใหม่ (supersededBy) */
+    supersedes: { type: mongoose.Schema.Types.ObjectId, ref: "IssuedDocument", default: null },
+    supersedesNumber: { type: String, default: "" },
+    supersededBy: { type: mongoose.Schema.Types.ObjectId, ref: "IssuedDocument", default: null },
+    supersededByNumber: { type: String, default: "" },
   },
   { timestamps: true }
 );
@@ -72,7 +96,7 @@ IssuedDocument.activeFor = async function activeFor(eventId, docType) {
   if (!eventId || !mongoose.isValidObjectId(eventId)) return null;
   return IssuedDocument.findOne({ eventId, docType, status: { $ne: "cancelled" } })
     .sort({ issuedAt: -1, createdAt: -1 })
-    .select("docType docNumber issuedAt status issuedByName site subject formSnapshot eventId customerCompany")
+    .select("docType docNumber issuedAt status issuedBy issuedByName site subject formSnapshot eventId customerCompany revisionNo revisedAt revisedByName supersedes supersedesNumber")
     .lean();
 };
 module.exports = IssuedDocument;

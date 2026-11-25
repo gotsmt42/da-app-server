@@ -57,9 +57,10 @@ const EXPECTED = {
   approveOwnReview: ["manager"],
   approveOwnExpense: ["techadmin", "manager", "director"],
   viewAllExpenses: ["techadmin", "manager", "director"],
-  // ✅ ระบบหลังบ้านเว็บไซต์บริษัท (24 ก.ย. 2569)
-  manageWebsite: [],
-  viewLeads: [],
+  // ✅ ระบบหลังบ้านเว็บไซต์บริษัท (24 ก.ย. 2569) · 🔁 (8 ต.ค. 2569 ผู้ใช้: "สิทธิ์ไม่ให้รวมสิทธิ์ระบบ") ค่าเริ่มต้น = กรรมการ + ผู้จัดการ
+  //    (Super Admin ไม่ผ่านอัตโนมัติแล้ว — snapshot เดิมยังเป็นค่าว่าง ทำให้ npm test ตกมาตั้งแต่ตอนนั้น)
+  manageWebsite: ["manager", "director"],
+  viewLeads: ["manager", "director"],
 };
 
 const FRONTEND_ROLES_FILE = path.resolve(
@@ -89,8 +90,8 @@ capsInCode.filter((c) => capsExpected.includes(c)).forEach((c) => {
   }
 });
 
-/** ผู้ใช้สั่ง (25 ก.ย. 2569): เว็บไซต์บริษัท — Super Admin เท่านั้นก่อน */
-const SUPER_ONLY = ["manageWebsite", "viewLeads"];
+/** สิทธิ์ที่ตั้งใจให้ว่าง (ไม่มีตำแหน่งไหนได้โดยค่าเริ่มต้น) — 🔁 (8 ต.ค. 2569) ไม่มีแล้ว: Role ไม่ผ่านสิทธิ์งานอัตโนมัติ สิทธิ์ว่าง = ไม่มีใครใช้ได้จริง */
+const SUPER_ONLY = [];
 
 // ── 2) role ที่ไม่มีอยู่จริง / สิทธิ์ที่ไม่มีใครทำได้ ────────────────────
 capsInCode.forEach((c) => {

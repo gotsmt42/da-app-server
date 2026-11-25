@@ -117,7 +117,9 @@ const buildLines = async (raw, cfg) => {
   const users = ids.length ? await User.find({ _id: { $in: ids } }).select("fname lname username").lean() : [];
   const userById = new Map(users.map((u) => [String(u._id), u]));
   const wages = await wagesOf(ids);
-  const eventIds = [...new Set(arr.map((l) => String(l?.eventId || "")).filter(isId))];
+  // ✅ (25 พ.ย. 2569) 1 รายการอิงได้หลายงาน (eventIds) · หน้าจอรุ่นเดิมส่ง eventId ตัวเดียวก็ยังใช้ได้
+  const idsOf = (l) => [...new Set([...(Array.isArray(l?.eventIds) ? l.eventIds : []), l?.eventId].map((x) => String(x || "")).filter(isId))].slice(0, 10);
+  const eventIds = [...new Set(arr.flatMap(idsOf))];
   const events = eventIds.length ? await CalendarEvent.find({ _id: { $in: eventIds } }).select("title site company system").lean() : [];
   const evById = new Map(events.map((ev) => [String(ev._id), ev]));
 
@@ -139,7 +141,8 @@ const buildLines = async (raw, cfg) => {
     if (h.error) return { error: `${no}: ${h.error}` };
     const multiplier = Number(cfg.multipliers[type]) || 1;
     const hourlyRate = money(wages.get(uid) || 0);
-    const ev = evById.get(String(l?.eventId || ""));
+    const evs = idsOf(l).map((id) => evById.get(id)).filter(Boolean);
+    const titleOf = (ev) => [ev.title, ev.system && !String(ev.title || "").includes(ev.system) ? ev.system : "", ev.site || ev.company].filter(Boolean).join(" · ");
     lines.push({
       person: { userId: uid, name: fullNameOf(u) },
       date, type,
@@ -147,11 +150,25 @@ const buildLines = async (raw, cfg) => {
       breakMin: Math.max(Math.round(Number(l?.breakMin) || 0), 0),
       hours: h.hours, multiplier, hourlyRate,
       amount: money(h.hours * multiplier * hourlyRate),
-      eventId: ev ? String(ev._id) : "",
-      jobTitle: ev ? [ev.title, ev.system && !String(ev.title || "").includes(ev.system) ? ev.system : "", ev.site || ev.company].filter(Boolean).join(" · ") : "",
+      eventId: evs[0] ? String(evs[0]._id) : "",
+      jobTitle: evs[0] ? titleOf(evs[0]) : "",
+      jobs: evs.map((ev) => ({ eventId: String(ev._id), jobTitle: titleOf(ev) })),
+      itemRef: String(l?.itemRef || "").replace(/[^\w-]/g, "").slice(0, 40),
       task: String(l?.task || "").trim().slice(0, 300),
       _span: [date.getTime() / 60000 + h.span[0], date.getTime() / 60000 + h.span[1]],
     });
+  }
+  /**
+   * 🔒 (25 พ.ย. 2569 ผู้ใช้: "ไม่ให้เบิก OT ซ้ำงานได้ งานไหนที่ลงรายการไปแล้ว จนกว่าจะลบรายการนั้นก่อน")
+   * คนเดียวกัน · งานเดียวกัน · วันเดียวกัน = ได้รายการเดียว (งานหลายวันเบิกได้วันละรายการ)
+   */
+  for (let i = 0; i < lines.length; i += 1) {
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const a = lines[i]; const b = lines[j];
+      if (a.person.userId !== b.person.userId || dayKey(a.date) !== dayKey(b.date)) continue;
+      const same = a.jobs.find((x) => b.jobs.some((y) => y.eventId === x.eventId));
+      if (same) return { error: `งาน ${same.jobTitle} วันที่ ${dayKey(a.date)} อยู่ในรายการที่ ${i + 1} และ ${j + 1} ซ้ำกัน — 1 งานเบิก OT ได้วันละ 1 รายการ ลบรายการที่ซ้ำก่อน` };
+    }
   }
   // 🔒 คนเดียวกันห้ามมีช่วงเวลา OT ซ้อนกันในใบเดียว (กันยื่นชั่วโมงซ้ำ)
   for (let i = 0; i < lines.length; i += 1) {
@@ -179,6 +196,17 @@ const crossDocOverlap = async (lines, excludeId) => {
   };
   if (excludeId) q._id = { $ne: excludeId };
   const others = await OtRequest.find(q).select("docNo lines").lean();
+  // 🔒 (25 พ.ย. 2569) งานเดียวกันวันเดียวกัน เบิกซ้ำคนละใบไม่ได้ — แก้ในใบเดิม หรือยกเลิกใบเดิมก่อน
+  for (const doc of others) {
+    for (const o of doc.lines) {
+      const oIds = (o.jobs?.length ? o.jobs.map((x) => x.eventId) : [o.eventId]).filter(Boolean);
+      const hit = lines.find((l) => l.person.userId === o.person.userId && dayKey(l.date) === dayKey(o.date) && l.jobs.some((x) => oIds.includes(x.eventId)));
+      if (hit) {
+        const job = hit.jobs.find((x) => oIds.includes(x.eventId));
+        return `${hit.person.name} เบิก OT งาน ${job?.jobTitle || ""} วันที่ ${dayKey(o.date)} ไปแล้วในใบ ${doc.docNo} — 1 งานเบิกได้วันละ 1 รายการ (แก้ในใบเดิม หรือยกเลิกใบเดิมก่อน)`;
+      }
+    }
+  }
   for (const doc of others) {
     for (const o of doc.lines) {
       const r = hoursOf(o.start, o.end, 0);
@@ -534,7 +562,8 @@ router.get("/:id", verifyToken, async (req, res) => {
 //    แนบเพิ่มได้ตลอดจนกว่าใบจะยกเลิก/ปิดรอบ · ลบได้เฉพาะผู้ยื่นตอนใบยังแก้ได้ (รอตรวจสอบ/ถูกตีกลับ)
 const upload = multer({ storage: multer.memoryStorage(), fileFilter, limits });
 const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
-const MAX_FILES = 10;
+// 🔁 (25 พ.ย. 2569) แนบหลักฐานแยกรายการได้ — รวมทั้งใบไม่เกิน 40 ไฟล์ (หน้าจอจำกัดรายการละ 10)
+const MAX_FILES = 40;
 const uploadFile = (file, folder) => new Promise((resolve, reject) => {
   const isImage = IMAGE_TYPES.includes(file.mimetype);
   const name = Buffer.from(file.originalname || "file", "latin1").toString("utf8");
@@ -556,7 +585,14 @@ router.post("/:id/files", verifyToken, upload.array("files", MAX_FILES), async (
     if ((doc.attachments || []).length + files.length > MAX_FILES) return res.status(400).json({ message: `แนบได้ไม่เกิน ${MAX_FILES} ไฟล์ต่อใบ` });
     const me = actor(req);
     const out = await Promise.all(files.map((f) => uploadFile(f, `ot/${doc._id}`)));
-    out.forEach((a) => doc.attachments.push({ ...a, uploadedAt: new Date(), uploadedBy: me.name }));
+    // refs = รายการที่ไฟล์แต่ละไฟล์เป็นหลักฐาน (เรียงตรงกับ files) — ต้องเป็นรายการที่มีอยู่ในใบจริง ไม่งั้นนับเป็นหลักฐานรวม
+    let refs = req.body?.refs;
+    if (typeof refs === "string") { try { refs = JSON.parse(refs); } catch { refs = []; } }
+    const known = new Set((doc.lines || []).map((l) => l.itemRef).filter(Boolean));
+    out.forEach((a, i) => {
+      const ref = Array.isArray(refs) ? String(refs[i] || "") : "";
+      doc.attachments.push({ ...a, itemRef: known.has(ref) ? ref : "", uploadedAt: new Date(), uploadedBy: me.name });
+    });
     log(doc, "files", `แนบหลักฐาน ${out.length} ไฟล์`, me);
     await doc.save();
     res.json({ request: redact(req, doc) });

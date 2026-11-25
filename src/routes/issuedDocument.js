@@ -65,6 +65,7 @@ router.get("/", verifyToken, async (req, res) => {
 
     const [items, total] = await Promise.all([
       IssuedDocument.find(filter)
+        .select("-revisions") // ⚠️ ประวัติฉบับก่อนแก้ (snapshot ทั้งก้อน) ไม่ต้องส่งในตาราง
         .sort({ issuedAt: -1, createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
@@ -119,9 +120,23 @@ router.post("/", verifyToken, async (req, res) => {
     if (!String(b.docNumber || "").trim()) {
       return res.status(400).json({ message: "ไม่มีเลขที่เอกสาร" });
     }
-    // ✅ ห้ามออกซ้ำ — งานเดียวกันมีใบชนิดเดียวกันที่ยังใช้อยู่ได้ใบเดียว (ดู IssuedDocument.activeFor)
+    /**
+     * ✅ (25 พ.ย. 2569) ออกใบใหม่แทนใบเดิม — replaceId = ใบที่ใช้อยู่ของงานนี้ · ใบเดิมถูกยกเลิกให้อัตโนมัติหลังออกใบใหม่สำเร็จ
+     * ⚠️ สิทธิ์เดียวกับการแก้ทะเบียน: แอดมิน/ผู้จัดการ (editDocuments) หรือคนที่ออกใบเดิม
+     */
+    let replaced = null;
+    if (b.replaceId) {
+      replaced = await IssuedDocument.findById(b.replaceId);
+      if (!replaced || replaced.status === "cancelled") return res.status(404).json({ message: "ไม่พบใบเดิมที่จะออกใหม่แทน (อาจถูกยกเลิกไปแล้ว)" });
+      if (replaced.docType !== b.docType || String(replaced.eventId || "") !== String(b.eventId || "")) {
+        return res.status(400).json({ message: "ใบเดิมไม่ใช่เอกสารชนิดเดียวกันของงานนี้" });
+      }
+      const owner = String(replaced.issuedBy || "") === String(req.user?._id || "");
+      if (!isAdminOrManager(req) && !owner) return res.status(403).json({ message: "ออกใหม่แทนได้เฉพาะผู้ออกใบเดิม หรือผู้มีสิทธิ์แก้เอกสาร" });
+    }
+    // ✅ ห้ามออกซ้ำ — งานเดียวกันมีใบชนิดเดียวกันที่ยังใช้อยู่ได้ใบเดียว (ดู IssuedDocument.activeFor) · ยกเว้นใบที่กำลังถูกแทน
     const existing = await IssuedDocument.activeFor(b.eventId, b.docType);
-    if (existing) {
+    if (existing && (!replaced || String(existing._id) !== String(replaced._id))) {
       return res.status(409).json({
         message: `งานนี้ออกเอกสารนี้ไปแล้ว (เลขที่ ${existing.docNumber}) — ถ้าต้องออกใหม่ ให้ยกเลิกใบเดิมในทะเบียนเอกสารก่อน`,
         doc: existing,
@@ -144,12 +159,57 @@ router.post("/", verifyToken, async (req, res) => {
       // ⚠️ ผู้ออกเอกสารอ่านจาก token เท่านั้น ไม่รับจาก body — ไม่งั้นใครก็ส่งชื่อคนอื่นมาสวมได้
       issuedBy: req.user?._id || null,
       issuedByName: [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "",
+      supersedes: replaced?._id || null,
+      supersedesNumber: replaced?.docNumber || "",
     });
+    if (replaced) {
+      const who = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "";
+      replaced.status = "cancelled";
+      replaced.supersededBy = doc._id;
+      replaced.supersededByNumber = doc.docNumber;
+      replaced.note = [replaced.note, `ยกเลิก — ออกใบใหม่แทนเลขที่ ${doc.docNumber} (${who})`].filter(Boolean).join(" · ");
+      await replaced.save();
+    }
 
     res.status(201).json(doc);
   } catch (err) {
     console.error("❌ บันทึกทะเบียนเอกสารไม่สำเร็จ:", err);
     res.status(500).json({ message: "บันทึกทะเบียนเอกสารไม่สำเร็จ" });
+  }
+});
+
+/**
+ * PUT /api/issued-documents/:id/revise — แก้ไขใบเดิม (เลขที่เดิม) ✅ (25 พ.ย. 2569 ผู้ใช้: "ทำให้สามารถกดแก้ไขได้ย้อนหลัง")
+ * ใช้เมื่อกำหนดการ/ถ้อยคำเปลี่ยน แต่ยังเป็นใบเดิม — ฉบับก่อนแก้ถูกเก็บใน revisions (สูงสุด 20 ฉบับล่าสุด)
+ * ⚠️ เลขที่เอกสาร/ชนิด/งานที่ผูก แก้ไม่ได้ (ถ้าต้องการเลขใหม่ ใช้ "ออกใบใหม่แทน" = POST พร้อม replaceId)
+ */
+router.put("/:id/revise", verifyToken, async (req, res) => {
+  try {
+    const target = await IssuedDocument.findById(req.params.id);
+    if (!target) return res.status(404).json({ message: "ไม่พบเอกสารนี้ในทะเบียน" });
+    if (target.status === "cancelled") return res.status(409).json({ message: "ใบนี้ถูกยกเลิกแล้ว แก้ไขไม่ได้" });
+    const isOwner = String(target.issuedBy || "") === String(req.user?._id || "");
+    if (!isAdminOrManager(req) && !isOwner) return res.status(403).json({ message: "แก้ไขได้เฉพาะเอกสารที่คุณเป็นผู้ออก หรือผู้มีสิทธิ์แก้เอกสาร" });
+    const b = req.body || {};
+    if (!b.formSnapshot || typeof b.formSnapshot !== "object") return res.status(400).json({ message: "ไม่มีข้อมูลเอกสารที่แก้ไข" });
+    const who = [req.user?.fname, req.user?.lname].filter(Boolean).join(" ") || req.user?.username || "";
+    target.revisions = [...(target.revisions || []), {
+      at: new Date(), byName: who, issuedAt: target.issuedAt, subject: target.subject, formSnapshot: target.formSnapshot,
+    }].slice(-20);
+    target.revisionNo = (target.revisionNo || 0) + 1;
+    target.revisedAt = new Date();
+    target.revisedByName = who;
+    target.formSnapshot = { ...b.formSnapshot, docNumber: target.docNumber };
+    target.markModified("formSnapshot");
+    if (b.issuedAt) target.issuedAt = new Date(b.issuedAt);
+    ["subject", "site", "customerCompany", "workLabel", "roundLabel", "signerName"].forEach((k) => {
+      if (b[k] !== undefined) target[k] = String(b[k] || "");
+    });
+    await target.save();
+    res.json(target);
+  } catch (err) {
+    console.error("❌ แก้ไขเอกสารไม่สำเร็จ:", err);
+    res.status(500).json({ message: "แก้ไขเอกสารไม่สำเร็จ" });
   }
 });
 
