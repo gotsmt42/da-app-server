@@ -15,6 +15,7 @@ const {
   isJobParticipant,
 } = require("./shared");
 const { ALLOWED_TYPES, ALLOWED_IMAGE_TYPES } = require("../../config/upload");
+const crypto = require("crypto");
 
 /** ชนิดเอกสารของนัดเซล (salesDocFiles.docType) */
 const SALES_DOC_TYPES = ["quotation", "other"];
@@ -79,6 +80,29 @@ module.exports = (router) => {
         return res.status(415).json({ message: "รองรับเฉพาะรูปภาพ (JPG, PNG, WebP, HEIC) และเอกสาร (PDF, Word, Excel)" });
       }
 
+      /**
+       * 🔒 (26 พ.ย. 2569 ผู้ใช้: "เหตุการแบบนี้คือบันทึกซ้ำๆไหม มีวิธีป้องกันไหม") กันไฟล์ซ้ำใน "ไฟล์แนบ" ของงาน
+       * ลายนิ้วมือเนื้อไฟล์ (sha256) ตรงกับไฟล์ที่แนบไว้แล้ว = ไม่บันทึกซ้ำ ตอบไฟล์เดิมกลับไป (duplicate: true)
+       * ⚠️ ตอบ 200 พร้อมไฟล์เดิม (ไม่ใช่ error) — ขั้นตอนเช็คอินที่อัปรูปแล้วอ้าง fileId ต่อ จะใช้ไฟล์เดิมได้เลย ไม่สะดุด
+       * ส่ง allowDuplicate=1 มาเมื่อผู้ใช้ตั้งใจแนบซ้ำจริง · ไฟล์เก่าก่อนมีระบบนี้ไม่มีลายนิ้วมือ จึงไม่ถูกนับ
+       */
+      const contentHash = crypto.createHash("sha256").update(file.buffer).digest("hex");
+      const dedupeField = type === "sitePhoto" || type === "intake" ? "sitePhotoFiles" : null;
+      if (dedupeField && String(req.body.allowDuplicate || "") !== "1") {
+        const dup = (eventForLock[dedupeField] || []).find((f) => f.contentHash && f.contentHash === contentHash);
+        if (dup) {
+          return res.status(200).json({
+            fileId: dup._id, fileName: dup.fileName, fileUrl: dup.fileUrl, fileType: dup.fileType,
+            duplicate: true, message: `ไฟล์นี้แนบไว้แล้ว (${dup.fileName}) — ไม่ได้แนบซ้ำ`,
+          });
+        }
+      }
+      /**
+       * 🐛 (26 พ.ย. 2569) ชื่อไฟล์บนที่เก็บต้องไม่ซ้ำ — เดิมใช้ชื่อไฟล์ตรง ๆ + overwrite: ไฟล์คนละรูปที่ชื่อเดียวกัน
+       *    (เช่น "image.jpg" จาก iPhone) ทับของเดิม → ทุกรายการในงานแสดงรูปล่าสุดรูปเดียวกันหมด (ดูเหมือนบันทึกซ้ำ)
+       */
+      const uniq = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
       // ✅ perf: รูปภาพอัพโหลดด้วย resource_type "image" แทน "raw" — "raw" เป็น blob ดิบๆ
       // ไม่รองรับ Cloudinary URL transformation (resize/compress) เลย ทำให้ตอนเปิดดูรูปพรีวิวต้องโหลด
       // ไฟล์เต็มความละเอียดต้นฉบับเสมอ (รูปจากมือถือหลาย MB) รู้สึกหน่วง/ค้าง — "image" เปิดให้แปะ query
@@ -96,7 +120,7 @@ module.exports = (router) => {
               ? {
                   resource_type: "image",
                   folder: `events/${eventId}`,
-                  public_id: imagePublicId,
+                  public_id: `${imagePublicId}_${uniq}`,
                   use_filename: false,
                   unique_filename: false,
                   overwrite: true,
@@ -106,7 +130,7 @@ module.exports = (router) => {
                   folder: `events/${eventId}`,
                   // ✅ resource_type "raw" ไม่ต่อนามสกุลให้อัตโนมัติเหมือน image/video
                   // ต้องฝังนามสกุลไว้ใน public_id เองเสมอ ไม่งั้น secure_url จะไม่มีนามสกุล
-                  public_id: sanitizedName,
+                  public_id: /\.[^.]+$/.test(sanitizedName) ? sanitizedName.replace(/(\.[^.]+)$/, `_${uniq}$1`) : `${sanitizedName}_${uniq}`,
                   use_filename: false,
                   unique_filename: false,
                   overwrite: true,
@@ -135,6 +159,7 @@ module.exports = (router) => {
         ...(isSalesDoc ? { docType: salesDocType(req.body.docType), note: salesDocNote(req.body.note) } : {}),
         // ✅ (26 ต.ค. 2569) ใบเสนอราคา = ประทับฉบับปัจจุบัน (Rev.N) ของงาน
         ...(type === "quotation" ? { revision: Number(eventForLock.quotationRevision) || 0 } : {}),
+        ...(dedupeField ? { contentHash } : {}),
         ...(isIntakeDoc ? { source: "intake", sourceLabel: `เอกสารรับงาน · ${INTAKE_DOC_LABEL[eventForLock.intakeDocType] || "เอกสาร"}${eventForLock.intakeDocNo ? ` ${eventForLock.intakeDocNo}` : ""}` } : {}),
       };
 

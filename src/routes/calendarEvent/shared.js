@@ -91,6 +91,7 @@ const CONTRACT_FIELD_LABELS = {
   visitCount: "จำนวนครั้งทั้งหมด",
   intervalMonths: "ระยะห่างระหว่างรอบ (เดือน)",
   contractYears: "จำนวนปีของสัญญา",
+  planFirstMonth: "เดือนเข้าครั้งที่ 1 (แผนงาน)",
   jobValue: "มูลค่างาน",
   commission: "ค่าคอมมิชชั่น",
   team: "ทีมที่เข้างาน",

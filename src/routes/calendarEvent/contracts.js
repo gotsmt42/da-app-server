@@ -234,6 +234,9 @@ module.exports = (router) => {
             visitCount: contractHead.visitCount,
             intervalMonths: contractHead.intervalMonths,
             contractYears: contractHead.contractYears,
+            planFirstMonth: contractHead.planFirstMonth || "",
+            planMonths: contractHead.planMonths || [],
+            planSentDocs: contractHead.toObject().planSentDocs || [],
             estimatedDaysPerVisit: contractHead.estimatedDaysPerVisit,
             jobValue: contractHead.jobValue,
             jobValueVatIncluded: contractHead.jobValueVatIncluded ?? null,
@@ -404,7 +407,17 @@ module.exports = (router) => {
       const {
         contractNo, quotationNo, contractStart, contractEnd, visitCount, intervalMonths, contractYears, estimatedDaysPerVisit, jobValue, commission, province, city,
         team, resPerson, responsiblePerson, responsiblePersonId, departmentTag, statusNote, remark, contactName, contactTel,
+        planFirstMonth, planMonths,
       } = req.body;
+
+      // ✅ (26 พ.ย. 2569) เดือนเข้าครั้งที่ 1 ของแผนงาน — "YYYY-MM" หรือ "" (ล้าง)
+      if (planFirstMonth !== undefined && planFirstMonth !== null && planFirstMonth !== "" && !/^\d{4}-(0[1-9]|1[0-2])$/.test(String(planFirstMonth))) {
+        return res.status(400).json({ message: "เดือนเข้าครั้งที่ 1 ต้องเป็นรูปแบบ ปี-เดือน (YYYY-MM)" });
+      }
+      if (planMonths !== undefined && planMonths !== null
+        && (!Array.isArray(planMonths) || planMonths.length > MAX_VISIT_COUNT || planMonths.some((m) => m !== "" && !/^\d{4}-(0[1-9]|1[0-2])$/.test(String(m))))) {
+        return res.status(400).json({ message: "เดือนของแผนรายครั้งไม่ถูกต้อง" });
+      }
 
       // ✅ ป้ายกำกับแผนกเจ้าของสัญญา — ต้องเป็นค่าที่ schema รู้จักเท่านั้น (ดู enum ที่ models/Events.js)
       // ⚠️ เป็นแค่ "ข้อมูลประกอบ" สำหรับดู/กรอง/ออกรายงาน — ไม่ถูกใช้ในเงื่อนไขการกรองใดๆ ทั้งสิ้น
@@ -440,6 +453,8 @@ module.exports = (router) => {
       // checkAndNotifyOverdueContracts/nextVisitOverdueInfo) ไม่ผูก/คำนวณทับ visitCount ให้เอง เพราะ
       // งานจริงเลื่อน/ชนกันได้เสมอ จำนวนครั้งจริงต้องให้ผู้ใช้เป็นคนกำหนดเองเท่านั้น
       if (intervalMonths !== undefined) update.intervalMonths = intervalMonths;
+      if (planFirstMonth !== undefined) update.planFirstMonth = String(planFirstMonth || "");
+      if (planMonths !== undefined) update.planMonths = (planMonths || []).map((m) => String(m || ""));
       if (estimatedDaysPerVisit !== undefined) {
         const days = Number(estimatedDaysPerVisit);
         if (estimatedDaysPerVisit !== "" && estimatedDaysPerVisit !== null && (!Number.isInteger(days) || days < 1 || days > 365)) return res.status(400).json({ message: "estimatedDaysPerVisit must be an integer from 1 to 365" });
@@ -650,13 +665,68 @@ module.exports = (router) => {
     }
   });
 
+  /**
+   * ✅ (26 พ.ย. 2569 ผู้ใช้: "การลบสัญญา ถ้ามันมีงานอิงสัญญานี้อยู่ทำให้ไม่สามารถลบได้ด้วย ป้องกันผิดพลาด")
+   *    ลบทั้งสัญญาได้เฉพาะเมื่อ "ยังไม่มีงานจริง" เท่านั้น:
+   *      1) ไม่มีครั้งที่ลงตารางแล้ว (มีได้แค่แผน/ฉบับร่าง unscheduled)
+   *      2) ไม่มีเอกสารใดๆ ผูกกับงานของสัญญา (ใบแจ้ง/ส่งมอบ · เบิก/เคลม · OT · PR · เบิกของ · ใบมอบหมาย · ลงเวลาเข้างาน)
+   *    มีอย่างใดอย่างหนึ่ง → 409 + รายการที่ติดอยู่ ให้ลบงาน/แยกออกจากสัญญาทีละครั้งก่อน (ตั้งใจให้ทำทีละขั้น)
+   *    นับเฉพาะเอกสารที่ยังมีผล (ยกเลิก/ตีกลับแล้วไม่นับ)
+   */
+  const contractDeleteBlockers = async (events) => {
+    const ids = events.map((e) => String(e._id));
+    const oids = events.map((e) => e._id);
+    const live = (extra) => ({ status: { $nin: ["cancelled", "rejected"] }, ...extra });
+    const count = (modelPath, query) => require(modelPath).countDocuments(query).catch(() => 0);
+    const [docs, expenses, ots, prs, stocks, dispatches, checkins] = await Promise.all([
+      count("../../models/IssuedDocument", { eventId: { $in: oids }, status: { $ne: "cancelled" } }),
+      count("../../models/Expense", live({ $or: [{ eventId: { $in: ids } }, { "jobs.eventId": { $in: ids } }, { "jobRanges.eventId": { $in: ids } }] })),
+      count("../../models/OtRequest", live({ $or: [{ "lines.eventId": { $in: ids } }, { "lines.jobs.eventId": { $in: ids } }] })),
+      count("../../models/PurchaseRequest", live({ eventId: { $in: ids } })),
+      count("../../models/StockRequest", live({ eventId: { $in: ids } })),
+      count("../../models/Dispatch", live({ eventId: { $in: oids } })),
+      count("../../models/Attendance", { eventId: { $in: oids } }),
+    ]);
+    const refs = [
+      [docs, "ใบแจ้งเข้างาน/ใบส่งมอบงาน"],
+      [expenses, "ใบเบิก/เคลม/ผู้รับเหมา"],
+      [ots, "ใบขอ OT"],
+      [prs, "ใบขอซื้อ (PR)"],
+      [stocks, "ใบเบิกของจากสต็อก"],
+      [dispatches, "ใบมอบหมายงาน"],
+      [checkins, "บันทึกเข้างาน"],
+    ].filter(([n]) => n > 0).map(([n, label]) => ({ label, count: n }));
+    const jobs = events
+      .filter((e) => !e.unscheduled)
+      .sort((a, b) => (Number(a.time) || 0) - (Number(b.time) || 0) || new Date(a.start || a.date || 0) - new Date(b.start || b.date || 0))
+      .map((e) => ({ _id: e._id, time: e.time ?? null, start: e.start || e.date || null, end: e.end || null, status: e.status || "" }));
+    return { jobs, refs };
+  };
+
   router.delete("/contract/:contractGroupId", verifyToken, async (req, res) => {
     try {
       if (!can(req.user, "editContracts")) {
         return res.status(403).json({ message: "เฉพาะแอดมิน/manager เท่านั้นที่ลบสัญญาได้" });
       }
       const { contractGroupId } = req.params;
-      const result = await CalendarEvent.deleteMany({ contractGroupId });
+      const events = await CalendarEvent.find({ contractGroupId }).select("_id time start end date status unscheduled").lean();
+      if (events.length === 0) {
+        return res.status(404).json({ message: "ไม่พบสัญญานี้" });
+      }
+      const { jobs, refs } = await contractDeleteBlockers(events);
+      if (jobs.length || refs.length) {
+        const why = [
+          jobs.length ? `มีงานที่ลงตารางแล้ว ${jobs.length} รายการ` : "",
+          refs.length ? `มีเอกสารผูกกับงานของสัญญา (${refs.map((r) => `${r.label} ${r.count}`).join(" · ")})` : "",
+        ].filter(Boolean).join(" และ ");
+        return res.status(409).json({
+          code: "CONTRACT_IN_USE",
+          message: `ลบสัญญานี้ไม่ได้ — ${why} · ลบงานหรือ "แยกออกจากสัญญา" ทีละครั้งให้หมดก่อน แล้วค่อยลบสัญญา`,
+          jobs,
+          refs,
+        });
+      }
+      const result = await CalendarEvent.deleteMany({ contractGroupId, unscheduled: true });
       if (result.deletedCount === 0) {
         return res.status(404).json({ message: "ไม่พบสัญญานี้" });
       }

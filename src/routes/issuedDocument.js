@@ -11,6 +11,39 @@ const DOC_TYPES = ["notice", "delivery"];
 const isAdminOrManager = (req) => can(req.user, "editDocuments");
 
 /**
+ * ✅ (26 พ.ย. 2569 ผู้ใช้: "ทำให้สามารถติดตามแผนงานทั้งปีที่ส่งไปแล้ว มีการลงตามนี้จริงไหม")
+ *    ใบแจ้งเข้างานแบบ "ระบุแค่เดือน" ที่ผูกสัญญา (formSnapshot.contractGroupId + monthRows[].time) = แผนที่ส่งลูกค้าแล้ว
+ *    → เก็บสำเนา (ครั้งที่ → เดือน) ไว้ที่ทุกครั้งของสัญญา (planSentDocs) ให้หน้าแผนงานทั้งปีเทียบกับการลงงานจริง
+ *    ออกใหม่แทน = ใบเดิมออกจากรายการ · ยกเลิกใบ = เอาออก · ⚠️ พลาดไม่ทำให้การออกเอกสารล้ม (แค่ log)
+ */
+const PLAN_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const planRowsOf = (doc) => {
+  const f = doc?.formSnapshot || {};
+  if (f.scheduleMode !== "months" || !f.contractGroupId) return [];
+  return (f.monthRows || [])
+    .filter((r) => PLAN_MONTH_RE.test(String(r?.month || "")) && Number.isInteger(Number(r?.time)) && Number(r.time) >= 1)
+    .map((r) => ({ time: Number(r.time), month: String(r.month) }));
+};
+const syncPlanSent = async (doc, { removeIds = [] } = {}) => {
+  try {
+    const groupId = String(doc?.formSnapshot?.contractGroupId || "");
+    if (!groupId) return;
+    const CalendarEvent = require("../models/Events");
+    const head = await CalendarEvent.findOne({ contractGroupId: groupId, planSentDocs: { $exists: true } }).select("planSentDocs").lean();
+    const drop = new Set([String(doc._id), ...removeIds.map(String)]);
+    let list = (head?.planSentDocs || []).filter((d) => !drop.has(String(d.docId)));
+    const rows = planRowsOf(doc);
+    if (rows.length && doc.status !== "cancelled") {
+      list.push({ docId: doc._id, docNumber: doc.docNumber, issuedAt: doc.issuedAt, sentByName: doc.issuedByName || "", rows });
+    }
+    list = list.slice(-12);
+    await CalendarEvent.updateMany({ contractGroupId: groupId }, { $set: { planSentDocs: list } });
+  } catch (err) {
+    console.error("⚠️ บันทึกแผนที่ส่งลูกค้าไว้กับสัญญาไม่สำเร็จ:", err?.message);
+  }
+};
+
+/**
  * ทะเบียนเอกสารที่ออกจริง — ดู models/IssuedDocument.js สำหรับเหตุผลว่าทำไมต้องมีตารางนี้
  *
  * ⚠️ ทุก endpoint ต้องล็อกอิน และการ "เขียน" (บันทึกใบใหม่/เปลี่ยนสถานะ) จำกัดเฉพาะ admin/manager
@@ -169,7 +202,9 @@ router.post("/", verifyToken, async (req, res) => {
       replaced.supersededByNumber = doc.docNumber;
       replaced.note = [replaced.note, `ยกเลิก — ออกใบใหม่แทนเลขที่ ${doc.docNumber} (${who})`].filter(Boolean).join(" · ");
       await replaced.save();
+      if (String(replaced.formSnapshot?.contractGroupId || "") !== String(doc.formSnapshot?.contractGroupId || "")) await syncPlanSent(replaced);
     }
+    await syncPlanSent(doc, { removeIds: replaced ? [replaced._id] : [] });
 
     res.status(201).json(doc);
   } catch (err) {
@@ -206,6 +241,7 @@ router.put("/:id/revise", verifyToken, async (req, res) => {
       if (b[k] !== undefined) target[k] = String(b[k] || "");
     });
     await target.save();
+    await syncPlanSent(target);
     res.json(target);
   } catch (err) {
     console.error("❌ แก้ไขเอกสารไม่สำเร็จ:", err);
@@ -239,6 +275,7 @@ router.patch("/:id", verifyToken, async (req, res) => {
 
     const doc = await IssuedDocument.findByIdAndUpdate(req.params.id, update, { new: true });
     if (!doc) return res.status(404).json({ message: "ไม่พบเอกสารนี้ในทะเบียน" });
+    if (update.status !== undefined) await syncPlanSent(doc);
     res.json(doc);
   } catch (err) {
     console.error("❌ แก้ไขทะเบียนเอกสารไม่สำเร็จ:", err);

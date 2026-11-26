@@ -448,6 +448,8 @@ const eventSchema = new mongoose.Schema(
         source: String,
         sourceLabel: String,
         dispatchId: String,
+        // ✅ (26 พ.ย. 2569) ลายนิ้วมือเนื้อไฟล์ (sha256) — กันแนบไฟล์เดิมซ้ำ (routes/calendarEvent/files.js)
+        contentHash: String,
       },
     ],
     // ✅ (18 พ.ย. 2569 ผู้ใช้: "ปิดงานไปแล้ว แต่ยังให้สามารถมาอัพไฟล์งานนั้นๆ พร้อมรายละเอียดได้
@@ -538,6 +540,27 @@ const eventSchema = new mongoose.Schema(
     intervalMonths: Number,
     // ✅ จำนวนปีของสัญญา (ปีละ N ครั้ง × กี่ปี) — ไม่มีค่า = คิดจากช่วงวันที่สัญญา (ดู utils/contractVisits.js)
     contractYears: Number,
+    // ✅ (26 พ.ย. 2569 ผู้ใช้: "ออกแผนงานทั้งปี … ระบุเดือนของครั้งที่ 1 แล้วเดือนต่อๆ ไปให้คำนวณตามทุกกี่เดือน")
+    //    เดือนที่วางแผนเข้าครั้งที่ 1 ("YYYY-MM") — ครั้งต่อไป = เดือนนี้ + (ครั้งที่−1) × intervalMonths ตลอดทุกปีของสัญญา
+    //    ระดับสัญญา (แก้ที่ PUT /contract/:id พร้อมกันทุกครั้ง) · ไม่มีค่า = หน้าจอเดาจากครั้งที่ 1 จริง/วันเริ่มสัญญา
+    planFirstMonth: { type: String, default: "" },
+    // ✅ (26 พ.ย. 2569 ผู้ใช้: "ให้สามารถกดเลือกเดือนเองได้ด้วย แต่แค่ใส่ค่าที่คำนวณมาก่อน") เดือนที่แก้เองรายครั้ง
+    //    index = ครั้งที่ − 1 · "" = ใช้ค่าที่คำนวณ (ครั้งที่ 1 ใช้ planFirstMonth เสมอ) · default undefined = ไม่เพิ่มฟิลด์ให้งานเก่า
+    planMonths: { type: [String], default: undefined },
+    // ✅ (26 พ.ย. 2569 ผู้ใช้: "ทำให้สามารถติดตามแผนงานทั้งปีที่ส่งไปแล้ว มีการลงตามนี้จริงไหม")
+    //    แผนที่ "ส่งลูกค้าแล้ว" = ใบแจ้งเข้างานแบบระบุแค่เดือนที่ผูกสัญญานี้ (routes/issuedDocument.js ดูแลให้เอง)
+    //    rows = ครั้งที่ (นับรวมทุกปี) → เดือนที่แจ้ง · ใบหลังสุดชนะรายครั้ง · ยกเลิกใบ = เอาออก
+    planSentDocs: {
+      type: [{
+        _id: false,
+        docId: { type: mongoose.Schema.Types.ObjectId },
+        docNumber: String,
+        issuedAt: Date,
+        sentByName: String,
+        rows: [{ _id: false, time: Number, month: String }],
+      }],
+      default: undefined,
+    },
     estimatedDaysPerVisit: Number,
     jobValue: Number,
     /**

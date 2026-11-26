@@ -68,8 +68,11 @@ router.post("/next", verifyToken, async (req, res) => {
     if (!cfg) return res.status(400).json({ message: "ชนิดเอกสารไม่ถูกต้อง" });
 
     // ✅ ห้ามออกซ้ำ (ผู้ใช้สั่ง 3 ต.ค. 2569) — ตรวจก่อนกินเลข ไม่งั้นเลขถูกกินทิ้งแล้วทะเบียนปฏิเสธทีหลัง
+    // ✅ (26 พ.ย. 2569) "ออกใบใหม่แทน" — ส่ง replaceId ของใบที่ใช้อยู่มา = ยอมให้ออกเลขใหม่ได้
+    //    (ทะเบียนเอกสารตรวจสิทธิ์การแทนอีกชั้นตอนบันทึก แล้วยกเลิกใบเดิมให้อัตโนมัติ — routes/issuedDocument.js)
+    const replaceId = String(req.body?.replaceId || "");
     const existing = await IssuedDocument.activeFor(req.body?.eventId, docType);
-    if (existing) {
+    if (existing && String(existing._id) !== replaceId) {
       return res.status(409).json({
         message: `งานนี้ออก${cfg.label}ไปแล้ว (เลขที่ ${existing.docNumber}) — ถ้าต้องออกใหม่ ให้ยกเลิกใบเดิมในทะเบียนเอกสารก่อน`,
         doc: existing,

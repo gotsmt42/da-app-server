@@ -119,6 +119,8 @@ module.exports = (router) => {
         "visitCount",
         "intervalMonths",
         "contractYears",
+        "planFirstMonth",
+        "planMonths",
         "estimatedDaysPerVisit",
         "jobValue",
         // ✅ เลือกหมวดหมู่ "งานทั่วไป"/"งานโปรเจค" ได้ตั้งแต่ตอนสร้างงานเลย (ขั้นตอนที่ 1 ในฟอร์ม
