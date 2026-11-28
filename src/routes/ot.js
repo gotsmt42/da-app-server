@@ -273,6 +273,19 @@ const redact = (req, doc) => {
   const o = typeof doc.toObject === "function" ? doc.toObject() : { ...doc };
   if (can(req.user, "viewAllExpenses")) return { ...o, moneyVisible: "all" };
   const uid = String(req.userId || "");
+  // ✅ (28 พ.ย. 2569 ผู้ใช้: "ตรวจสอบให้แน่ชัดว่าช่างจะเห็นแค่ของตัวเองที่ส่งเบิก ไม่เห็นของคนอื่น")
+  //    ใบที่คนอื่นยื่นให้หลายคน (เรามีชื่อเป็นสมาชิก) → เห็นเฉพาะรายการของตัวเอง · ชั่วโมงรวม/หลักฐาน = ของตัวเองเท่านั้น
+  //    ผู้ยื่น/ผู้สร้างใบเห็นครบทั้งใบ (เป็นคนกรอกเอง) · ผู้มีสิทธิ์ดูทั้งหมด (viewAllExpenses) ออกไปก่อนหน้านี้แล้ว
+  const owner = o.requester?.userId === uid || o.createdBy?.userId === uid;
+  if (!owner) {
+    const mineLines = (o.lines || []).filter((l) => l.person?.userId === uid);
+    const refs = new Set(mineLines.map((l) => l.itemRef).filter(Boolean));
+    o.lines = mineLines;
+    o.totalHours = Math.round(mineLines.reduce((s, l) => s + (Number(l.hours) || 0), 0) * 100) / 100;
+    o.attachments = (o.attachments || []).filter((a) => !a.itemRef || refs.has(a.itemRef));
+    o.memberIds = [uid];
+    o.partialView = true;
+  }
   o.lines = (o.lines || []).map((l) => (l.person?.userId === uid ? l : { ...l, hourlyRate: null, amount: null }));
   o.totalAmount = money(o.lines.reduce((s, l) => s + (Number(l.amount) || 0), 0));
   o.moneyVisible = "mine";
